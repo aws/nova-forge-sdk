@@ -1,0 +1,53 @@
+{
+    "trust_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {
+                    "Service": "bedrock.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+            }
+        ]
+    },
+    "bedrock_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "bedrock:CreateCustomModelDeployment",
+                    "bedrock:CreateCustomModel",
+                    "bedrock:CreateProvisionedModelThroughput",
+                    "bedrock:GetCustomModel",
+                    "bedrock:GetCustomModelDeployment"
+                ],
+                "Resource": "*"
+            }
+        ]
+    },
+    "passrole_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": "iam:PassRole",
+                "Resource": "*"
+            }
+        ]
+    },
+    "s3_read_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "s3:GetObject",
+                    "s3:ListBucket"
+                ],
+                "Resource": "*"
+            }
+        ]
+    }
+}
