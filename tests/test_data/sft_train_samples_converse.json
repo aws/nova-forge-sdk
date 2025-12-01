@@ -1,0 +1,96 @@
+[
+  {
+    "schemaVersion": "bedrock-conversation-2024",
+    "system": [
+      {
+        "text": "You are a helpful assistant."
+      }
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "Who won the FIFA world cup in 2022?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "text": "Argentina"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "schemaVersion": "bedrock-conversation-2024",
+    "system": [
+      {
+        "text": "You are a helpful assistant."
+      }
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "Who won the FIFA world cup in 2022?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "text": "Argentina"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "schemaVersion": "bedrock-conversation-2024",
+    "system": [
+      {
+        "text": "You are a helpful assistant."
+      }
+    ],
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "What are some good places to visit in California?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "text": "San Jose, Los Angeles, San Diego"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "text": "Where is San Diego?"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "text": "South California"
+          }
+        ]
+      }
+    ]
+  }
+]

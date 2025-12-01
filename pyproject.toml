@@ -1,0 +1,30 @@
+[build-system]
+     requires = [
+       "build",
+       "setuptools",
+       "wheel",
+     ]
+     build-backend = "setuptools.build_meta"
+
+     [project]
+     name = "amzn-nova-customization-sdk"
+     description = "A Python SDK for customizing Amazon Nova models."
+     dynamic = ["dependencies", "version"]
+     requires-python = ">=3.12"
+     authors = [
+       {name = "Amazon", email="nova-customizersdk@amazon.com"},
+     ]
+     license = "Apache-2.0"
+     readme = "README.md"
+
+     [project.optional-dependencies]
+     dev = [
+       "build",
+       "setuptools",
+       "twine",
+       "wheel",
+     ]
+
+     [tool.setuptools.dynamic]
+     version = {attr = "amzn_nova_customization_sdk.__version__.VERSION"}
+     dependencies = {file = "requirements.txt"}

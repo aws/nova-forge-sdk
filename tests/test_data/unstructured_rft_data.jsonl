@@ -1,0 +1,5 @@
+{"question": "Predict hydrogen bond donors and acceptors for this SMILES: CCN(CC)CCC(=O)c1sc(N)nc1C", "reference_answer": {"donor_bond_counts": 2, "acceptor_bond_counts": 4}, "system": "You are a helpful chemistry assistant"}
+{"question": "Predict hydrogen bond donors and acceptors for this SMILES: CCN(CC)CCC(=O)c1sc(N)nc1C", "reference_answer": {"donor_bond_counts": 2, "acceptor_bond_counts": 4}, "system": "You are a helpful chemistry assistant"}
+{"question": "Predict hydrogen bond donors and acceptors for this SMILES: CCN(CC)CCC(=O)c1sc(N)nc1C", "reference_answer": {"donor_bond_counts": 2, "acceptor_bond_counts": 4}, "system": "You are a helpful chemistry assistant"}
+{"question": "Predict hydrogen bond donors and acceptors for this SMILES: CCN(CC)CCC(=O)c1sc(N)nc1C", "reference_answer": {"donor_bond_counts": 2, "acceptor_bond_counts": 4}, "system": "You are a helpful chemistry assistant"}
+{"question": "Predict hydrogen bond donors and acceptors for this SMILES: CCN(CC)CCC(=O)c1sc(N)nc1C", "reference_answer": {"donor_bond_counts": 2, "acceptor_bond_counts": 4}, "system": "You are a helpful chemistry assistant"}
