@@ -208,6 +208,7 @@ deployment = customizer.deploy(
 )
 print(f"Model deployed: {deployment.endpoint.uri}")
 print(f"Endpoint: {deployment.endpoint.endpoint_name}")
+print(f"Status: {deployment.status}")
 ```
 ---
 #### `batch_inference()`

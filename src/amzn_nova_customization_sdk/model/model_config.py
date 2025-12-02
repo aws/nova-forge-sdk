@@ -27,6 +27,7 @@ from amzn_nova_customization_sdk.model.model_enums import (
     TrainingMethod,
     Version,
 )
+from amzn_nova_customization_sdk.util.bedrock import check_deployment_status
 
 REGION_TO_ESCROW_ACCOUNT_MAPPING = {
     "us-east-1": "708977205387",
@@ -101,3 +102,7 @@ class EndpointInfo:
 class DeploymentResult:
     endpoint: EndpointInfo
     created_at: datetime
+
+    @property
+    def status(self):
+        return check_deployment_status(self.endpoint.uri, self.endpoint.platform)
