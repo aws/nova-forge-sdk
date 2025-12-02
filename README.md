@@ -18,7 +18,7 @@ A comprehensive Python SDK for fine-tuning and customizing Amazon Nova models. T
 ## Installation
 
 ```bash
-pip install amzn-nova-customization-sdk```
+pip install amzn-nova-customization-sdk
 ```
 
 

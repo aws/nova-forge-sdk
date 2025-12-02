@@ -140,7 +140,9 @@ def create_bedrock_execution_role(iam_client, role_name: str) -> Dict:
     return bedrock_execution_role
 
 
-def check_deployment_status(deployment_arn: str, platform: DeployPlatform) -> Optional[str]:
+def check_deployment_status(
+    deployment_arn: str, platform: DeployPlatform
+) -> Optional[str]:
     """
     Checks the current status of a Bedrock deployment.
 
