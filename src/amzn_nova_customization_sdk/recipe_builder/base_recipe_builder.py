@@ -133,7 +133,7 @@ class BaseRecipeBuilder(ABC):
             except ModuleNotFoundError as e:
                 raise RuntimeError(
                     "The HyperPod CLI is a required dependency for running HyperPod jobs. "
-                    "Installation details: https://github.com/aws/sagemaker-hyperpod-cli/blob/release_v2/README.md#installation"
+                    "Installation details: https://github.com/aws/sagemaker-hyperpod-cli/tree/release_v2?tab=readme-ov-file#installation"
                 ) from e
 
             # TODO: Will eventually need to allow "training" for method_infix

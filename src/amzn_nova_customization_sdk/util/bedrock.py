@@ -19,7 +19,7 @@ import json
 import time
 from datetime import datetime, timezone
 from importlib import resources
-from typing import Dict
+from typing import Dict, Optional
 
 import boto3
 
@@ -140,7 +140,7 @@ def create_bedrock_execution_role(iam_client, role_name: str) -> Dict:
     return bedrock_execution_role
 
 
-def check_deployment_status(deployment_arn: str, platform: DeployPlatform):
+def check_deployment_status(deployment_arn: str, platform: DeployPlatform) -> Optional[str]:
     """
     Checks the current status of a Bedrock deployment.
 
@@ -151,6 +151,8 @@ def check_deployment_status(deployment_arn: str, platform: DeployPlatform):
     Raises:
         Exception: If unable to check deployment status
     """
+    status = None
+
     bedrock_client = boto3.client("bedrock")
     if platform == DeployPlatform.BEDROCK_OD:
         try:
@@ -177,3 +179,5 @@ def check_deployment_status(deployment_arn: str, platform: DeployPlatform):
             )
         except Exception as e:
             raise Exception(f"Failed to check deployment status: {e}.")
+
+    return status

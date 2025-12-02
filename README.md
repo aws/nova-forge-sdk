@@ -65,8 +65,8 @@ training_result.dump() # Save job result as local file so it can be reload after
 training_result.get_job_status()  # InProgress, Completed, Failed
 
 # 6. Monitor job log
-customizer.get_logs()
-# Or use monitor directly
+customizer.get_logs() # Directly get logs of most recent job from customizer object
+# Or create CloudWatchLogMonitor from a job result or job id
 training_job_monitor = CloudWatchLogMonitor.from_job_result(training_result)
 training_job_monitor.show_logs(limit=10)
 
@@ -82,10 +82,14 @@ eval_result = customizer.evaluate(
     eval_task=EvaluationTask.MMLU,
     model_path=training_result.model_artifacts.checkpoint_s3_path # Use trained model path for eval
 )
-eval_result.dump() # Save job result
+# Save job result to current directory with name of <job_id>_<platform>.json
+eval_result.dump()
+# Or save job result to certain path and customized name
+eval_result.dump(file_path='/volume/path/my-path', file_name='my-name.json') 
 
 # Monitor logs
-customizer.get_logs()
+customizer.get_logs() # Directly get logs of most recent job from customizer object
+# Or create CloudWatchLogMonitor from a job result or job id
 eval_job_monitor = CloudWatchLogMonitor.from_job_result(eval_result)
 eval_job_monitor.show_logs()
 
@@ -140,12 +144,12 @@ Nova customization jobs also require access to enough of the right instance type
 
 For HyperPod-based customization jobs, the SDK uses the [Sagemaker Hyperpod CLI](https://github.com/aws/sagemaker-hyperpod-cli/) to connect to Sagemaker Clusters and start jobs.
 
-Currently we recommend using [the `nova-lite-2.0-beta-release` branch](https://github.com/aws/sagemaker-hyperpod-cli/tree/nova-lite-2.0-beta-release) in order to access 2.0 customization options, such as `RFT`.
+Currently we recommend using [the `release_v2` branch](https://github.com/aws/sagemaker-hyperpod-cli/tree/release_v2) in order to access 2.0 customization options, such as `RFT`.
 
 Steps:
-1. `git clone -b nova-lite-2.0-beta-release https://github.com/aws/sagemaker-hyperpod-cli.git` to pull the HyperPod CLI into a local repository
+1. `git clone -b release_v2 https://github.com/aws/sagemaker-hyperpod-cli.git` to pull the HyperPod CLI into a local repository
 2. If you are using a Python virtual environment to use the Nova Customization SDK, activate that environment with `source <path to venv>/bin/activate`
-3. Follow the installation instructions [in the Hyperpod CLI README](https://github.com/aws/sagemaker-hyperpod-cli/tree/nova-lite-2.0-beta-release?tab=readme-ov-file#installation) to set up the CLI. As of November 2025, the steps are as follows:
+3. Follow the installation instructions [in the Hyperpod CLI README](https://github.com/aws/sagemaker-hyperpod-cli/tree/release_v2?tab=readme-ov-file#installation) to set up the CLI. As of November 2025, the steps are as follows:
     1. Make sure that `helm` is installed with `helm --help`. If it isn't, use the below script to install it:
     ```
     curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
@@ -431,6 +435,20 @@ eval_result = customizer.evaluate(
     eval_task=EvaluationTask.MMLU,
     model_path="s3://bucket/model-artifacts/",  # Optional model path override
     subtask="abstract_algebra",  # Optional
+    processor={ # Optional, only needed for BYOM (Bring your own metric) Eval
+        'lambda_arn': 'arn:aws:lambda:<region>:<account_id>:function:<function-name>', 
+        'preprocessing': { # Optional, default to True if not provided
+            'enabled': True
+        },
+        'postprocessing': { # Optional, default to True if not provided
+            'enabled': True
+        },
+        # Optional, Built-in aggregation function (valid options: min, max, average, sum), default to average
+        'aggregation': 'average'
+    },
+    rl_env={ # Optional, only needed for RFT Eval
+        'reward_lambda_arn': 'arn:aws:lambda:<region>:<account_id>:function:<reward-function-name>'
+    },
     overrides={  # Optional overrides
         'max_new_tokens': 2048,
         'temperature': 0.1,
@@ -439,6 +457,12 @@ eval_result = customizer.evaluate(
 )
 
 eval_result.get_job_status()  # This can be run to check the job status of the current evaluation job.
+
+eval_result.dump() # Save job result to current directory with default naming <job_id>_<platform>.json
+eval_result.dump(file_path='my/custom/path', file_name='my-custom-name.json') # Save job result to certain path/name that user specified.
+
+from amzn_nova_customization_sdk.model.result import BaseJobResult
+eval_result = BaseJobResult.load('my-path/my-job-result.json') # Load job result from the local file
 ```
 
 **3. Deployment**
@@ -504,11 +528,20 @@ eval_result = customizer.evaluate(
 monitor = CloudWatchLogMonitor.from_job_result(
     job_result=my_evaluation_job_result
 )
+# Or Create from job id 
+from datetime import datetime
+monitor = CloudWatchLogMonitor.from_job_id(
+    job_id="job-id",
+    platform=Platform.SMTJ,
+    started_time=datetime(year=2025, month=11, day=1, hour=20), # Optional, job start time
+    cluster_name="cluster_name", # Optional, SMHP cluster name, only needed when platform is SMHP,
+    namespace="namespace", # Optional, SMHP namespace, only needed when platform is SMHP
+)
 
 # View logs
 monitor.show_logs(limit=50, start_from_head=False)
 
-# Get logs as list
+# Get raw logs as list
 logs = monitor.get_logs(limit=100)
 ```
 

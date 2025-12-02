@@ -485,8 +485,23 @@ class NovaModelCustomizer:
                     'temperature': 0,
                     'top_logprobs': 10
                 }
-        :param processor: Optional, Bring Your Own Metrics/RFT lambda Configuration
-        :param rl_env: Optional, Bring your own reinforcement learning environment config
+        :param processor: Optional, only needed for Bring Your Own Metrics Configuration. Example:
+                {
+                    'lambda_arn': 'arn:aws:lambda:<region>:<account_id>:function:<function-name>',
+                    'preprocessing': { # Optional, default to True if not provided
+                        'enabled': True
+                    },
+                    'postprocessing': { # Optional, default to True if not provided
+                        'enabled': True
+                    },
+                    # Built-in aggregation function (valid options: min, max, average, sum), default to average
+                    'aggregation': 'average'
+                }
+        :param rl_env: Optional, only needed for Bring your own Reinforcement learning environment (RFT Eval) config.
+                Example:
+                {
+                    'reward_lambda_arn': 'arn:aws:lambda:<region>:<account_id>:function:<reward-function-name>'
+                }
         :return: BaseJobResult: Metadata object containing job ID, start time, and evaluation output path
         """
         overrides = resolve_overrides(
