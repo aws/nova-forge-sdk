@@ -21,6 +21,8 @@ A comprehensive Python SDK for fine-tuning and customizing Amazon Nova models. T
 pip install amzn-nova-customization-sdk
 ```
 
+* The SDK requires [sagemaker 2.254.1](https://pypi.org/project/sagemaker/2.254.1/), which is automatically set by pip.
+
 
 ## Quick Start
 
@@ -113,43 +115,164 @@ Below are some common requirements which you can set up in advance before trying
 
 ### IAM
 
-Nova customization jobs requires certain IAM permissions to run successfully.
+The SDK requires certain IAM permissions to perform tasks successfully.  
+You can use any role that you like when interacting with the SDK, but that role will need the following permissions:  
+_Note that you might not require all permissions depending on your use case._  
+```
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+			"Sid": "ConnectToHyperPodCluster",
+			"Effect": "Allow",
+			"Action": [
+				"eks:DescribeCluster",
+				"eks:ListAddons",
+				"sagemaker:DescribeCluster"
+			],
+			"Resource": [
+			    "arn:aws:eks:<region>:<account_id>:cluster/*",
+			    "arn:aws:sagemaker:<region>:<account_id>:cluster/*"
+			]
+		},
+        {
+            "Sid": "StartSageMakerTrainingJob",
+            "Effect": "Allow",
+            "Action": [
+			    "sagemaker:CreateTrainingJob",
+			    "sagemaker:DescribeTrainingJob"
+			],
+            "Resource": "arn:aws:sagemaker:<region>:<account_id>:training-job/*"
+        },
+        {
+            "Sid": "InteractWithSageMakerAndBedrockExecutionRoles",
+            "Effect": "Allow",
+            "Action": [
+                "iam:AttachRolePolicy",
+                "iam:CreateRole",
+                "iam:GetRole",
+                "iam:PassRole",
+                "iam:SimulatePrincipalPolicy"
+            ],
+            "Resource": "arn:aws:iam::<account_id>:role/*"
+        },
+        {
+            "Sid": "CreateSageMakerAndBedrockExecutionRolePolicies",
+            "Effect": "Allow",
+            "Action": [
+                "iam:CreatePolicy",
+                "iam:GetPolicy"
+            ],
+            "Resource": "arn:aws:iam::<account_id>:policy/*"
+        },
+        {
+            "Sid": "HandleTrainingInputAndOutput",
+            "Effect": "Allow",
+            "Action": [
+                "s3:CreateBucket",
+                "s3:GetObject",
+                "s3:ListBucket",
+                "s3:PutObject"
+            ],
+            "Resource": "arn:aws:s3:::*"
+        },
+        {
+            "Sid": "AccessCloudWatchLogs",
+            "Effect": "Allow",
+            "Action": [
+                "logs:DescribeLogStreams",
+                "logs:FilterLogEvents",
+                "logs:GetLogEvents"
+            ],
+            "Resource": "arn:aws:logs:<region>:<account_id>:log-group:*"
+        },
+        {
+            "Sid": "ImportModelToBedrock",
+            "Effect": "Allow",
+            "Action": [
+                "bedrock:CreateCustomModel"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "DeployModelInBedrock",
+            "Effect": "Allow",
+            "Action": [
+                "bedrock:CreateCustomModelDeployment",
+                "bedrock:CreateProvisionedModelThroughput",
+                "bedrock:GetCustomModel",
+                "bedrock:GetCustomModelDeployment",
+                "bedrock:GetProvisionedModelThroughput"
+            ],
+            "Resource": "arn:aws:bedrock:<region>:<account_id>:custom-model/*"
+        }
+    ]
+}
+```
+- [HyperPod only] If your cluster uses namespace access control, you must have access to the Kubernetes namespace
 
-For SageMaker Training Jobs (Platform.SMTJ):
-- `sagemaker.amazonaws.com` should be able to assume the execution role (defaults to the caller's role)
-- Please see the AWS documentation for our recommended set of permissions on [the execution role](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-roles.html#sagemaker-roles-createtrainingjob-perms) and [the calling role](https://docs.aws.amazon.com/sagemaker/latest/dg/api-permissions-reference.html) when calling the `CreateTrainingJob` API to run a training job.
-    - At a minimum, the calling role will need the following permissions to run a job:
-        - `sagemaker:CreateTrainingJob`
-        - `iam:PassRole`
-    - At a minimum, the execution role will need the following permissions to execute a job:
-        - `s3:GetObject`
-        - `s3:PutObject`
-        - `s3:ListBucket `
 
-For SageMaker HyperPod jobs (Platform.SMHP):
-- The calling role should have the following permissions to let us connect to the Hyperpod cluster
-    - `eks:ListAddons`
-    - `sagemaker:DescribeCluster`
-    - `sagemaker:ListClusters`
-- (If using namespace access control in an EKS HyperPod cluster) The calling role should have access to the Kubernetes namespace
+__Execution Role__  
+The execution role is the role that SageMaker assumes to execute training jobs on your behalf.   
+___Please see AWS documentation for the recommended set of [execution role permissions](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-roles.html#sagemaker-roles-createtrainingjob-perms).___  
+If performing RFT training, your execution role also must include the following statement:
+```
+{
+    "Effect": "Allow",
+    "Action": "lambda:InvokeFunction",
+    "Resource": "arn:aws:lambda:<region>:<account_id>:function:MySageMakerRewardFunction"
+}
+```
+
+The execution role's trust policy must include the following statement:
+```
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "",
+            "Effect": "Allow",
+            "Principal": {
+                "Service": "sagemaker.amazonaws.com"
+            },
+            "Action": "sts:AssumeRole"
+        }
+    ]
+}
+```
+
+You can optionally set your execution role via:
+```
+customizer = NovaModelCustomizer(
+    infra=SMTJRuntimeManager(
+        execution_role='arn:aws:iam::123456789012:role/MyExecutionRole' # Explicitly set execution role
+        instance_count=1,
+        instance_type='ml.g5.12xlarge',
+    ),
+    model=Model.NOVA_LITE_2,
+    method=TrainingMethod.SFT_LORA,
+    data_s3_path='s3://input-bucket/input.jsonl'
+)
+```
+If you don’t explicitly set an execution role, the SDK automatically uses the IAM role associated with the credentials you’re using to make the SDK call.
 
 ### Instances
 
 Nova customization jobs also require access to enough of the right instance type to run:
 - The requested instance type and count should be compatible with the requested job. The SDK will validate your instance configuration for you.
-- The [Sagemaker account quotas](https://docs.aws.amazon.com/general/latest/gr/sagemaker.html) for using the requested instance type in training jobs (for SMTJ) or HyperPod clusters (for SMHP) should allow the requested number of instances.
+- The [SageMaker account quotas](https://docs.aws.amazon.com/general/latest/gr/sagemaker.html) for using the requested instance type in training jobs (for SMTJ) or HyperPod clusters (for SMHP) should allow the requested number of instances.
 - (For SMHP) The selected HyperPod cluster should have a [Restricted Instance Group](https://docs.aws.amazon.com/sagemaker/latest/dg/nova-hp-cluster.html) with enough instances of the right type to run the requested job. The SDK will validate that your cluster contains a valid instance group.
 
-### Hyperpod CLI
+### HyperPod CLI
 
-For HyperPod-based customization jobs, the SDK uses the [Sagemaker Hyperpod CLI](https://github.com/aws/sagemaker-hyperpod-cli/) to connect to Sagemaker Clusters and start jobs.
+For HyperPod-based customization jobs, the SDK uses the [SageMaker HyperPod CLI](https://github.com/aws/sagemaker-hyperpod-cli/) to connect to HyperPod Clusters and start jobs.
 
-Currently we recommend using [the `release_v2` branch](https://github.com/aws/sagemaker-hyperpod-cli/tree/release_v2) in order to access 2.0 customization options, such as `RFT`.
+Please use [the `release_v2` branch](https://github.com/aws/sagemaker-hyperpod-cli/tree/release_v2).
 
 Steps:
 1. `git clone -b release_v2 https://github.com/aws/sagemaker-hyperpod-cli.git` to pull the HyperPod CLI into a local repository
 2. If you are using a Python virtual environment to use the Nova Customization SDK, activate that environment with `source <path to venv>/bin/activate`
-3. Follow the installation instructions [in the Hyperpod CLI README](https://github.com/aws/sagemaker-hyperpod-cli/tree/release_v2?tab=readme-ov-file#installation) to set up the CLI. As of November 2025, the steps are as follows:
+3. Follow the installation instructions [in the HyperPod CLI README](https://github.com/aws/sagemaker-hyperpod-cli/tree/release_v2?tab=readme-ov-file#installation) to set up the CLI. As of November 2025, the steps are as follows:
     1. Make sure that `helm` is installed with `helm --help`. If it isn't, use the below script to install it:
     ```
     curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
