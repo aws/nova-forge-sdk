@@ -3,13 +3,13 @@ name: Semgrep
 
 on:
   # Scan changed files in PRs, only report new findings (existing findings in the repository are ignored).
-  pull_request:
+  pull_request: {}
 
   push:
-    branches: ["dev", "main"]
+    branches: ["main"]
 
   schedule:
-    - cron: '23 20 * * 1'
+    - cron: '15 20 * * 1'
 
 permissions:
   contents: read
@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       # A Docker image with Semgrep installed. Don't change this.
-      image: returntocorp/semgrep
+      image: semgrep/semgrep
     # Skip any PR created by dependabot to avoid permission issues
     if: (github.actor != 'dependabot[bot]')
     steps:
