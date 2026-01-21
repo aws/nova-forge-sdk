@@ -1,0 +1,47 @@
+# Name of this GitHub Actions workflow.
+name: Semgrep
+
+on:
+  # Scan changed files in PRs, only report new findings (existing findings in the repository are ignored).
+  pull_request:
+
+  push:
+    branches: ["dev", "main"]
+
+  schedule:
+    - cron: '23 20 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  semgrep:
+    # User definable name of this GitHub Actions job.
+    name: Scan
+
+    runs-on: ubuntu-latest
+    container:
+      # A Docker image with Semgrep installed. Don't change this.
+      image: returntocorp/semgrep
+    # Skip any PR created by dependabot to avoid permission issues
+    if: (github.actor != 'dependabot[bot]')
+    steps:
+      # Fetch project source with GitHub Actions Checkout.
+      - uses: actions/checkout@v3
+
+      # Run the "semgrep ci" command on the command line of the docker image.
+      - run: semgrep ci
+        env:
+          # Set hard-coded rulesets, viewable in logs.
+          SEMGREP_RULES: >- # more at semgrep.dev/explore
+              p/default
+              p/security-audit
+              p/secrets
+              p/owasp-top-ten
+
+      - name: Upload SARIF file for GitHub Advanced Security Dashboard
+        uses: github/codeql-action/upload-sarif@cf1bb45a277cb3c205638b2cd5c984db1c46a412 #v4.31.7
+        with:
+          sarif_file: semgrep.sarif
+        if: always()
