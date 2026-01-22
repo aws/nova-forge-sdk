@@ -22,7 +22,6 @@ from amzn_nova_customization_sdk.model.result.job_result import (
     BaseJobResult,
     SMHPStatusManager,
 )
-from amzn_nova_customization_sdk.monitor import Monitor
 from amzn_nova_customization_sdk.util.logging import logger
 
 DEFAULT_SMHP_NAMESPACE = "kubeflow"
@@ -197,7 +196,7 @@ class SMHPStrategy(PlatformStrategy):
         return all_events
 
 
-class CloudWatchLogMonitor(Monitor):
+class CloudWatchLogMonitor:
     def __init__(
         self,
         job_id: str,
@@ -206,7 +205,9 @@ class CloudWatchLogMonitor(Monitor):
         cloudwatch_logs_client=None,
         **kwargs,
     ):
-        super().__init__(job_id, platform, started_time)
+        self.job_id = job_id
+        self.platform = platform
+        self.started_time = started_time
         self.cloudwatch_logs_client = cloudwatch_logs_client or boto3.client("logs")
         self.strategy = self._create_strategy(platform, **kwargs)
         self.log_group_name = self._get_log_group_name()

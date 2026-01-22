@@ -1,0 +1,73 @@
+{
+  "name": {
+    "type": "string",
+    "required": true,
+    "default": "my-rft-eval-run"
+  },
+  "model_type": {
+    "type": "string",
+    "required": true,
+    "enum": [
+      "amazon.nova-micro-v1:0:128k",
+      "amazon.nova-lite-v1:0:300k",
+      "amazon.nova-pro-v1:0:300k"
+    ]
+  },
+  "model_name_or_path": {
+    "type": "string",
+    "required": true
+  },
+  "data_s3_path": {
+    "type": "string",
+    "required": true,
+    "default": "s3://example-bucket/train.jsonl"
+  },
+  "output_s3_path": {
+    "type": "string",
+    "required": true,
+    "default": ""
+  },
+  "replicas": {
+    "type": "integer",
+    "required": true,
+    "enum": [
+      1
+    ],
+    "default": 1
+  },
+  "top_logprobs": {
+    "type": "integer",
+    "required": false,
+    "min": 0,
+    "max": 20,
+    "default": 0
+  },
+  "reward_lambda_arn": {
+    "type": "string",
+    "required": true,
+    "default": ""
+  },
+  "mlflow_tracking_uri": {
+    "type": "string",
+    "required": false,
+    "default": ""
+  },
+  "mlflow_experiment_name": {
+    "type": "string",
+    "required": false,
+    "default": "my-eval-experiment"
+  },
+  "mlflow_run_name": {
+    "type": "string",
+    "required": false,
+    "default": "my-eval-run"
+  },
+  "instance_type": {
+    "type": "string",
+    "required": false,
+    "enum": [
+      "ml.p5.48xlarge"
+    ],
+    "default": "ml.p5.48xlarge"
+  }
+}

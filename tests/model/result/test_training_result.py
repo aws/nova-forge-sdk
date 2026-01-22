@@ -48,13 +48,13 @@ class TestSMTJTrainResult(unittest.TestCase):
         result = SMTJTrainingResult(
             job_id="test-job-123",
             started_time=datetime(2024, 1, 1, 12, 0, 0),
-            method=TrainingMethod.SFT_FULLRANK,
+            method=TrainingMethod.SFT_FULL,
             model_artifacts=self.model_artifacts,
             sagemaker_client=self.mock_sagemaker_client,
         )
 
         self.assertEqual(result._sagemaker_client, self.mock_sagemaker_client)
-        self.assertEqual(result.method, TrainingMethod.SFT_FULLRANK)
+        self.assertEqual(result.method, TrainingMethod.SFT_FULL)
 
     def test_create_status_manager(self):
         """Test status manager creation"""
@@ -208,14 +208,14 @@ class TestSMHPTrainResult(unittest.TestCase):
         result = SMHPTrainingResult(
             job_id="test-job-123",
             started_time=datetime(2024, 1, 1, 12, 0, 0),
-            method=TrainingMethod.RFT,
+            method=TrainingMethod.RFT_FULL,
             model_artifacts=self.model_artifacts,
             cluster_name="test-cluster",
             namespace="custom-namespace",
         )
 
         self.assertEqual(result.namespace, "custom-namespace")
-        self.assertEqual(result.method, TrainingMethod.RFT)
+        self.assertEqual(result.method, TrainingMethod.RFT_FULL)
 
     def test_create_status_manager(self):
         """Test status manager creation"""
@@ -321,7 +321,7 @@ class TestSMHPTrainResult(unittest.TestCase):
         original_result = SMHPTrainingResult(
             job_id="test-job-456",
             started_time=datetime(2024, 1, 1, 12, 0, 0),
-            method=TrainingMethod.RFT,
+            method=TrainingMethod.RFT_FULL,
             model_artifacts=self.model_artifacts,
             cluster_name="test-cluster",
             namespace="test-namespace",
@@ -348,8 +348,8 @@ class TestSMHPTrainResult(unittest.TestCase):
         """Test all training method enums work correctly"""
         methods = [
             TrainingMethod.SFT_LORA,
-            TrainingMethod.SFT_FULLRANK,
-            TrainingMethod.RFT,
+            TrainingMethod.SFT_FULL,
+            TrainingMethod.RFT_FULL,
             TrainingMethod.RFT_LORA,
             TrainingMethod.EVALUATION,
         ]

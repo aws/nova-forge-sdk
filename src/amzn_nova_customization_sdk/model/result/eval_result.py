@@ -31,7 +31,7 @@ from amzn_nova_customization_sdk.model.result.job_result import (
     SMHPStatusManager,
     SMTJStatusManager,
 )
-from amzn_nova_customization_sdk.recipe_config.eval_config import EvaluationTask
+from amzn_nova_customization_sdk.recipe.recipe_config import EvaluationTask
 from amzn_nova_customization_sdk.util.logging import logger
 
 

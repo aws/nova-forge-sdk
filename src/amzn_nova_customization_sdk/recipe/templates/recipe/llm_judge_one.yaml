@@ -1,0 +1,21 @@
+run:
+  name: '{{name}}'
+  model_type: '{{model_type}}'
+  model_name_or_path: '{{model_name_or_path}}'
+  replicas: '{{replicas}}'
+  data_s3_path: '{{data_s3_path}}'
+  output_s3_path: '{{output_s3_path}}'
+  mlflow_tracking_uri: '{{mlflow_tracking_uri}}'
+  mlflow_experiment_name : '{{mlflow_experiment_name}}'
+  mlflow_run_name : '{{mlflow_run_name}}'
+
+evaluation:
+  task: llm_judge
+  strategy: judge
+  metric: all
+
+inference:
+  top_k: 50
+  top_p: 1.0
+  temperature: 0
+  top_logprobs: '{{top_logprobs}}'

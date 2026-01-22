@@ -9,7 +9,10 @@ from amzn_nova_customization_sdk.manager.runtime_manager import (
     SMTJRuntimeManager,
 )
 from amzn_nova_customization_sdk.model.model_config import ModelArtifacts
-from amzn_nova_customization_sdk.util.sagemaker import get_model_artifacts
+from amzn_nova_customization_sdk.util.sagemaker import (
+    _get_hub_content,
+    get_model_artifacts,
+)
 
 
 class TestSagemaker(unittest.TestCase):
@@ -193,6 +196,123 @@ class TestSagemaker(unittest.TestCase):
                 infra=infra,
                 output_s3_path=output_s3_path,
             )
+
+    @patch("amzn_nova_customization_sdk.util.sagemaker.boto3.client")
+    def test_get_hub_content_success(self, mock_boto_client):
+        hub_name = "test-hub"
+        hub_content_name = "test-content"
+        hub_content_type = "Model"
+        region = "us-east-1"
+
+        mock_sagemaker = MagicMock()
+        mock_sagemaker.describe_hub_content.return_value = {
+            "HubName": hub_name,
+            "HubContentName": hub_content_name,
+            "HubContentType": hub_content_type,
+            "HubContentDocument": '{"key": "value", "nested": {"data": 123}}',
+            "HubContentVersion": "1.0",
+        }
+        mock_boto_client.return_value = mock_sagemaker
+
+        result = _get_hub_content(
+            hub_name=hub_name,
+            hub_content_name=hub_content_name,
+            hub_content_type=hub_content_type,
+            region=region,
+        )
+
+        self.assertEqual(result["HubName"], hub_name)
+        self.assertEqual(result["HubContentName"], hub_content_name)
+        self.assertIsInstance(result["HubContentDocument"], dict)
+        self.assertEqual(result["HubContentDocument"]["key"], "value")
+        self.assertEqual(result["HubContentDocument"]["nested"]["data"], 123)
+        mock_sagemaker.describe_hub_content.assert_called_once_with(
+            HubName=hub_name,
+            HubContentType=hub_content_type,
+            HubContentName=hub_content_name,
+        )
+
+    @patch("amzn_nova_customization_sdk.util.sagemaker.boto3.client")
+    def test_get_hub_content_non_json_document(self, mock_boto_client):
+        hub_name = "test-hub"
+        hub_content_name = "test-content"
+        hub_content_type = "Model"
+        region = "us-east-1"
+
+        mock_sagemaker = MagicMock()
+        mock_sagemaker.describe_hub_content.return_value = {
+            "HubName": hub_name,
+            "HubContentName": hub_content_name,
+            "HubContentType": hub_content_type,
+            "HubContentDocument": "not a json string",
+            "HubContentVersion": "1.0",
+        }
+        mock_boto_client.return_value = mock_sagemaker
+
+        result = _get_hub_content(
+            hub_name=hub_name,
+            hub_content_name=hub_content_name,
+            hub_content_type=hub_content_type,
+            region=region,
+        )
+
+        # Should leave the string as-is if it's not valid JSON
+        self.assertIsInstance(result["HubContentDocument"], str)
+        self.assertEqual(result["HubContentDocument"], "not a json string")
+
+    @patch("amzn_nova_customization_sdk.util.sagemaker.boto3.client")
+    def test_get_hub_content_client_error(self, mock_boto_client):
+        hub_name = "test-hub"
+        hub_content_name = "test-content"
+        hub_content_type = "Model"
+        region = "us-east-1"
+
+        mock_sagemaker = MagicMock()
+        mock_sagemaker.describe_hub_content.side_effect = ClientError(
+            error_response={
+                "Error": {
+                    "Code": "ResourceNotFound",
+                    "Message": "Hub content not found",
+                }
+            },
+            operation_name="DescribeHubContent",
+        )
+        mock_boto_client.return_value = mock_sagemaker
+
+        with self.assertRaises(RuntimeError) as context:
+            _get_hub_content(
+                hub_name=hub_name,
+                hub_content_name=hub_content_name,
+                hub_content_type=hub_content_type,
+                region=region,
+            )
+
+        self.assertIn("Failed to get SageMaker hub content", str(context.exception))
+        self.assertIn(hub_content_name, str(context.exception))
+
+    @patch("amzn_nova_customization_sdk.util.sagemaker.boto3.client")
+    def test_get_hub_content_generic_exception(self, mock_boto_client):
+        hub_name = "test-hub"
+        hub_content_name = "test-content"
+        hub_content_type = "Model"
+        region = "us-east-1"
+
+        mock_sagemaker = MagicMock()
+        mock_sagemaker.describe_hub_content.side_effect = Exception("Network error")
+        mock_boto_client.return_value = mock_sagemaker
+
+        from amzn_nova_customization_sdk.util.sagemaker import _get_hub_content
+
+        with self.assertRaises(RuntimeError) as context:
+            _get_hub_content(
+                hub_name=hub_name,
+                hub_content_name=hub_content_name,
+                hub_content_type=hub_content_type,
+                region=region,
+            )
+
+        self.assertIn("Failed to get SageMaker hub content", str(context.exception))
+        self.assertIn("Network error", str(context.exception))
 
 
 if __name__ == "__main__":

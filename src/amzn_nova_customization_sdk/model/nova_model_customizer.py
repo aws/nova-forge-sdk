@@ -19,15 +19,12 @@ This module provides the NovaModelCustomizer class which orchestrates the traini
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, cast
+from typing import Any, Dict, List, Optional, cast
 
 import boto3
 
-import amzn_nova_customization_sdk.recipe_config.v_one.sft_config as v1_sft
-import amzn_nova_customization_sdk.recipe_config.v_two.rft_config_smhp as rft_smhp
-import amzn_nova_customization_sdk.recipe_config.v_two.rft_config_smtj as rft_smtj
-import amzn_nova_customization_sdk.recipe_config.v_two.sft_config as v2_sft
 from amzn_nova_customization_sdk.manager.runtime_manager import (
+    JobConfig,
     RuntimeManager,
     SMHPRuntimeManager,
     SMTJRuntimeManager,
@@ -38,18 +35,19 @@ from amzn_nova_customization_sdk.model.model_config import (
     EndpointInfo,
 )
 from amzn_nova_customization_sdk.model.model_enums import (
+    SUPPORTED_DATAMIXING_METHODS,
+    DeploymentMode,
     DeployPlatform,
     Model,
     Platform,
     TrainingMethod,
-    Version,
 )
 from amzn_nova_customization_sdk.model.nova_model_customizer_util import (
-    set_image_uri,
+    requires_custom_eval_data,
+    resolve_model_checkpoint_path,
     set_output_s3_path,
 )
 from amzn_nova_customization_sdk.model.result import (
-    BaseJobResult,
     EvaluationResult,
     SMHPEvaluationResult,
     SMHPTrainingResult,
@@ -60,37 +58,32 @@ from amzn_nova_customization_sdk.model.result import (
 )
 from amzn_nova_customization_sdk.model.result.inference_result import InferenceResult
 from amzn_nova_customization_sdk.monitor.log_monitor import CloudWatchLogMonitor
-from amzn_nova_customization_sdk.recipe_builder.base_recipe_builder import (
-    BaseRecipeBuilder,
-)
-from amzn_nova_customization_sdk.recipe_builder.batch_inference_recipe_builder import (
-    BatchInferenceRecipeBuilder,
-)
-from amzn_nova_customization_sdk.recipe_builder.eval_recipe_builder import (
-    EvalRecipeBuilder,
-)
-from amzn_nova_customization_sdk.recipe_builder.rft_recipe_builder import (
-    RFTRecipeBuilder,
-)
-from amzn_nova_customization_sdk.recipe_builder.sft_recipe_builder import (
-    SFTRecipeBuilder,
-)
-from amzn_nova_customization_sdk.recipe_config.base_recipe_config import (
-    BaseRecipeConfig,
-)
-from amzn_nova_customization_sdk.recipe_config.eval_config import (
-    EvalRecipeConfig,
-    EvaluationTask,
-)
+from amzn_nova_customization_sdk.monitor.mlflow_monitor import MLflowMonitor
+from amzn_nova_customization_sdk.recipe.recipe_builder import RecipeBuilder
+from amzn_nova_customization_sdk.recipe.recipe_config import EvaluationTask
 from amzn_nova_customization_sdk.util.bedrock import (
     BEDROCK_EXECUTION_ROLE_NAME,
     DEPLOYMENT_ARN_NAME,
+    check_existing_deployment,
     create_bedrock_execution_role,
+    delete_existing_deployment,
+    get_required_bedrock_deletion_permissions,
+    get_required_bedrock_update_permissions,
     monitor_model_create,
+    update_provisioned_throughput_model,
 )
+from amzn_nova_customization_sdk.util.checkpoint_util import (
+    extract_checkpoint_path_from_job_output,
+)
+from amzn_nova_customization_sdk.util.data_mixing import DataMixing
 from amzn_nova_customization_sdk.util.logging import logger
-from amzn_nova_customization_sdk.util.recipe import resolve_overrides
+from amzn_nova_customization_sdk.util.platform_util import (
+    detect_platform_from_path,
+    validate_platform_compatibility,
+)
+from amzn_nova_customization_sdk.util.recipe import load_recipe_templates
 from amzn_nova_customization_sdk.util.sagemaker import get_model_artifacts
+from amzn_nova_customization_sdk.validation.validator import Validator
 
 
 class NovaModelCustomizer:
@@ -103,11 +96,14 @@ class NovaModelCustomizer:
         model: Model,
         method: TrainingMethod,
         infra: RuntimeManager,
-        data_s3_path: str,
+        data_s3_path: Optional[str] = None,
         output_s3_path: Optional[str] = None,
         model_path: Optional[str] = None,
         validation_config: Optional[Dict[str, bool]] = None,
         generated_recipe_dir: Optional[str] = None,
+        mlflow_monitor: Optional[MLflowMonitor] = None,
+        deployment_mode: DeploymentMode = DeploymentMode.FAIL_IF_EXISTS,
+        data_mixing_enabled: bool = False,
     ):
         """
         Initializes a NovaModelCustomizer instance.
@@ -122,6 +118,10 @@ class NovaModelCustomizer:
             validation_config: Optional dict to control validation. Keys: 'iam' (bool), 'infra' (bool).
                              Defaults to {'iam': True, 'infra': True}
             generated_recipe_dir: Optional path to save generated recipe YAMLs
+            mlflow_monitor: Optional MLflowMonitor instance for experiment tracking
+            deployment_mode: Behavior when deploying to existing endpoint name. Options:
+                           FAIL_IF_EXISTS (default), UPDATE_IF_EXISTS
+            data_mixing: Enable data mixing. Default is False.
 
         Raises:
             ValueError: If region is unsupported or model is invalid
@@ -144,202 +144,152 @@ class NovaModelCustomizer:
             )
 
         self.region = region
-        self.model = model
-        self.method = method
+        self._model = model
+        self._method = method
         self.infra = infra
         self.data_s3_path = data_s3_path
         self.model_path = model_path
         self.validation_config = validation_config
-        self.platform = (
+        self.deployment_mode = deployment_mode
+        self._platform = (
             Platform.SMTJ
             if isinstance(self.infra, SMTJRuntimeManager)
             else Platform.SMHP
         )
 
+        self.instance_type = self.infra.instance_type
+
         self.output_s3_path = set_output_s3_path(
-            region=self.region, output_s3_path=output_s3_path
-        )
-        self.image_uri = set_image_uri(
             region=self.region,
-            method=self.method,
-            version=self.model.version,
-            infra=self.infra,
+            output_s3_path=output_s3_path,
+            kms_key_id=self.infra.kms_key_id,
         )
 
         self.generated_recipe_dir = generated_recipe_dir
+        self.mlflow_monitor = mlflow_monitor
 
-    def _validate_model_config(self, model=None, model_path=None):
-        model = model or self.model
-        model_path = model_path or self.model_path
+        # Initialize data mixing configuration
+        self.data_mixing_enabled = data_mixing_enabled
+        self.data_mixing = None
+        if data_mixing_enabled:
+            self.data_mixing = DataMixing()
+            self._init_data_mixing(self.model, self.method, self.platform)
 
-        if model_path == model.model_path:
-            return True
-        else:
-            try:
-                s3_client = boto3.client("s3", region_name=self.region)
-                # Parse S3 URI
-                if not model_path.startswith("s3://"):
-                    raise ValueError(f"Model path must be an S3 URI, got: {model_path}")
+    @property
+    def model(self) -> Model:
+        """Get the model attribute."""
+        return self._model
 
-                # Remove s3:// prefix and split bucket/key
-                s3_path = model_path[5:]  # Remove "s3://"
-                bucket, key = s3_path.split("/", 1)
-
-                # Check if object exists
-                s3_client.head_object(Bucket=bucket, Key=key)
-                return True
-
-            except Exception as e:
-                if "NoSuchBucket" in str(e):
-                    raise ValueError(
-                        f"S3 bucket {bucket} does not exist when validating model checkpoint {model_path}: {str(e)}"
-                    )
-                elif "NoSuchKey" in str(e):
-                    raise ValueError(
-                        f"Model checkpoint does not exist at {model_path}: {str(e)}"
-                    )
-                elif "AccessDenied" in str(e):
-                    raise ValueError(
-                        f"Access denied when validating model checkpoint {model_path}: {str(e)}"
-                    )
-                else:
-                    raise ValueError(
-                        f"Cannot validate model checkpoint {model_path}: {str(e)}"
-                    )
-
-    def _prepare_recipe_builder(
-        self,
-        job_name: str,
-        recipe_path: Optional[str] = None,
-        recipe_class: type = BaseRecipeConfig,
-        overrides: Optional[Dict[str, Any]] = None,
-        rft_lambda_arn: Optional[str] = None,
-    ) -> BaseRecipeBuilder:
-        """
-        Create recipe builder based on inputs and training configuration.
-
-        Returns:
-            BaseRecipeBuilder: Subclass of the base recipe builder for the specified method
-        """
-        overrides = resolve_overrides(
-            recipe_path=recipe_path, recipe_class=recipe_class, overrides=overrides
-        )
-        job_name = overrides.get("name") or job_name
-        platform = self.platform
-        model = (
-            Model.from_model_type(overrides["model_type"])
-            if "model_type" in overrides
-            else self.model
-        )
-        method = self.method
-        instance_type = self.infra.instance_type
-        instance_count = overrides.get("replicas") or self.infra.instance_count
-        data_s3_path = overrides.get("data_s3_path") or self.data_s3_path
-        output_s3_path = overrides.get("output_s3_path") or self.output_s3_path
-        model_path = (
-            overrides.get("model_name_or_path") or self.model_path or model.model_path
-        )
-        rft_lambda_arn = (
-            overrides.get("reward_lambda_arn")
-            or overrides.get("lambda_arn")
-            or rft_lambda_arn
-        )
-
-        self._validate_model_config(model, model_path)
-
-        if (
-            rft_lambda_arn is not None
-            and method is not TrainingMethod.RFT
-            and method is not TrainingMethod.RFT_LORA
-        ):
+    @model.setter
+    def model(self, value: Model) -> None:
+        """Set the model attribute and reinitialize data mixing if enabled."""
+        if self.data_mixing_enabled:
+            self._init_data_mixing(
+                model=value, method=self.method, platform=self.platform
+            )
             logger.info(
-                f"rft_lambda_arn is only used for RFT training, value will be ignored."
+                f"Model changed to {value.name}. Datamixing configs set to default."
             )
+        self._model = value
 
-        # TODO: Abstract away the training method
-        recipe_builder: BaseRecipeBuilder
-        if self.method in (TrainingMethod.SFT_LORA, TrainingMethod.SFT_FULLRANK):
-            recipe_builder = SFTRecipeBuilder(
-                job_name=job_name,
-                platform=platform,
-                model=model,
-                method=method,
-                instance_type=instance_type,
-                instance_count=instance_count,
-                data_s3_path=data_s3_path,
-                output_s3_path=output_s3_path,
-                overrides=overrides or {},
-                infra=self.infra,
-                model_path=model_path,
+    @property
+    def method(self) -> TrainingMethod:
+        """Get the method attribute."""
+        return self._method
+
+    @method.setter
+    def method(self, value: TrainingMethod) -> None:
+        """Set the method attribute and reinitialize data mixing if enabled."""
+        if self.data_mixing_enabled:
+            self._init_data_mixing(
+                model=self.model, method=value, platform=self.platform
             )
-        elif self.method in (TrainingMethod.RFT_LORA, TrainingMethod.RFT):
-            recipe_builder = RFTRecipeBuilder(
-                job_name=job_name,
-                platform=platform,
-                model=model,
-                method=method,
-                instance_type=instance_type,
-                instance_count=instance_count,
-                data_s3_path=data_s3_path,
-                output_s3_path=output_s3_path,
-                rft_lambda_arn=rft_lambda_arn,
-                overrides=overrides or {},
-                infra=self.infra,
-                model_path=model_path,
+            logger.info(
+                f"Method changed to {value.name}. Datamixing configs set to default."
             )
-        else:
-            raise ValueError(f"{method.value} is not yet supported.")
+        self._method = value
 
-        # Set this independently to avoid duplicate code across RecipeBuilder subclasses
-        recipe_builder.generated_recipe_dir = self.generated_recipe_dir
+    @property
+    def platform(self) -> Platform:
+        """Get the platform attribute."""
+        return self._platform
 
-        return recipe_builder
+    @platform.setter
+    def platform(self, value: Platform) -> None:
+        """Set the platform attribute and reinitialize data mixing if enabled."""
+        if self.data_mixing_enabled:
+            self._init_data_mixing(model=self.model, method=self.method, platform=value)
+            logger.info(
+                f"Platform changed to {value.name}. Datamixing configs set to default."
+            )
+        self._platform = value
 
-    def validate(
-        self,
-        job_name: str,
-        recipe_path: Optional[str] = None,
-        overrides: Optional[Dict[str, Any]] = None,
-        rft_lambda_arn: Optional[str] = None,
+    def _init_data_mixing(
+        self, model: Model, method: TrainingMethod, platform: Platform
     ) -> None:
         """
-        Validate training configuration without side effects.
-        Has the same input args as `train`
-
-        Args:
-            job_name: User-defined name for the training job
-            recipe_path: Optional path for a YAML recipe file (both S3 and local paths are accepted)
-            overrides: Optional dictionary of configuration overrides
-            rft_lambda_arn: Optional rewards Lambda ARN, only used for RFT training methods
-
-        Raises:
-            ValueError: If the configuration is invalid
+        Initialize data mixing configuration.
         """
-        recipe_class: type = BaseRecipeConfig
-        if self.method is TrainingMethod.EVALUATION:
-            recipe_class = EvalRecipeConfig
-        elif self.method in (TrainingMethod.SFT_LORA, TrainingMethod.SFT_FULLRANK):
-            recipe_class = (
-                v1_sft.SFTRecipeConfig
-                if self.model.version is Version.ONE
-                else v2_sft.SFTRecipeConfig
-            )
-        elif self.method in (TrainingMethod.RFT_LORA, TrainingMethod.RFT):
-            recipe_class = (
-                rft_smtj.RFTRecipeConfig
-                if self.platform is Platform.SMTJ
-                else rft_smhp.RFTRecipeConfig
+        if not self.data_mixing_enabled:
+            return
+
+        # Data mixing is only supported on HyperPod for certain training methods
+        if platform != Platform.SMHP or method not in SUPPORTED_DATAMIXING_METHODS:
+            raise ValueError(
+                f"Data mixing is only supported for {SUPPORTED_DATAMIXING_METHODS} training methods on SageMaker HyperPod. "
+                "Change platform to SMHP or change to a supported training method to use data mixing."
             )
 
-        recipe_builder = self._prepare_recipe_builder(
-            job_name=job_name,
-            recipe_path=recipe_path,
-            recipe_class=recipe_class,
-            overrides=overrides,
-            rft_lambda_arn=rft_lambda_arn,
+        # Load recipe metadata and templates for non-evaluation methods
+        # Eval requires "type" to be passed to load recipes, therefore we load them in evaluate()
+        (
+            self.recipe_metadata,
+            self.recipe_template,
+            self.overrides_template,
+            self.image_uri,
+        ) = load_recipe_templates(
+            model=model,
+            method=method,
+            platform=platform,
+            region=self.region,
+            data_mixing_enabled=self.data_mixing_enabled,
+            instance_type=self.instance_type,
+            eval_task=getattr(self, "eval_task", None),
         )
 
-        recipe_builder._validate_user_input(validation_config=self.validation_config)
+        # Load default configuration into DataMixing instance if enabled
+        if self.data_mixing and self.overrides_template:
+            self.data_mixing._load_defaults_from_template(self.overrides_template)
+
+    def get_data_mixing_config(self) -> Dict[str, Any]:
+        """
+        Get the current data mixing configuration.
+
+        Returns:
+            Dictionary containing the data mixing configuration
+        """
+        if not self.data_mixing:
+            return {}
+        return self.data_mixing.get_config()
+
+    def set_data_mixing_config(self, config: Dict[str, Any]) -> None:
+        """
+        Set the data mixing configuration.
+
+        Args:
+            config: Dictionary containing the data mixing configuration.
+                   Keys should include nova_*_percent fields and customer_data_percent.
+                   Any nova_*_percent fields not specified will be set to 0.
+
+        Raises:
+            ValueError: If data mixing is not enabled or invalid configuration
+        """
+        if not self.data_mixing:
+            raise ValueError(
+                "Data mixing is not enabled for this customizer. Set data_mixing = True in 'NovaModelCustomizer' object."
+            )
+
+        self.data_mixing.set_config(config, normalize=True)
 
     def train(
         self,
@@ -347,7 +297,9 @@ class NovaModelCustomizer:
         recipe_path: Optional[str] = None,
         overrides: Optional[Dict[str, Any]] = None,
         rft_lambda_arn: Optional[str] = None,
-    ) -> TrainingResult:
+        validation_data_s3_path: Optional[str] = None,
+        dry_run: Optional[bool] = False,
+    ) -> TrainingResult | None:
         """
         Generates the recipe YAML, configures runtime, and launches a training job.
 
@@ -363,69 +315,80 @@ class NovaModelCustomizer:
                     'global_batch_size': 128,
                     'max_length': 16384
                 }
-            rft_lambda_arn: Optional rewards Lambda ARN, only used for RFT training methods
+            rft_lambda_arn: Optional rewards Lambda ARN, only required for RFT training methods
+            validation_data_s3_path: Optional validation S3 path, only applicable for CPT (but is still optional for CPT)
+            dry_run: Actually starts a job if False, otherwise just performs validation. Default is False.
 
         Returns:
             TrainingResult: Metadata object containing job ID, method, start time, and model artifacts
+            or None if dry_run is enabled
 
         Raises:
             Exception: If job execution fails
         """
-        recipe_class: type
-        if self.method in (TrainingMethod.SFT_LORA, TrainingMethod.SFT_FULLRANK):
-            recipe_class = (
-                v1_sft.SFTRecipeConfig
-                if self.model.version is Version.ONE
-                else v2_sft.SFTRecipeConfig
-            )
-        elif self.method in (TrainingMethod.RFT_LORA, TrainingMethod.RFT):
-            recipe_class = (
-                rft_smtj.RFTRecipeConfig
-                if self.platform is Platform.SMTJ
-                else rft_smhp.RFTRecipeConfig
-            )
-        else:
-            raise ValueError(
-                f"Training method {self.method} not supported in .train() function"
-            )
-
-        recipe_builder = self._prepare_recipe_builder(
+        # Create RecipeBuilder and let it handle all data mixing logic
+        recipe_builder = RecipeBuilder(
+            region=self.region,
             job_name=job_name,
-            recipe_path=recipe_path,
-            recipe_class=recipe_class,
-            overrides=overrides,
+            platform=self.platform,
+            model=self.model,
+            method=self.method,
+            instance_type=self.infra.instance_type,
+            instance_count=self.infra.instance_count,
+            infra=self.infra,
+            data_s3_path=self.data_s3_path,
+            output_s3_path=self.output_s3_path,
+            model_path=self.model_path,
             rft_lambda_arn=rft_lambda_arn,
+            validation_data_s3_path=validation_data_s3_path,
+            mlflow_monitor=self.mlflow_monitor,
+            data_mixing_instance=self.data_mixing,
         )
 
-        # Validate and build the recipe
-        job_name = f"{recipe_builder.job_name}-{uuid.uuid4()}"[:63]
+        (
+            resolved_recipe_path,
+            resolved_output_s3_path,
+            resolved_data_s3_path,
+            resolved_image_uri,
+        ) = recipe_builder.build_and_validate(
+            overrides=overrides,
+            input_recipe_path=recipe_path,
+            output_recipe_path=self.generated_recipe_dir,
+            validation_config=self.validation_config,
+        )
 
-        with recipe_builder.build(validation_config=self.validation_config) as recipe:
-            start_time = datetime.now(timezone.utc)
-            self.job_started_time = start_time
+        if dry_run:
+            return None
 
-            self.job_id = self.infra.execute(
-                job_name=job_name,
-                data_s3_path=recipe_builder.data_s3_path,
-                output_s3_path=recipe_builder.output_s3_path,
-                image_uri=self.image_uri,
-                recipe=recipe.path,
+        # Use unique name to actually start the job
+        unique_job_name = f"{job_name}-{uuid.uuid4()}"[:63]
+
+        start_time = datetime.now(timezone.utc)
+        self.job_started_time = start_time
+
+        self.job_id = self.infra.execute(
+            job_config=JobConfig(
+                job_name=unique_job_name,
+                data_s3_path=resolved_data_s3_path,
+                output_s3_path=resolved_output_s3_path,
+                image_uri=resolved_image_uri,
+                recipe_path=resolved_recipe_path,
                 input_s3_data_type="Converse"
-                if recipe_builder.method
-                not in (TrainingMethod.RFT_LORA, TrainingMethod.RFT)
+                if self.method not in (TrainingMethod.RFT_LORA, TrainingMethod.RFT_FULL)
                 else None,
             )
+        )
 
         training_result: TrainingResult
         if self.platform is Platform.SMTJ:
             training_result = SMTJTrainingResult(
                 job_id=self.job_id,
                 started_time=start_time,
-                method=recipe_builder.method,
+                method=self.method,
                 model_artifacts=get_model_artifacts(
-                    job_name=job_name,
+                    job_name=unique_job_name,
                     infra=self.infra,
-                    output_s3_path=recipe_builder.output_s3_path,
+                    output_s3_path=resolved_output_s3_path,
                 ),
             )
         else:
@@ -434,11 +397,11 @@ class NovaModelCustomizer:
             training_result = SMHPTrainingResult(
                 job_id=self.job_id,
                 started_time=start_time,
-                method=recipe_builder.method,
+                method=self.method,
                 model_artifacts=get_model_artifacts(
-                    job_name=job_name,
+                    job_name=unique_job_name,
                     infra=self.infra,
-                    output_s3_path=recipe_builder.output_s3_path,
+                    output_s3_path=resolved_output_s3_path,
                 ),
                 cluster_name=cluster_name,
                 namespace=namespace,
@@ -467,7 +430,9 @@ class NovaModelCustomizer:
         overrides: Optional[Dict[str, Any]] = None,
         processor: Optional[Dict[str, Any]] = None,
         rl_env: Optional[Dict[str, Any]] = None,
-    ) -> EvaluationResult:
+        dry_run: Optional[bool] = False,
+        job_result: Optional[TrainingResult] = None,
+    ) -> EvaluationResult | None:
         """
         Generates the recipe YAML, configures runtime, and launches an evaluation job.
 
@@ -502,67 +467,106 @@ class NovaModelCustomizer:
                 {
                     'reward_lambda_arn': 'arn:aws:lambda:<region>:<account_id>:function:<reward-function-name>'
                 }
-        :return: BaseJobResult: Metadata object containing job ID, start time, and evaluation output path
+        :param dry_run: dry_run: Actually starts a job if False, otherwise just performs validation. Default is False.
+        :param job_result: Optional TrainingResult object to extract checkpoint path from.
+                          If provided and model_path is None, will automatically extract
+                          the checkpoint path from the training job's output.
+        :return: EvaluationResult: Metadata object containing job ID, start time, and evaluation output path
+                 or None if dry_run is enabled
         """
-        overrides = resolve_overrides(
-            recipe_path=recipe_path, recipe_class=EvalRecipeConfig, overrides=overrides
-        )
-        job_name = overrides.get("name") or job_name
-        platform = self.platform
-        model = (
-            Model.from_model_type(overrides["model_type"])
-            if "model_type" in overrides
-            else self.model
-        )
-        model_path = (
-            overrides.get("model_name_or_path") or model_path or self.model.model_path
-        )
-        instance_type = self.infra.instance_type
-        instance_count = overrides.get("replicas") or self.infra.instance_count
-        data_s3_path = overrides.get("data_s3_path") or data_s3_path
-        output_s3_path = overrides.get("output_s3_path") or self.output_s3_path
-        eval_task = overrides.get("task") or eval_task
-        subtask = overrides.get("subtask") or subtask
 
-        self._validate_model_config(model, model_path)
-
-        recipe_builder = EvalRecipeBuilder(
-            job_name=job_name,
-            platform=platform,
-            model=model,
+        # Resolve model checkpoint path
+        resolved_model_path = resolve_model_checkpoint_path(
             model_path=model_path,
-            instance_type=instance_type,
-            instance_count=instance_count,
-            data_s3_path=data_s3_path,
-            output_s3_path=output_s3_path,
+            job_result=job_result,
+            customizer_job_id=self.job_id if hasattr(self, "job_id") else None,
+            customizer_output_s3_path=self.output_s3_path,
+            customizer_model_path=self.model_path,
+        )
+
+        # Validate platform compatibility
+        checkpoint_platform = None
+        if resolved_model_path and resolved_model_path.startswith("s3://"):
+            checkpoint_platform = detect_platform_from_path(resolved_model_path)
+
+        if checkpoint_platform is None:
+            if job_result is not None:
+                if job_result.model_artifacts.checkpoint_s3_path:
+                    checkpoint_platform = detect_platform_from_path(
+                        job_result.model_artifacts.checkpoint_s3_path
+                    )
+            elif self.output_s3_path and self.output_s3_path.startswith("s3://"):
+                checkpoint_platform = detect_platform_from_path(self.output_s3_path)
+
+        validate_platform_compatibility(
+            checkpoint_platform=checkpoint_platform,
+            execution_platform=self.platform,
+            checkpoint_source="evaluation model checkpoint",
+        )
+
+        # Only use the cached data_s3_path for BYOD eval tasks
+        if requires_custom_eval_data(eval_task):
+            customizer_data_s3_path = self.data_s3_path
+        else:
+            logger.info(
+                f"{eval_task} does not use custom data, ignoring customizer data_s3_path."
+            )
+            customizer_data_s3_path = None
+
+        recipe_builder = RecipeBuilder(
+            region=self.region,
+            job_name=job_name,
+            platform=self.platform,
+            model=self.model,
+            method=self.method,
+            instance_type=self.infra.instance_type,
+            instance_count=self.infra.instance_count,
+            infra=self.infra,
+            data_s3_path=data_s3_path or customizer_data_s3_path,
+            output_s3_path=self.output_s3_path,
+            model_path=resolved_model_path,
             eval_task=eval_task,
             subtask=subtask,
-            overrides=overrides,
             processor_config=processor,
             rl_env_config=rl_env,
+            mlflow_monitor=self.mlflow_monitor,
         )
-        recipe_builder.generated_recipe_dir = self.generated_recipe_dir
 
-        job_name = f"{job_name}-{uuid.uuid4()}"[:63]
+        (
+            resolved_recipe_path,
+            resolved_output_s3_path,
+            resolved_data_s3_path,
+            resolved_image_uri,
+        ) = recipe_builder.build_and_validate(
+            overrides=overrides,
+            input_recipe_path=recipe_path,
+            output_recipe_path=self.generated_recipe_dir,
+            validation_config=self.validation_config,
+        )
 
-        with recipe_builder.build(validation_config=self.validation_config) as recipe:
-            start_time = datetime.now(timezone.utc)
-            self.job_started_time = start_time
+        if dry_run:
+            return None
 
-            self.job_id = self.infra.execute(
-                job_name=job_name,  # For SMHP, it won't use this field and still use base_job_name in recipe
-                data_s3_path=data_s3_path,
-                output_s3_path=output_s3_path,
-                image_uri=self.image_uri,
-                recipe=recipe.path,
+        # Use unique name to actually start the job
+        unique_job_name = f"{job_name}-{uuid.uuid4()}"[:63]
+
+        start_time = datetime.now(timezone.utc)
+        self.job_started_time = start_time
+
+        self.job_id = self.infra.execute(
+            job_config=JobConfig(
+                job_name=unique_job_name,
+                data_s3_path=resolved_data_s3_path,
+                output_s3_path=resolved_output_s3_path,
+                image_uri=resolved_image_uri,
+                recipe_path=resolved_recipe_path,
                 input_s3_data_type="S3Prefix",
             )
+        )
 
         evaluation_result: EvaluationResult
         if self.platform == Platform.SMTJ:
-            eval_output_s3_path = (
-                f"{output_s3_path.rstrip('/')}/{self.job_id}/output/output.tar.gz"
-            )
+            eval_output_s3_path = f"{resolved_output_s3_path.rstrip('/')}/{self.job_id}/output/output.tar.gz"
             evaluation_result = SMTJEvaluationResult(
                 job_id=self.job_id,
                 eval_task=eval_task,
@@ -573,7 +577,7 @@ class NovaModelCustomizer:
             cluster_name = cast(SMHPRuntimeManager, self.infra).cluster_name
             namespace = cast(SMHPRuntimeManager, self.infra).namespace
             eval_output_s3_path = (
-                f"{output_s3_path.rstrip('/')}/{self.job_id}/eval-result/"
+                f"{resolved_output_s3_path.rstrip('/')}/{self.job_id}/eval-result/"
             )
             evaluation_result = SMHPEvaluationResult(
                 job_id=self.job_id,
@@ -591,25 +595,36 @@ class NovaModelCustomizer:
 
     def deploy(
         self,
-        model_artifact_path: str,
+        model_artifact_path: Optional[str] = None,
         deploy_platform: DeployPlatform = DeployPlatform.BEDROCK_OD,
         pt_units: Optional[int] = None,
         endpoint_name: Optional[str] = None,
+        job_result: Optional[TrainingResult] = None,
+        bedrock_execution_role_name: str = BEDROCK_EXECUTION_ROLE_NAME,
     ) -> DeploymentResult:
         """
         Creates a custom model and deploys it to Bedrock.
 
+        Deployment behavior when endpoint already exists is controlled by the deployment_mode
+        parameter set during NovaModelCustomizer initialization:
+        - FAIL_IF_EXISTS: Raise error (default, safest)
+        - UPDATE_IF_EXISTS: Try in-place update, fail if not supported
+
         Args:
-            model_artifact_path: The s3 path to the training escrow bucket.
+            model_artifact_path: The s3 path to the training escrow bucket. If not provided, will attempt to extract
+                                 from job_result or the `job_id` field of the Customizer.
             deploy_platform: The platform to deploy the model to for inference (Bedrock On-Demand or Provisioned Throughput).
             pt_units: Only needed when Bedrock Provisioned Throughput is chosen. The # of PT to purchase.
             endpoint_name: The name of the deployed model's endpoint -- will be auto generated if not given.
+            job_result: Optional training job result object to use for extracting checkpoint path and validating job completion.
+            bedrock_execution_role_name: Optional IAM execution role name for Bedrock, defaults to BedrockDeployModelExecutionRole. If this role does not exist, it will be created.
 
         Returns:
             DeploymentResult: Contains the endpoint information as well as the create time of the deployment.
 
         Raises:
-            Exception: When unable to successfully deploy the model.
+            Exception: When unable to successfully deploy the model, extract checkpoint path, or handle
+                      existing endpoint according to deployment_mode setting.
         """
         bedrock_client = boto3.client("bedrock")
         iam_client = boto3.client("iam")
@@ -619,48 +634,248 @@ class NovaModelCustomizer:
             name_format = f"{self.model}-{self.method}-{self.region}".lower()
             endpoint_name = name_format.replace(".", "-").replace("_", "-")
 
+        # Check for existing deployment with same name
+        existing_deployment_arn = check_existing_deployment(
+            endpoint_name, deploy_platform
+        )
+        deleted_existing_deployment = False
+        should_delete_existing = False
+        attempt_pt_update = False
+
+        # Handle cases where the given endpoint name already has an associated deployment
+        if existing_deployment_arn:
+            if self.deployment_mode == DeploymentMode.FAIL_IF_EXISTS:
+                raise Exception(
+                    f"Deployment '{endpoint_name}' already exists on platform {deploy_platform}.\n"
+                    f"ARN: {existing_deployment_arn}\n"
+                    f"Change deployment_mode to override."
+                )
+
+            elif self.deployment_mode == DeploymentMode.UPDATE_IF_EXISTS:
+                if deploy_platform != DeployPlatform.BEDROCK_PT:
+                    raise Exception(
+                        f"UPDATE_IF_EXISTS mode is only supported for Provisioned Throughput deployments.\n"
+                        f"Current platform: {deploy_platform}\n"
+                        f"Use FORCE_REPLACE mode for On-Demand deployments."
+                    )
+                logger.info(
+                    f"UPDATE_IF_EXISTS mode: Will update existing PT deployment '{endpoint_name}' in-place"
+                )
+                attempt_pt_update = True
+
+            elif self.deployment_mode in [
+                DeploymentMode.UPDATE_OR_REPLACE,
+                DeploymentMode.FORCE_REPLACE,
+            ]:
+                # For PT deployments, try in-place update first (unless FORCE_REPLACE)
+                if (
+                    deploy_platform == DeployPlatform.BEDROCK_PT
+                    and self.deployment_mode == DeploymentMode.UPDATE_OR_REPLACE
+                ):
+                    logger.info(
+                        f"UPDATE_OR_REPLACE mode: Will try to update existing PT deployment '{endpoint_name}' in-place"
+                    )
+                    attempt_pt_update = True
+
+                # Always mark for deletion as fallback (or primary for FORCE_REPLACE/OD)
+                if (
+                    not attempt_pt_update
+                    or self.deployment_mode == DeploymentMode.FORCE_REPLACE
+                ):
+                    logger.info(
+                        f"{self.deployment_mode.value} mode: Will delete existing deployment '{endpoint_name}'"
+                    )
+                    should_delete_existing = True
+
+        # Consolidated permission validation (if IAM validation enabled)
+        if (
+            self.validation_config is None or self.validation_config.get("iam", True)
+        ) and existing_deployment_arn:
+            if attempt_pt_update:
+                required_perms = get_required_bedrock_update_permissions(
+                    deploy_platform, existing_deployment_arn
+                )
+                errors: List[str] = []
+                Validator._validate_calling_role_permissions(
+                    errors, required_perms, infra=None, region_name=self.region
+                )
+                if errors:
+                    if self.deployment_mode == DeploymentMode.UPDATE_IF_EXISTS:
+                        raise Exception(
+                            f"Cannot update existing PT deployment '{endpoint_name}': Missing permissions.\n"
+                            f"{'; '.join(errors)}\n"
+                            f"Please ensure your role has the necessary Bedrock update permissions."
+                        )
+                    else:
+                        # UPDATE_OR_REPLACE: fall back to delete
+                        logger.warning(
+                            f"Missing update permissions, will fall back to delete/recreate"
+                        )
+                        attempt_pt_update = False
+                        should_delete_existing = True
+
+            if should_delete_existing:
+                required_perms = get_required_bedrock_deletion_permissions(
+                    deploy_platform, existing_deployment_arn
+                )
+                errors = []
+                Validator._validate_calling_role_permissions(
+                    errors, required_perms, infra=None, region_name=self.region
+                )
+                if errors:
+                    raise Exception(
+                        f"Cannot delete existing deployment '{endpoint_name}': Missing permissions.\n"
+                        f"{'; '.join(errors)}\n"
+                        f"Please ensure your role has the necessary Bedrock deletion permissions."
+                    )
+
+        # Resolve checkpoint path
+        model_artifact_path = resolve_model_checkpoint_path(
+            model_path=model_artifact_path,
+            job_result=job_result,
+            customizer_job_id=self.job_id if hasattr(self, "job_id") else None,
+            customizer_output_s3_path=self.output_s3_path,
+            customizer_model_path=self.model_path,
+            fail_on_error=True,
+        )
+
         # TODO: If given a job ID, check the status before creating the model. If the job isn't completed, tell the user.
         # TODO: If a user already has an arn of a custom model, they should be able to directly deploy it.
 
-        # Check if a BedrockDeployModelExecutionRole exists, if not, create one.
+        # Check if a Bedrock IAM execution role exists, if not, create one.
         try:
             bedrock_execution_role_arn = create_bedrock_execution_role(
-                iam_client, BEDROCK_EXECUTION_ROLE_NAME
+                iam_client, bedrock_execution_role_name
             )["Role"]["Arn"]
         except Exception as e:
             raise Exception(
-                f"Failed to find or create the BedrockDeployModelExecutionRole: {str(e)}"
+                f"Failed to find or create the Bedrock IAM Execution Role: {str(e)}"
             )
+
+        model_name = None
+
+        modelKmsKeyArn = None
 
         try:
-            model = bedrock_client.create_custom_model(
-                modelName=f"{endpoint_name}-{uuid.uuid4()}"[:63],
-                modelSourceConfig={"s3DataSource": {"s3Uri": model_artifact_path}},
-                roleArn=bedrock_execution_role_arn,
-            )
+            logger.info(f"Creating custom model for endpoint '{endpoint_name}'...")
+            model_name = f"{endpoint_name}-{uuid.uuid4()}"[:63]
+            if self.infra.kms_key_id:
+                sts_client = boto3.client("sts")
+                account_id = sts_client.get_caller_identity()["Account"]
+                modelKmsKeyArn = f"arn:aws:kms:{self.region}:{account_id}:key/{self.infra.kms_key_id}"
+                model = bedrock_client.create_custom_model(
+                    modelName=model_name,
+                    modelSourceConfig={"s3DataSource": {"s3Uri": model_artifact_path}},
+                    roleArn=bedrock_execution_role_arn,
+                    modelKmsKeyArn=modelKmsKeyArn,
+                )
+            else:
+                model = bedrock_client.create_custom_model(
+                    modelName=model_name,
+                    modelSourceConfig={"s3DataSource": {"s3Uri": model_artifact_path}},
+                    roleArn=bedrock_execution_role_arn,
+                )
         except Exception as e:
-            raise Exception(f"Failed to create custom model {endpoint_name}: {e}")
+            raise Exception(
+                f"Failed to create model {model_name} for endpoint {endpoint_name}: {e}"
+            )
 
         # Monitor the model's creation, updating the time stamp every few seconds until the model is created/set as 'active'.
-        monitor_model_create(bedrock_client, model, endpoint_name)
+        try:
+            monitor_model_create(bedrock_client, model, endpoint_name)
+        except Exception as e:
+            raise Exception(
+                f"Failed to create deployment {endpoint_name} for model {model['modelArn']}: {e}"
+            )
 
-        # Updates the deployment based on whether PT or OD was selected.
-        if deploy_platform == DeployPlatform.BEDROCK_PT:
-            deployment = bedrock_client.create_provisioned_model_throughput(
-                modelUnits=pt_units,
-                provisionedModelName=endpoint_name,
-                modelId=model["modelArn"],
-            )
-        elif deploy_platform == DeployPlatform.BEDROCK_OD:
-            deployment = bedrock_client.create_custom_model_deployment(
-                modelDeploymentName=endpoint_name,
-                modelArn=model["modelArn"],
-            )
-        else:
-            raise ValueError(
-                f"Platform '{deploy_platform}' is not supported for Nova training. "
-                f"Supported platforms are: {list(DeployPlatform)}"
-            )
+        # Delete existing deployment if needed (after model creation succeeds)
+        if existing_deployment_arn and should_delete_existing:
+            try:
+                delete_existing_deployment(
+                    existing_deployment_arn, deploy_platform, endpoint_name
+                )
+                deleted_existing_deployment = True
+            except Exception as e:
+                raise Exception(
+                    f"Failed to create deployment {endpoint_name} for model {model['modelArn']}: Could not delete existing deployment: {e}"
+                )
+
+        # Handle deployment creation or update
+        deployment = None
+        deployment_arn = None
+        pt_update_error = None
+
+        # Try PT update if applicable
+        if attempt_pt_update and existing_deployment_arn:
+            try:
+                update_provisioned_throughput_model(
+                    existing_deployment_arn, model["modelArn"], endpoint_name
+                )
+                deployment_arn = existing_deployment_arn
+                logger.info(
+                    f"Successfully updated existing PT deployment '{endpoint_name}'"
+                )
+            except Exception as e:
+                pt_update_error = str(e)
+                if self.deployment_mode == DeploymentMode.UPDATE_IF_EXISTS:
+                    raise Exception(
+                        f"Failed to create deployment {endpoint_name} for model {model['modelArn']}: {e}"
+                    )
+                else:
+                    # UPDATE_OR_REPLACE: fall back to delete/recreate
+                    logger.warning(
+                        f"PT update failed, falling back to delete/recreate: {e}"
+                    )
+                    should_delete_existing = True
+                    attempt_pt_update = False
+
+        # Create new deployment if pt update failed or wasn't attempted
+        if deployment_arn is None:
+            # Delete existing deployment if needed and not already done
+            if (
+                existing_deployment_arn
+                and should_delete_existing
+                and not deleted_existing_deployment
+            ):
+                try:
+                    delete_existing_deployment(
+                        existing_deployment_arn, deploy_platform, endpoint_name
+                    )
+                    deleted_existing_deployment = True
+                except Exception as e:
+                    error_msg = f"Failed to create deployment {endpoint_name} for model {model['modelArn']}: Could not delete existing deployment: {e}"
+                    if pt_update_error:
+                        error_msg += f". Previous PT update error: {pt_update_error}"
+                    raise Exception(error_msg)
+
+            try:
+                logger.info(f"Creating deployment for endpoint '{endpoint_name}'...")
+                if deploy_platform == DeployPlatform.BEDROCK_PT:
+                    deployment = bedrock_client.create_provisioned_model_throughput(
+                        modelUnits=pt_units,
+                        provisionedModelName=endpoint_name,
+                        modelId=model["modelArn"],
+                    )
+                    deployment_arn = deployment[
+                        DEPLOYMENT_ARN_NAME.get(deploy_platform)
+                    ]
+                elif deploy_platform == DeployPlatform.BEDROCK_OD:
+                    deployment = bedrock_client.create_custom_model_deployment(
+                        modelDeploymentName=endpoint_name,
+                        modelArn=model["modelArn"],
+                    )
+                    deployment_arn = deployment[
+                        DEPLOYMENT_ARN_NAME.get(deploy_platform)
+                    ]
+                else:
+                    raise ValueError(
+                        f"Platform '{deploy_platform}' is not supported for Nova training. "
+                        f"Supported platforms are: {list(DeployPlatform)}"
+                    )
+            except Exception as e:
+                raise Exception(
+                    f"Failed to create deployment {endpoint_name} for model {model['modelArn']}: {e}"
+                )
 
         # Creates EndpointInfo and DeploymentResult objects.
         create_time = datetime.now(timezone.utc)
@@ -668,14 +883,14 @@ class NovaModelCustomizer:
         endpoint = EndpointInfo(
             platform=deploy_platform,
             endpoint_name=endpoint_name,
-            uri=deployment[DEPLOYMENT_ARN_NAME.get(deploy_platform)],
+            uri=deployment_arn,
             model_artifact_path=self.output_s3_path,
         )
         result = DeploymentResult(endpoint=endpoint, created_at=create_time)
 
         # Log message to the user with information about the deployment.
         logger.info(
-            f"\n✅ Successfully started deploying {endpoint.endpoint_name}: \n"
+            f"\nSuccessfully started deploying {endpoint.endpoint_name}: \n"
             f"- Platform: {endpoint.platform}:\n"
             f"- ARN: {endpoint.uri}\n"
             f"- Created: {result.created_at.strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
@@ -692,73 +907,118 @@ class NovaModelCustomizer:
         input_path: str,
         output_s3_path: str,
         model_path: Optional[str] = None,
-        endpoint: Optional[EndpointInfo] = None,
         recipe_path: Optional[str] = None,
         overrides: Optional[Dict[str, Any]] = None,
-    ) -> InferenceResult:
-        recipe_class = EvalRecipeConfig
+        dry_run: Optional[bool] = False,
+        job_result: Optional[TrainingResult] = None,
+    ) -> InferenceResult | None:
+        """
+        Launches a batch inference job on a trained model.
 
-        overrides = resolve_overrides(
-            recipe_path=recipe_path, recipe_class=recipe_class, overrides=overrides
-        )
-        job_name = overrides.get("name") or job_name
-        platform = self.platform
-        model = (
-            Model.from_model_type(overrides["model_type"])
-            if "model_type" in overrides
-            else self.model
-        )
-        model_path = (
-            overrides.get("model_name_or_path") or model_path or self.model.model_path
-        )
-        instance_type = self.infra.instance_type
-        instance_count = overrides.get("replicas") or self.infra.instance_count
-        input_path = overrides.get("data_s3_path") or input_path
-        output_s3_path = overrides.get("output_s3_path") or output_s3_path
+        :param job_name: Name for the batch inference job
+        :param input_path: S3 path to input data for inference
+        :param output_s3_path: S3 path for inference outputs
+        :param model_path: Optional S3 path to the model
+        :param recipe_path: Optional path for a YAML recipe file
+        :param overrides: Optional configuration overrides for inference
+        :param dry_run: Actually starts a job if False, otherwise just performs validation. Default is False.
+        :param job_result: Optional TrainingResult object to extract checkpoint path from.
+                          If provided and model_path is None, will automatically extract
+                          the checkpoint path from the training job's output.
+        :return: InferenceResult or None if dry_run is enabled
+        """
 
-        self._validate_model_config(model, model_path)
-
-        # TODO: P1 - Add functionality for the 'endpoint' parameter (SM or Bedrock batch inference).
-        recipe_builder = BatchInferenceRecipeBuilder(
-            job_name=job_name,
-            platform=platform,
-            model=model,
+        # Resolve model checkpoint path
+        resolved_model_path = resolve_model_checkpoint_path(
             model_path=model_path,
-            instance_type=instance_type,
-            instance_count=instance_count,
-            data_s3_path=input_path,
-            output_s3_path=output_s3_path,
-            overrides=overrides,
+            job_result=job_result,
+            customizer_job_id=self.job_id if hasattr(self, "job_id") else None,
+            customizer_output_s3_path=self.output_s3_path,
+            customizer_model_path=self.model_path,
         )
-        recipe_builder.generated_recipe_dir = self.generated_recipe_dir
 
-        recipe = recipe_builder.build(validation_config=self.validation_config)
-        job_name = f"{job_name}-{uuid.uuid4()}"[:63]
+        # Validate platform compatibility
+        checkpoint_platform = None
+        if resolved_model_path and resolved_model_path.startswith("s3://"):
+            checkpoint_platform = detect_platform_from_path(resolved_model_path)
 
-        with recipe_builder.build(validation_config=self.validation_config) as recipe:
-            start_time = datetime.now(timezone.utc)
-            self.job_started_time = start_time
+        if checkpoint_platform is None and job_result is not None:
+            if job_result.model_artifacts.checkpoint_s3_path:
+                checkpoint_platform = detect_platform_from_path(
+                    job_result.model_artifacts.checkpoint_s3_path
+                )
 
-            job_id: str = self.infra.execute(
-                job_name=job_name,
-                data_s3_path=input_path,
-                output_s3_path=output_s3_path,
-                image_uri=self.image_uri,
-                recipe=recipe.path,
+        if (
+            checkpoint_platform is None
+            and self.model_path
+            and self.model_path.startswith("s3://")
+        ):
+            checkpoint_platform = detect_platform_from_path(self.model_path)
+
+        validate_platform_compatibility(
+            checkpoint_platform=checkpoint_platform,
+            execution_platform=self.platform,
+            checkpoint_source="batch inference model checkpoint",
+        )
+
+        recipe_builder = RecipeBuilder(
+            region=self.region,
+            job_name=job_name,
+            platform=self.platform,
+            model=self.model,
+            method=self.method,
+            instance_type=self.infra.instance_type,
+            instance_count=self.infra.instance_count,
+            infra=self.infra,
+            data_s3_path=input_path,
+            output_s3_path=output_s3_path or self.output_s3_path,
+            model_path=resolved_model_path,
+            mlflow_monitor=self.mlflow_monitor,
+        )
+
+        (
+            resolved_recipe_path,
+            resolved_output_s3_path,
+            resolved_data_s3_path,
+            resolved_image_uri,
+        ) = recipe_builder.build_and_validate(
+            overrides=overrides,
+            input_recipe_path=recipe_path,
+            output_recipe_path=self.generated_recipe_dir,
+            validation_config=self.validation_config,
+        )
+
+        if dry_run:
+            return None
+
+        # Use unique name to actually start the job
+        unique_job_name = f"{job_name}-{uuid.uuid4()}"[:63]
+
+        start_time = datetime.now(timezone.utc)
+        self.job_started_time = start_time
+
+        self.job_id = self.infra.execute(
+            job_config=JobConfig(
+                job_name=unique_job_name,
+                data_s3_path=resolved_data_s3_path,
+                output_s3_path=resolved_output_s3_path,
+                image_uri=resolved_image_uri,
+                recipe_path=resolved_recipe_path,
                 input_s3_data_type="S3Prefix",
             )
+        )
 
         # TODO: Implement for SMHP jobs. I'm not sure how different the infrastructure is.
         inference_output_s3_path = (
-            f"{output_s3_path.rstrip('/')}/{job_name}/output/output.tar.gz"
+            f"{resolved_output_s3_path.rstrip('/')}/{job_name}/output/output.tar.gz"
         )
         batch_inference_result = SMTJBatchInferenceResult(
-            job_id=job_id,
+            job_id=self.job_id,
             started_time=start_time,
             inference_output_path=inference_output_s3_path,
         )
         logger.info(
-            f"Started batch inference job '{job_id}'. \nArtifacts will be published to {inference_output_s3_path}.\n"
+            f"Started batch inference job '{self.job_id}'. \nArtifacts will be published to {inference_output_s3_path}.\n"
             f"After opening the tar file, look for {recipe_builder.job_name}/eval_results/inference_output.jsonl."
         )
         return batch_inference_result

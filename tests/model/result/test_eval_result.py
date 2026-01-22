@@ -12,7 +12,7 @@ from amzn_nova_customization_sdk.model.result.eval_result import (
     SMTJEvaluationResult,
 )
 from amzn_nova_customization_sdk.model.result.job_result import JobStatus
-from amzn_nova_customization_sdk.recipe_config.eval_config import EvaluationTask
+from amzn_nova_customization_sdk.recipe.recipe_config import EvaluationTask
 
 
 class TestSMTJEvaluationResult(unittest.TestCase):

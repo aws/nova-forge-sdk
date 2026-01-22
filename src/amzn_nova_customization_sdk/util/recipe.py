@@ -11,39 +11,40 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import io
+import json
+import os
 import re
 import shutil
-from dataclasses import fields, is_dataclass
-from enum import Enum
+import textwrap
 from pathlib import Path
-from typing import (
-    Any,
-    Dict,
-    List,
-    Optional,
-    Set,
-    Type,
-    TypeVar,
-    Union,
-    get_args,
-    get_origin,
-    get_type_hints,
-)
+from typing import Any, Dict, List, Optional
 
 import boto3
 import yaml
 from botocore.exceptions import ClientError
 
+from amzn_nova_customization_sdk.model.model_config import (
+    REGION_TO_ESCROW_ACCOUNT_MAPPING,
+)
+from amzn_nova_customization_sdk.model.model_enums import (
+    SUPPORTED_DATAMIXING_METHODS,
+    Model,
+    Platform,
+    TrainingMethod,
+    Version,
+)
+from amzn_nova_customization_sdk.recipe.recipe_config import EvaluationTask
 from amzn_nova_customization_sdk.util.logging import logger
+from amzn_nova_customization_sdk.util.sagemaker import _get_hub_content
 
-T = TypeVar("T")
-DataclassLike = Union[Type[Any], Any]
 S3_URI_REGEX = re.compile(r"^s3://([a-zA-Z0-9.\-_]+)/(.+)$")
+S3_ACCESS_POINT_REGEX = re.compile(
+    r"^arn:aws:s3:([^:]+):([^:]+):accesspoint/([^/]+)(?:/(.+))?$"
+)
 
 
-class RecipeLoadError(Exception):
-    """Custom exception for recipe loading errors."""
+class FileLoadError(Exception):
+    """Custom exception for file loading errors."""
 
     pass
 
@@ -66,7 +67,9 @@ class RecipePath:
         try:
             shutil.rmtree(directory)
         except Exception as e:
-            logger.warn(f"Failed to delete temporary directory {directory}\nError: {e}")
+            logger.warning(
+                f"Failed to delete temporary directory {directory}\nError: {e}"
+            )
 
     def close(self):
         if self.temp:
@@ -101,205 +104,517 @@ def _validate_extension(path: str, extension: str) -> None:
         extension: Extension (e.g., '.yaml')
 
     Raises:
-        RecipeLoadError: If extension doesn't match
+        FileLoadError: If extension doesn't match
     """
     if not path.lower().endswith(extension.lower()):
-        raise RecipeLoadError(f"File must have {extension} extension: {path}")
+        raise FileLoadError(f"File must have {extension} extension: {path}")
 
 
-def _load_file_content(recipe_path: str) -> str:
+def load_file_content(
+    file_path: str, extension: Optional[str] = None, encoding: Optional[str] = "utf-8"
+) -> str:
     """
     Load file content from S3 or local filesystem.
 
     Args:
-        recipe_path: Path to YAML file (either local path or S3 URI)
+        file_path: Path to file (either local path or S3 URI)
+        extension: Optional file extension to validate
+        encoding: Optional encoding format (defaults to utf-8)
 
     Returns:
         File content as string
 
     Raises:
-        RecipeLoadError: If file cannot be loaded
+        FileLoadError: If file cannot be loaded
     """
     # Validate extension
-    _validate_extension(recipe_path, ".yaml")
+    if extension is not None:
+        _validate_extension(file_path, extension)
 
     # Try S3 first
-    s3_parts = _parse_s3_uri(recipe_path)
+    s3_parts = _parse_s3_uri(file_path)
     if s3_parts:
         bucket, key = s3_parts
         try:
             s3 = boto3.client("s3")
             response = s3.get_object(Bucket=bucket, Key=key)
-            return response["Body"].read().decode("utf-8")
+            return response["Body"].read().decode(encoding)
         except ClientError as e:
-            raise RecipeLoadError(f"Failed to load S3 file {recipe_path}: {e}")
+            raise FileLoadError(f"Failed to load S3 file {file_path}: {e}")
 
     # Try local filesystem second
     try:
-        path = Path(recipe_path)
-        return path.read_text(encoding="utf-8")
+        path = Path(file_path)
+        return path.read_text(encoding=encoding)
     except FileNotFoundError:
-        raise RecipeLoadError(f"File not found: {recipe_path}")
+        raise FileLoadError(f"File not found: {file_path}")
     except OSError as e:
-        raise RecipeLoadError(f"Failed to read file {recipe_path}: {e}")
+        raise FileLoadError(f"Failed to read file {file_path}: {e}")
 
 
-def merge_overrides_with_input_recipe(
-    recipe_path: str,
-    recipe_class: type,
-    overrides: Dict[str, Any],
-) -> Dict[str, Any]:
+def _get_hub_content_name(model: Model) -> str:
     """
-    Load a recipe YAML file and merge it with overrides, prioritizing override values.
+    Generate hub_content_name parameter for the DescribeHubContent API based on the model being trained
 
     Args:
-        recipe_path: Path to YAML recipe file (local path or s3:// URI)
-        recipe_class: The type of recipe dataclass that we are parsing (i.e. EvalRecipeConfig)
-        overrides: Dictionary of override values
+        model: The Model being trained
 
     Returns:
-        Dictionary with merged override values
+        str of the hub content name for the corresponding model
     """
-    # Load YAML recipe
-    yaml_str = _load_file_content(recipe_path)
+    match model:
+        case Model.NOVA_MICRO:
+            return "nova-textgeneration-micro"
+        case Model.NOVA_LITE:
+            return "nova-textgeneration-lite"
+        case Model.NOVA_LITE_2:
+            return "nova-textgeneration-lite-v2"
+        case Model.NOVA_PRO:
+            return "nova-textgeneration-pro"
+    raise ValueError(f"Unsupported model: '{model.value}'")
+
+
+def get_hub_recipe_metadata(
+    model: Model,
+    method: TrainingMethod,
+    platform: Platform,
+    region: str,
+    instance_type: str,
+    task: Optional[EvaluationTask] = None,
+    data_mixing: bool = False,
+) -> Dict[str, Any]:
+    """
+    Extract a single recipe's metadata from a SageMaker DescribeHubContent response
+
+    Args:
+        model: Model to fetch recipe metadata for
+        method: Training method to fetch recipe metadata for
+        platform: Training platform to fetch recipe metadata for
+        region: AWS region
+        instance_type: Instance type to fetch recipe metadata for
+        task: Evaluation task (only required for evaluation)
+
+    Returns:
+        Dict containing raw recipe metadata. Example:
+        {
+            "DisplayName": "Nova Lite V2 LoRA RLVR SMTJ training on GPU",
+            "Name": "nova_lite_v2_smtj_p5_p5en_gpu_lora_rft",
+            "RecipeFilePath": "recipes/fine-tuning/nova/nova_2_0/nova_lite/RFT/nova_lite_v2_smtj_p5_p5en_gpu_lora_rft.yaml",
+            "CustomizationTechnique": "RLVR",
+            "InstanceCount": 4,
+            "Type": "FineTuning",
+            "Versions": [
+              "1.0"
+            ],
+            "Hardware": "GPU",
+            "SupportedInstanceTypes": [
+              "ml.p5.48xlarge",
+              "ml.p5en.48xlarge"
+            ],
+            "Peft": "LORA",
+            "SequenceLength": "8K",
+            "ServerlessMeteringType": "Hourly",
+            "SmtjRecipeTemplateS3Uri": "s3://jumpstart-cache-prod-us-east-1/recipes/nova_lite_v2_smtj_p5_p5en_gpu_lora_rft_payload_template_sm_jobs_v1.0.20.yaml",
+            "SmtjOverrideParamsS3Uri": "s3://jumpstart-cache-prod-us-east-1/recipes/nova_lite_v2_smtj_p5_p5en_gpu_lora_rft_override_params_sm_jobs_v1.0.20.json",
+            "SmtjImageUri": "708977205387.dkr.ecr.us-east-1.amazonaws.com/nova-fine-tune-repo:SM-TJ-RFT-V2-latest"
+      }
+    """
+    hub_content = _get_hub_content(
+        hub_name="SageMakerPublicHub",
+        hub_content_name=_get_hub_content_name(model=model),
+        hub_content_type="Model",
+        region=region,
+    )
+
+    document = hub_content.get("HubContentDocument", {})
+    recipe_collection = document.get("RecipeCollection", [])
+
+    # Filter out Forge recipes
+    if not data_mixing:
+        recipe_collection = [
+            r for r in recipe_collection if r.get("IsSubscriptionModel") is not True
+        ]
+
+    # Filter recipes for training method (SageMaker stores "RFT" as "RLVR")
+    METHOD_FILTER = {
+        TrainingMethod.CPT: ("CustomizationTechnique", "CPT"),
+        TrainingMethod.RFT_LORA: ("CustomizationTechnique", "RLVR"),
+        TrainingMethod.RFT_FULL: ("CustomizationTechnique", "RLVR"),
+        TrainingMethod.SFT_LORA: ("CustomizationTechnique", "SFT"),
+        TrainingMethod.SFT_FULL: ("CustomizationTechnique", "SFT"),
+        TrainingMethod.EVALUATION: ("Type", "Evaluation"),
+    }
+    key, value = METHOD_FILTER[method]
+    recipe_collection = [r for r in recipe_collection if r.get(key) == value]
+    if not recipe_collection:
+        raise ValueError(f"{method.name} is not supported for {model.name}")
+
+    # Filter recipes for training platform
+    if platform == Platform.SMTJ:
+        recipe_collection = [
+            r for r in recipe_collection if r.get("SmtjRecipeTemplateS3Uri")
+        ]
+    else:
+        recipe_collection = [
+            r for r in recipe_collection if r.get("HpEksPayloadTemplateS3Uri")
+        ]
+    if not recipe_collection:
+        raise ValueError(f"{method.name} is not supported on {platform.name}")
+
+    # For methods with data mixing enabled, look for recipes with "text_with_datamix" in the Name
+    if data_mixing and method in SUPPORTED_DATAMIXING_METHODS:
+        datamix_recipes = [
+            r
+            for r in recipe_collection
+            if "text_with_datamix" in r.get("Name", "").lower()
+        ]
+        if datamix_recipes:
+            recipe_collection = datamix_recipes
+        else:
+            # If no datamix recipes found, log warning and continue with regular recipes
+            logger.warning(
+                f"Data mixing is not supported for {method.name}."
+                "Using standard recipe instead."
+            )
+
+    # Filter recipes for training type (i.e. evaluation task, full/lora, etc.)
+    if method == TrainingMethod.EVALUATION:
+        if task is None:
+            raise ValueError(
+                "'eval_task' is a required parameter when calling evaluate()."
+            )
+        if task == EvaluationTask.GEN_QA:
+            recipe_collection = [
+                r
+                for r in recipe_collection
+                if "bring your own dataset" in r.get("DisplayName").lower()
+            ]
+        elif task in [
+            EvaluationTask.LLM_JUDGE,
+            EvaluationTask.RUBRIC_LLM_JUDGE,
+            EvaluationTask.RFT_EVAL,
+        ]:
+            base_name = f"{task.value}_{model.version.name.lower()}"
+            import amzn_nova_customization_sdk
+
+            image_prefix = (
+                f"{REGION_TO_ESCROW_ACCOUNT_MAPPING[region]}"
+                f".dkr.ecr.{region}.amazonaws.com/nova-evaluation-repo:"
+            )
+            image_infix = "SM-HP-" if platform == Platform.SMHP else "SM-TJ-"
+            image_suffix = (
+                "Eval-V2-latest" if model.version == Version.TWO else "Eval-latest"
+            )
+
+            sdk_path = os.path.dirname(amzn_nova_customization_sdk.__file__)
+            return {
+                "InstanceCount": 1,
+                "SupportedInstanceTypes": ["ml.p5.48xlarge"],
+                "RecipeTemplatePath": os.path.join(
+                    sdk_path, "recipe", "templates", "recipe", f"{base_name}.yaml"
+                ),
+                "OverrideParamsPath": os.path.join(
+                    sdk_path, "recipe", "templates", "override", f"{base_name}.json"
+                ),
+                "EvaluationTask": task.value,
+                "Platform": platform.value,
+                "Model": model.value,
+                "ImageUri": image_prefix + image_infix + image_suffix,
+            }
+        else:
+            recipe_collection = [
+                r
+                for r in recipe_collection
+                if "general text benchmark" in r.get("DisplayName").lower()
+            ]
+    elif method.value.lower().endswith("lora"):
+        recipe_collection = [r for r in recipe_collection if r.get("Peft")]
+    elif method.value.lower().endswith("full"):
+        recipe_collection = [r for r in recipe_collection if not r.get("Peft")]
+
+    # If multiple recipes still remain, filter by instance type
+    if len(recipe_collection) > 1:
+        recipe_collection = [
+            r
+            for r in recipe_collection
+            if r.get("SupportedInstanceTypes")
+            and instance_type in r.get("SupportedInstanceTypes")
+        ]
+
+    if recipe_collection:
+        return recipe_collection[0]
+    else:
+        raise ValueError(
+            f"{method.name} using {instance_type} is not supported on {platform.name}"
+        )
+
+
+def _get_aws_account_id() -> str:
+    """
+    Get the AWS account ID from current credentials.
+
+    Returns:
+        AWS account ID string
+    """
+    try:
+        sts = boto3.client("sts")
+        response = sts.get_caller_identity()
+        return response["Account"]
+    except Exception as e:
+        raise ValueError(f"Failed to get AWS account ID: {e}")
+
+
+def _replace_customer_id_placeholder(uri: str, current_account: str) -> str:
+    """
+    Replace {customer_id} placeholder in URI with actual AWS account ID.
+
+    Args:
+        uri: URI potentially containing {customer_id} placeholder
+
+    Returns:
+        URI with placeholder replaced
+    """
+    if "{customer_id}" in uri:
+        uri = uri.replace("{customer_id}", current_account)
+    return uri
+
+
+def _download_from_s3_or_access_point(uri: str, region: Optional[str] = None) -> bytes:
+    """
+    Download content from S3 URI or S3 Access Point ARN.
+    Handles {customer_id} placeholders in URIs.
+
+    Args:
+        uri: S3 URI (s3://bucket/key) or Access Point ARN with optional {customer_id} placeholder
+        region: AWS region (optional)
+
+    Returns:
+        Content as bytes
+
+    Raises:
+        ValueError: If URI format is invalid or download fails
+    """
+    # Replace {customer_id} placeholder if present
+
+    s3 = boto3.client("s3", region_name=region) if region else boto3.client("s3")
+
+    current_account = _get_aws_account_id()
+    formatted_uri = _replace_customer_id_placeholder(uri, current_account)
+    # Check if this is an access point ARN (with or without s3:// prefix)
+    arn_to_check = (
+        formatted_uri[5:]
+        if formatted_uri.startswith("s3://arn:aws:s3:")
+        else formatted_uri
+    )
+    access_point_match = S3_ACCESS_POINT_REGEX.match(arn_to_check)
+
+    if access_point_match:
+        arn_region, account, access_point_name, key = access_point_match.groups()
+
+        # For access points, we need to use the full ARN as the bucket
+        if not key:
+            raise ValueError(f"S3 Access Point ARN must include key: {uri}")
+
+        bucket_arn = (
+            f"arn:aws:s3:{arn_region}:{account}:accesspoint/{access_point_name}"
+        )
+
+        try:
+            response = s3.get_object(Bucket=bucket_arn, Key=key)
+            return response["Body"].read()
+        except Exception as e:
+            raise ValueError(
+                f"Failed to download from S3 Access Point {e}"
+                f"\nVerify if account {current_account} has Forge subscription. Refer: https://docs.aws.amazon.com/sagemaker/latest/dg/nova-forge.html#nova-forge-prereq-access"
+                f" or set data_mixing = False"
+            )
+
+    # Regular S3 URI
+    s3_match = S3_URI_REGEX.match(formatted_uri)
+    if s3_match:
+        bucket, key = s3_match.groups()
+        try:
+            response = s3.get_object(Bucket=bucket, Key=key)
+            return response["Body"].read()
+        except ClientError as e:
+            raise FileLoadError(f"Failed to load S3 file {formatted_uri}: {e}")
+
+    raise ValueError(f"Invalid S3 URI or Access Point ARN format: {uri}")
+
+
+def download_templates_from_s3(
+    recipe_metadata: Dict[str, Any], platform: Platform, method: TrainingMethod
+) -> tuple:
+    """
+    Download recipe and overrides templates from Jump Start S3 buckets
+
+    Args:
+        recipe_metadata: Dict of recipe metadata fetched from SM DescribeHubContent API
+        platform: Platform for training (SMTJ or SMHP)
+        method: Training method
+
+    Returns:
+        tuple: (recipe template, overrides template, image_uri)
+    """
+    image_uri = None
+
+    if platform == Platform.SMTJ:
+        recipe_template_s3_uri = recipe_metadata.get("SmtjRecipeTemplateS3Uri")
+        overrides_template_s3_uri = recipe_metadata.get("SmtjOverrideParamsS3Uri")
+        image_uri = recipe_metadata.get("SmtjImageUri")
+    else:
+        recipe_template_s3_uri = recipe_metadata.get("HpEksPayloadTemplateS3Uri")
+        overrides_template_s3_uri = recipe_metadata.get("HpEksOverrideParamsS3Uri")
+
+    if recipe_template_s3_uri is None or overrides_template_s3_uri is None:
+        raise ValueError("Unable to find recipe")
+
+    recipe_template_content = _download_from_s3_or_access_point(recipe_template_s3_uri)
+    overrides_template_content = _download_from_s3_or_access_point(
+        overrides_template_s3_uri
+    )
+
+    recipe_template_raw = recipe_template_content.decode("utf-8")
+    recipe_template = recipe_template_raw
+
+    # SMHP recipe template includes additional information that we can exclude
+    if platform == Platform.SMHP:
+        if "training-config.yaml" in recipe_template:
+            # Extract recipe template via the first occurrence of training-config.yaml
+            recipe_pattern = r"# Source: .*/training-config\.yaml.*?config\.yaml: \|-\n(.*?)(?=---|\Z)"
+            recipe_match = re.search(recipe_pattern, recipe_template, re.DOTALL)
+            if recipe_match:
+                # Extract just the config content after "config.yaml: |-"
+                recipe_template = textwrap.dedent(recipe_match.group(1)).strip()
+
+                # Remove extra line from RFT recipes, and normalize spacing
+                if method in [TrainingMethod.RFT_FULL, TrainingMethod.RFT_LORA]:
+                    recipe_template = re.sub(
+                        r"^\s*task_type:.*$", "", recipe_template, flags=re.MULTILINE
+                    )
+
+                recipe_template = textwrap.dedent(recipe_template)
+            else:
+                raise ValueError(
+                    "Unable to generate HyperPod recipe. Please raise an issue if the error persists: https://github.com/awslabs/sample-nova-customization-sdk/issues"
+                )
+
+            # Extract training image URI
+            image_pattern = r"name:\s*pytorch\s*\n\s*image:\s*(.+?)(?:\s|$)"
+            image_match = re.search(
+                image_pattern,
+                recipe_template_raw,
+                re.MULTILINE,
+            )
+            if image_match:
+                image_uri = image_match.group(1).strip()
+            else:
+                raise ValueError(
+                    "Unable to generate image URI. Please raise an issue if the error persists: https://github.com/awslabs/sample-nova-customization-sdk/issues"
+                )
+        else:
+            raise ValueError(
+                "Unable to generate HyperPod recipe. Please raise an issue if the error persists: https://github.com/awslabs/sample-nova-customization-sdk/issues"
+            )
+
+    if image_uri is None:
+        raise ValueError(
+            f"SDK does not yet support '{method.value}' on '{platform.value}'"
+        )
+
+    recipe_template_dict = yaml.safe_load(recipe_template)
+    overrides_template_dict = json.loads(overrides_template_content)
+
+    return recipe_template_dict, overrides_template_dict, image_uri
+
+
+def download_templates_from_local(recipe_metadata: Dict[str, Any]) -> tuple:
+    """
+    Download recipe and overrides templates from a local path
+
+    Args:
+        recipe_metadata: Dict of recipe metadata
+
+    Returns:
+        tuple: (recipe template, overrides template)
+    """
+    recipe_template_path = recipe_metadata["RecipeTemplatePath"]
+    overrides_template_path = recipe_metadata["OverrideParamsPath"]
+    image_uri = recipe_metadata["ImageUri"]
 
     try:
-        recipe_dict = yaml.safe_load(io.StringIO(yaml_str))
-    except yaml.YAMLError as e:
-        raise RecipeLoadError(f"Invalid YAML in {recipe_path}: {e}")
-
-    if not isinstance(recipe_dict, dict):
-        raise RecipeLoadError(
-            f"YAML must be a dictionary, got {type(recipe_dict).__name__}"
+        with open(recipe_template_path, "r") as file:
+            recipe_template_dict = yaml.safe_load(file)
+        with open(overrides_template_path, "r") as file:
+            overrides_template_dict = json.load(file)
+    except:
+        raise ValueError(
+            f"'{recipe_metadata['EvaluationTask']}' is not supported on {recipe_metadata['Platform']} for {recipe_metadata['Model']}"
         )
 
-    # Recursively flatten the recipe_dict such that only leaf values are appended to overrides
-    def add_leaf_values(d: Dict[str, Any]) -> None:
-        for key, value in d.items():
-            if isinstance(value, dict):
-                add_leaf_values(value)
-            elif (
-                key not in overrides
-            ):  # Values in "overrides" take priority over values within the input recipe
-                overrides[key] = value
-
-    add_leaf_values(recipe_dict)
-
-    # Convert str values within "overrides" into Enum values (where applicable)
-    enums: Dict[str, Any] = {
-        k: v
-        for k, v in get_all_type_hints(recipe_class).items()
-        if isinstance(v, type) and issubclass(v, Enum)
-    }
-    errors: List[str] = []
-    for key, value in overrides.items():
-        if key in enums:
-            enum_type = enums[key]
-            try:
-                overrides[key] = enum_type(value)
-            except ValueError:
-                errors.append(
-                    f"Invalid override '{key}' with value '{value}'. "
-                    f"Valid options are: {[e.value for e in enum_type]}"
-                )
-    if errors:
-        error_msg = f"\n".join(f"  - {error}" for error in errors)
-        raise ValueError(error_msg)
-
-    return overrides
+    return recipe_template_dict, overrides_template_dict, image_uri
 
 
-def resolve_overrides(
-    recipe_class: type,
-    recipe_path: Optional[str] = None,
-    overrides: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+def load_recipe_templates(
+    model: Model,
+    method: TrainingMethod,
+    platform: Platform,
+    region: str,
+    instance_type: str,
+    data_mixing_enabled: bool = False,
+    eval_task: Optional[EvaluationTask] = None,
+) -> tuple:
     """
-    Entry helper method for combining an input recipe file (if it exists) with overrides (if they exist).
-    Fields within the input recipe will be considered "overrides" - relative to default values that would be generated if the SDK user doesn't provide any input recipe.
-    Values that are explicitly provided in the "overrides" parameter will take priority over anything that is in the input recipe.
+    Load recipe metadata and templates for Nova model customization.
+
+    This function handles the logic to get recipe metadata and download the appropriate
+    recipe and overrides templates based on the training method and task.
 
     Args:
-        recipe_class: The type of recipe dataclass that we are parsing (i.e. EvalRecipeConfig)
-        recipe_path: (optional) Path to YAML recipe file (local path or s3:// URI)
-        overrides: (optional) Dictionary of override values
+        model: The Nova model to be trained
+        method: The fine-tuning method
+        platform: Training platform (SMTJ or SMHP)
+        region: AWS region
+        instance_type: Instance type to fetch recipe metadata for
+        data_mixing_enabled: Whether data mixing is enabled
+        eval_task: Optional evaluation task (only for evaluation methods)
 
     Returns:
-        Dictionary with merged override values
-    """
-    overrides = overrides or {}
+        tuple: (recipe_metadata, recipe_template, overrides_template)
 
-    if recipe_path:
-        if overrides:
-            logger.info(
-                f"Recipe provided at {recipe_path}. Applying override values into recipe, and ignoring other user input in favor of the recipe content."
-            )
-        else:
-            logger.info(
-                f"Recipe provided at {recipe_path}. Ignoring other user input in favor of the recipe content."
-            )
-        overrides = merge_overrides_with_input_recipe(
-            recipe_path=recipe_path,
-            recipe_class=recipe_class,
-            overrides=overrides,
+    Raises:
+        Exception: If recipe configuration cannot be loaded
+    """
+    # Get recipe metadata
+    recipe_metadata = get_hub_recipe_metadata(
+        model=model,
+        method=method,
+        platform=platform,
+        region=region,
+        instance_type=instance_type,
+        task=eval_task,
+        data_mixing=data_mixing_enabled,
+    )
+
+    # Download recipe and overrides templates
+    # For evaluation methods with specific tasks, use local templates
+
+    if (
+        method == TrainingMethod.EVALUATION
+        and eval_task
+        and eval_task
+        in [
+            EvaluationTask.LLM_JUDGE,
+            EvaluationTask.RUBRIC_LLM_JUDGE,
+            EvaluationTask.RFT_EVAL,
+        ]
+    ):
+        recipe_template, overrides_template, image_uri = download_templates_from_local(
+            recipe_metadata=recipe_metadata
         )
-    return overrides
+    else:
+        recipe_template, overrides_template, image_uri = download_templates_from_s3(
+            recipe_metadata=recipe_metadata, platform=platform, method=method
+        )
 
-
-def get_all_type_hints(object: DataclassLike) -> Dict[str, Any]:
-    """
-    Recursively gather type hints from a dataclass (class or instance)
-    and all of its nested dataclass fields. Returns a flattened mapping.
-    """
-    cls = object if isinstance(object, type) else type(object)
-    all_type_hints: Dict[str, Any] = {}
-
-    class_types = get_type_hints(cls)
-    for field in fields(cls):
-        field_type = class_types.get(field.name)
-
-        origin = get_origin(field_type)
-        if origin is Union:
-            args = [t for t in get_args(field_type) if t is not type(None)]
-            for arg in args:
-                if is_dataclass(arg):
-                    nested_hints = get_all_type_hints(arg)
-                    all_type_hints.update(nested_hints)
-                    break
-            else:
-                all_type_hints[field.name] = field_type
-        elif is_dataclass(field_type):
-            nested_hints = get_all_type_hints(field_type)
-            all_type_hints.update(nested_hints)
-        else:
-            all_type_hints[field.name] = field_type
-
-    return all_type_hints
-
-
-def get_all_key_names(object: DataclassLike) -> Set[str]:
-    """
-    Recursively gather all key names from a dataclass (class or instance)
-    and its nested dataclasses. Returns a flattened set of key names.
-    """
-    cls = object if isinstance(object, type) else type(object)
-    all_names: Set[str] = set()
-
-    for field in fields(cls):
-        field_type = field.type
-
-        origin = get_origin(field_type)
-        if origin is Union:
-            args = [t for t in get_args(field_type) if t is not type(None)]
-            for arg in args:
-                if is_dataclass(arg):
-                    all_names |= get_all_key_names(arg)
-                    break
-            else:
-                all_names.add(field.name)
-        elif is_dataclass(field_type):
-            all_names |= get_all_key_names(field_type)
-        else:
-            all_names.add(field.name)
-
-    return all_names
+    return recipe_metadata, recipe_template, overrides_template, image_uri

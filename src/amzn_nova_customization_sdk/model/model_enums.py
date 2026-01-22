@@ -88,11 +88,20 @@ class Model(Enum):
 class TrainingMethod(Enum):
     """Supported training methods."""
 
+    CPT = "cpt"
     RFT_LORA = "rft_lora"
-    RFT = "rft"
+    RFT_FULL = "rft_full"
     SFT_LORA = "sft_lora"
-    SFT_FULLRANK = "sft_fullrank"
+    SFT_FULL = "sft_full"
     EVALUATION = "evaluation"
+
+
+# Would prefer to have this in util/data_mixing.py, but there are circular dependencies there
+SUPPORTED_DATAMIXING_METHODS = [
+    TrainingMethod.CPT,
+    TrainingMethod.SFT_FULL,
+    TrainingMethod.SFT_LORA,
+]
 
 
 class DeployPlatform(Enum):
@@ -100,3 +109,25 @@ class DeployPlatform(Enum):
 
     BEDROCK_OD = "bedrock_od"
     BEDROCK_PT = "bedrock_pt"
+
+
+# TODO: Figure out why the REPLACE options still have Bedrock saying the model endpoint is in use
+# Possibly it's just a delay from when deployment stops showing up in Bedrock vs is actually deleted?
+class DeploymentMode(Enum):
+    """
+    Deployment behavior when an endpoint with the same name already exists.
+
+    This enum defines how the deploy() method should handle conflicts when
+    attempting to deploy to an endpoint name that already exists.
+
+    Values:
+        FAIL_IF_EXISTS: Raise an error if endpoint already exists (safest, default)
+        UPDATE_IF_EXISTS: Try in-place update only, fail if not supported (PT only)
+    """
+
+    FAIL_IF_EXISTS = "fail_if_exists"
+    UPDATE_IF_EXISTS = "update_if_exists"
+    # # UPDATE_OR_REPLACE: Try in-place update first, fallback to delete/recreate if update fails
+    # UPDATE_OR_REPLACE = "update_or_replace"
+    # # FORCE_REPLACE: Always delete existing endpoint and create new one (destructive)
+    # FORCE_REPLACE = "force_replace"
