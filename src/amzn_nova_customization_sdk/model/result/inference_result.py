@@ -24,7 +24,6 @@ from typing import Dict, Optional
 from urllib.parse import urlparse
 
 import boto3
-import fsspec
 
 from amzn_nova_customization_sdk.model.result.job_result import (
     BaseJobResult,
@@ -157,9 +156,27 @@ class InferenceResult(BaseJobResult, ABC):
                     # If a file path is given, try to save the file to that location.
                     if s3_path:
                         try:
-                            with fsspec.open(s3_path, "w", encoding="utf-8") as f:
-                                for inference in inference_dataset:
-                                    f.write(json.dumps(inference, ensure_ascii=False))
+                            jsonl_content = "\n".join(
+                                json.dumps(inference, ensure_ascii=False)
+                                for inference in inference_dataset
+                            )
+
+                            if s3_path.startswith("s3://"):
+                                s3_path_stripped = s3_path[5:]  # Remove 's3://'
+                                bucket, key = s3_path_stripped.split("/", 1)
+
+                                s3_client = boto3.client("s3")
+                                s3_client.put_object(
+                                    Bucket=bucket,
+                                    Key=key,
+                                    Body=jsonl_content.encode("utf-8"),
+                                    ContentType="application/jsonlines",
+                                )
+                            else:
+                                local_path = Path(s3_path)
+                                local_path.parent.mkdir(parents=True, exist_ok=True)
+                                local_path.write_text(jsonl_content, encoding="utf-8")
+
                             print(f"Successfully saved the results to {s3_path}.")
                             logger.info(f"Successfully saved the results to {s3_path}.")
                         except Exception as e:

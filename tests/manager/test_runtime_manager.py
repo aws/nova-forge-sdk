@@ -3,12 +3,11 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from amzn_nova_customization_sdk.manager.runtime_manager import (
+    JobConfig,
     SMHPRuntimeManager,
     SMTJRuntimeManager,
 )
-from amzn_nova_customization_sdk.recipe_builder.base_recipe_builder import (
-    HYPERPOD_RECIPE_PATH,
-)
+from amzn_nova_customization_sdk.recipe.recipe_builder import HYPERPOD_RECIPE_PATH
 
 
 class TestSMTJRuntimeManager(unittest.TestCase):
@@ -17,7 +16,7 @@ class TestSMTJRuntimeManager(unittest.TestCase):
         self.instance_type = "ml.m5.xlarge"
         self.instance_count = 1
 
-    @patch.object(SMTJRuntimeManager, "_setup", return_value=None)
+    @patch.object(SMTJRuntimeManager, "setup", return_value=None)
     def _create_manager(self, mock_setup):
         manager = SMTJRuntimeManager(self.instance_type, self.instance_count)
         manager.execution_role = self.mock_role
@@ -26,7 +25,7 @@ class TestSMTJRuntimeManager(unittest.TestCase):
         manager.region = "us-east-1"
         return manager
 
-    @patch.object(SMTJRuntimeManager, "_setup", return_value=None)
+    @patch.object(SMTJRuntimeManager, "setup", return_value=None)
     def test_initialization(self, mock_setup):
         manager = SMTJRuntimeManager(self.instance_type, self.instance_count)
         manager.execution_role = self.mock_role
@@ -36,6 +35,16 @@ class TestSMTJRuntimeManager(unittest.TestCase):
         self.assertEqual(manager.instance_count, self.instance_count)
         self.assertEqual(manager.region, "us-east-1")
 
+    @patch.object(SMTJRuntimeManager, "setup", return_value=None)
+    def test_instance_count_setter(self, mock_setup):
+        manager = SMTJRuntimeManager(self.instance_type, self.instance_count)
+        self.assertEqual(manager.instance_count, 1)
+
+        new_instance_count = 4
+        manager.instance_count = new_instance_count
+
+        self.assertEqual(manager.instance_count, new_instance_count)
+
     @patch(
         "amzn_nova_customization_sdk.manager.runtime_manager.sagemaker.session.Session"
     )
@@ -44,7 +53,7 @@ class TestSMTJRuntimeManager(unittest.TestCase):
     )
     @patch("amzn_nova_customization_sdk.manager.runtime_manager.boto3.client")
     @patch("amzn_nova_customization_sdk.manager.runtime_manager.boto3.session.Session")
-    def test_setup_(
+    def test_setup(
         self,
         mock_boto_session_class,
         mock_boto_client,
@@ -79,7 +88,7 @@ class TestSMTJRuntimeManager(unittest.TestCase):
         )
 
     @patch("amzn_nova_customization_sdk.manager.runtime_manager.PyTorch")
-    @patch.object(SMTJRuntimeManager, "_setup", return_value=None)
+    @patch.object(SMTJRuntimeManager, "setup", return_value=None)
     def test_execute_success(self, mock_setup, mock_pytorch):
         manager = self._create_manager()
 
@@ -87,24 +96,47 @@ class TestSMTJRuntimeManager(unittest.TestCase):
         mock_pytorch.return_value = mock_estimator
         mock_estimator.fit.return_value = None
 
-        manager._get_training_job_arn = MagicMock(
-            return_value="arn:aws:sagemaker:us-east-1:123456789012:training-job/test-job"
-        )
-
-        job_id = manager.execute(
+        job_config = JobConfig(
             job_name="test-job",
-            data_s3_path="s3://input-bucket/data",
-            output_s3_path="s3://output-bucket/output",
             image_uri="123456789012.dkr.ecr.us-east-1.amazonaws.com/my-image:latest",
-            recipe="/path/to/recipe",
+            recipe_path="/path/to/recipe",
+            output_s3_path="s3://output-bucket/output",
+            data_s3_path="s3://input-bucket/data",
             input_s3_data_type="data_type",
         )
+
+        job_id = manager.execute(job_config)
 
         mock_pytorch.assert_called_once()
         mock_estimator.fit.assert_called_once()
         self.assertEqual(job_id, "test-job")
 
-    @patch.object(SMTJRuntimeManager, "_setup", return_value=None)
+    @patch("amzn_nova_customization_sdk.manager.runtime_manager.PyTorch")
+    @patch.object(SMTJRuntimeManager, "setup", return_value=None)
+    def test_execute_without_optional_params(self, mock_setup, mock_pytorch):
+        manager = self._create_manager()
+
+        mock_estimator = MagicMock()
+        mock_pytorch.return_value = mock_estimator
+        mock_estimator.fit.return_value = None
+
+        job_config = JobConfig(
+            job_name="test-job",
+            image_uri="123456789012.dkr.ecr.us-east-1.amazonaws.com/my-image:latest",
+            recipe_path="/path/to/recipe",
+            output_s3_path="s3://output-bucket/output",
+        )
+
+        job_id = manager.execute(job_config)
+
+        mock_pytorch.assert_called_once()
+        call_args = mock_estimator.fit.call_args
+        self.assertNotIn("inputs", call_args.kwargs)
+        self.assertEqual(call_args.kwargs["job_name"], "test-job")
+        self.assertEqual(call_args.kwargs["wait"], False)
+        self.assertEqual(job_id, "test-job")
+
+    @patch.object(SMTJRuntimeManager, "setup", return_value=None)
     def test_cleanup_success(self, mock_setup):
         manager = self._create_manager()
         mock_client = manager.sagemaker_client
@@ -116,7 +148,7 @@ class TestSMTJRuntimeManager(unittest.TestCase):
         )
         mock_client.close.assert_called_once()
 
-    @patch.object(SMTJRuntimeManager, "_setup", return_value=None)
+    @patch.object(SMTJRuntimeManager, "setup", return_value=None)
     def test_cleanup_handles_error(self, mock_setup):
         manager = self._create_manager()
         mock_client = manager.sagemaker_client
@@ -131,7 +163,7 @@ class TestSMTJRuntimeManager(unittest.TestCase):
         )
 
     @patch("amzn_nova_customization_sdk.manager.runtime_manager.PyTorch")
-    @patch.object(SMTJRuntimeManager, "_setup", return_value=None)
+    @patch.object(SMTJRuntimeManager, "setup", return_value=None)
     def test_execute_handles_error(self, mock_setup, mock_pytorch):
         manager = self._create_manager()
 
@@ -139,15 +171,17 @@ class TestSMTJRuntimeManager(unittest.TestCase):
         mock_estimator.fit.side_effect = Exception("Training failed")
         mock_pytorch.return_value = mock_estimator
 
+        job_config = JobConfig(
+            job_name="test-job",
+            image_uri="123456789012.dkr.ecr.us-east-1.amazonaws.com/my-image:latest",
+            recipe_path="/path/to/recipe",
+            output_s3_path="s3://output-bucket/output",
+            data_s3_path="s3://input-bucket/data",
+            input_s3_data_type="data_type",
+        )
+
         with self.assertRaises(Exception) as context:
-            manager.execute(
-                job_name="test-job",
-                data_s3_path="s3://input-bucket/data",
-                output_s3_path="s3://output-bucket/output",
-                image_uri="123456789012.dkr.ecr.us-east-1.amazonaws.com/my-image:latest",
-                recipe="/path/to/recipe",
-                input_s3_data_type="data_type",
-            )
+            manager.execute(job_config)
 
         self.assertEqual(str(context.exception), "Training failed")
         mock_pytorch.assert_called_once()
@@ -188,6 +222,18 @@ class TestSMHPRuntimeManager(unittest.TestCase):
         self.assertEqual(manager.cluster_name, self.cluster_name)
         self.assertEqual(manager.namespace, self.namespace)
 
+    @patch.object(SMHPRuntimeManager, "setup", return_value=None)
+    def test_instance_count_setter(self, mock_setup):
+        manager = SMHPRuntimeManager(
+            self.instance_type, self.instance_count, self.cluster_name, self.namespace
+        )
+        self.assertEqual(manager.instance_count, 1)
+
+        new_instance_count = 4
+        manager.instance_count = new_instance_count
+
+        self.assertEqual(manager.instance_count, new_instance_count)
+
     @patch("subprocess.run")
     def test_initialization_fails(self, mock_run):
         mock_run.return_value.stderr = "Connection failed"
@@ -212,14 +258,15 @@ class TestSMHPRuntimeManager(unittest.TestCase):
 
         image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/my-image:latest"
 
-        job_id = manager.execute(
+        job_config = JobConfig(
             job_name="test-job",
-            data_s3_path="s3://input-bucket/data",
-            output_s3_path="s3://output-bucket/output",
             image_uri=image_uri,
-            recipe=f"{HYPERPOD_RECIPE_PATH}/path/to/recipe.yaml",
-            input_s3_data_type=None,
+            recipe_path=f"{HYPERPOD_RECIPE_PATH}/path/to/recipe.yaml",
+            output_s3_path="s3://output-bucket/output",
+            data_s3_path="s3://input-bucket/data",
         )
+
+        job_id = manager.execute(job_config)
 
         override_parameters = json.dumps(
             {
@@ -253,15 +300,16 @@ class TestSMHPRuntimeManager(unittest.TestCase):
             self.instance_type, self.instance_count, self.cluster_name, self.namespace
         )
 
+        job_config = JobConfig(
+            job_name="",
+            image_uri="123456789012.dkr.ecr.us-east-1.amazonaws.com/my-image:latest",
+            recipe_path=f"{HYPERPOD_RECIPE_PATH}/path/to/recipe.yaml",
+            output_s3_path="s3://output-bucket/output",
+            data_s3_path="s3://input-bucket/data",
+        )
+
         with self.assertRaises(ValueError):
-            manager.execute(
-                job_name="",
-                data_s3_path="s3://input-bucket/data",
-                output_s3_path="s3://output-bucket/output",
-                image_uri="123456789012.dkr.ecr.us-east-1.amazonaws.com/my-image:latest",
-                recipe=f"{HYPERPOD_RECIPE_PATH}/path/to/recipe.yaml",
-                input_s3_data_type=None,
-            )
+            manager.execute(job_config)
 
     @patch("subprocess.run")
     def test_execute_handles_error(self, mock_run):
@@ -274,15 +322,16 @@ class TestSMHPRuntimeManager(unittest.TestCase):
             self.instance_type, self.instance_count, self.cluster_name, self.namespace
         )
 
+        job_config = JobConfig(
+            job_name="test-job",
+            image_uri="123456789012.dkr.ecr.us-east-1.amazonaws.com/my-image:latest",
+            recipe_path=f"{HYPERPOD_RECIPE_PATH}/path/to/recipe.yaml",
+            output_s3_path="s3://output-bucket/output",
+            data_s3_path="s3://input-bucket/data",
+        )
+
         with self.assertRaises(Exception) as context:
-            manager.execute(
-                job_name="test-job",
-                data_s3_path="s3://input-bucket/data",
-                output_s3_path="s3://output-bucket/output",
-                image_uri="123456789012.dkr.ecr.us-east-1.amazonaws.com/my-image:latest",
-                recipe=f"{HYPERPOD_RECIPE_PATH}/path/to/recipe.yaml",
-                input_s3_data_type=None,
-            )
+            manager.execute(job_config)
 
         self.assertEqual(str(context.exception), "Failed to start job")
 

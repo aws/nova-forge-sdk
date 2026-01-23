@@ -18,14 +18,13 @@ The functions here are called from the dataset_loader class and should not be ed
 Running list of potential default values:
     SFT: question, answer
         Optional: system, [image/video required options]: image_format, video_format, s3_uri, bucket_owner
-        2.0: reasoning_text
+        2.0: reasoning_text, tools/toolsConfig
     RFT: question, reference_answer (for transforming from plain JSONL -> OpenAI)
-        Optional: system, id
+        Optional: system, id, tools
     Evaluation: query, response
         Optional: images, metadata
+    CPT: text
 """
-
-# TODO: Is there a way to simplify the SFT Nova 1.0 vs 2.0 workflows (only difference is reasoning text).
 
 
 class DatasetTransformer:
@@ -315,4 +314,239 @@ class DatasetTransformer:
             if metadata_col and metadata_col in rec:
                 result["metadata"] = rec[metadata_col]
 
+            return result
+
+    @staticmethod
+    def _parse_tool_arguments(arguments_str):
+        """
+        Parse tool arguments from string format to dict.
+        Handles both JSON strings and already parsed dicts.
+        """
+        import json
+
+        if isinstance(arguments_str, dict):
+            return arguments_str
+
+        try:
+            return json.loads(arguments_str)
+        except (json.JSONDecodeError, TypeError):
+            # If parsing fails, return as a simple dict with the string
+            return {"arguments": arguments_str}
+
+    @staticmethod
+    def _convert_openai_tools_to_converse_toolconfig(tools):
+        """
+        Convert OpenAI tools definition to Bedrock Converse toolConfig format.
+        """
+        if not tools:
+            return None
+
+        converse_tools = []
+        for tool in tools:
+            if tool.get("type") == "function":
+                function = tool.get("function", {})
+                tool_spec = {
+                    "toolSpec": {
+                        "name": function.get("name", ""),
+                        "description": function.get("description", ""),
+                        "inputSchema": {"json": function.get("parameters", {})},
+                    }
+                }
+                converse_tools.append(tool_spec)
+
+        if converse_tools:
+            return {"toolConfig": {"tools": converse_tools}}
+
+        return None
+
+    @staticmethod
+    def _convert_openai_messages_to_converse(messages, nova_version="1.0"):
+        """
+        Convert OpenAI messages to Converse format for Nova 1.0 and 2.0 SFT.
+        Merges consecutive tool messages into a single user message to ensure alternating roles.
+        """
+        system_content = DatasetTransformer.default_system_msg
+        converse_messages = []
+        pending_tool_results = []  # Collect tool results to merge
+
+        for i, msg in enumerate(messages):
+            role = msg.get("role")
+            content = msg.get("content", "")
+            tool_calls = msg.get("tool_calls", [])
+            tool_call_id = msg.get("tool_call_id")
+
+            # Reasoning only present in Nova 2.0
+            reasoning = msg.get("reasoning") if nova_version == "2.0" else None
+
+            if role == "system":
+                system_content = content
+            elif role == "user":
+                # If we have pending tool results, add them first as a user message
+                if nova_version == "2.0" and pending_tool_results:
+                    converse_messages.append(
+                        {"role": "user", "content": pending_tool_results}
+                    )
+                    pending_tool_results = []
+
+                # Then add the regular user message if it has content
+                if content:
+                    converse_messages.append(
+                        {"role": "user", "content": [{"text": content}]}
+                    )
+            elif role == "assistant":
+                # If we have pending tool results, add them first as a user message
+                if nova_version == "2.0" and pending_tool_results:
+                    converse_messages.append(
+                        {"role": "user", "content": pending_tool_results}
+                    )
+                    pending_tool_results = []
+
+                assistant_content = []
+
+                # Add reasoning content if present (Nova 2.0 feature)
+                if nova_version == "2.0" and reasoning:
+                    assistant_content.append(
+                        {"reasoningContent": {"reasoningText": {"text": reasoning}}}
+                    )
+
+                # Add text content if present
+                if content:
+                    assistant_content.append({"text": content})
+
+                # toolUse goes under assistant (only for Nova 2.0)
+                if nova_version == "2.0":
+                    for tool_call in tool_calls:
+                        if tool_call.get("type") == "function":
+                            function_data = tool_call.get("function", {})
+                            tool_use_id = tool_call.get("id", f"tool_call_{i}")
+                            tool_use_block = {
+                                "toolUse": {
+                                    "toolUseId": tool_use_id,
+                                    "name": function_data.get("name", ""),
+                                    "input": DatasetTransformer._parse_tool_arguments(
+                                        function_data.get("arguments", "{}")
+                                    ),
+                                }
+                            }
+                            assistant_content.append(tool_use_block)
+
+                if assistant_content:
+                    converse_messages.append(
+                        {"role": "assistant", "content": assistant_content}
+                    )
+            elif role == "tool":
+                # Collect tool results to merge (only for Nova 2.0)
+                if nova_version == "2.0":
+                    pending_tool_results.append(
+                        {
+                            "toolResult": {
+                                "toolUseId": tool_call_id,
+                                "content": [{"text": content}],
+                            }
+                        }
+                    )
+
+        # Add any remaining tool results at the end
+        if nova_version == "2.0" and pending_tool_results:
+            converse_messages.append({"role": "user", "content": pending_tool_results})
+
+        return system_content, converse_messages
+
+    @staticmethod
+    def _build_converse_conversation(system_content, converse_messages, tools=None):
+        """
+        Build a Converse format conversation from components.
+        Validates that required roles are present and adds tool configuration if provided.
+        """
+        # Validate we have at least one user and one assistant message
+        roles_present = [m["role"] for m in converse_messages]
+        if "user" not in roles_present or "assistant" not in roles_present:
+            raise ValueError(
+                f"OpenAI format must contain at least one 'user' and one 'assistant' message. "
+                f"Found roles: {roles_present}"
+            )
+
+        conversation = {
+            "schemaVersion": "bedrock-conversation-2024",
+            "system": [{"text": system_content}],
+            "messages": converse_messages,
+        }
+
+        # Add toolConfig if tools are present
+        tool_config = DatasetTransformer._convert_openai_tools_to_converse_toolconfig(
+            tools
+        )
+        if tool_config:
+            conversation.update(tool_config)
+
+        return conversation
+
+    @staticmethod
+    def convert_openai_to_converse_sft_nova_one(rec, column_mappings=None):
+        """
+        Convert OpenAI format to Converse format for Nova 1.0.
+        """
+        if "messages" not in rec:
+            raise ValueError(
+                f"'messages' key not found in record {rec}. Expected OpenAI format."
+            )
+
+        messages = rec["messages"]
+
+        # Check if tools are present and raise error as it is only supported for Nova 2.0
+        if rec.get("tools") or any(
+            msg.get("tool_calls") or msg.get("tool_call_id") for msg in messages
+        ):
+            raise ValueError(
+                "Tool/function calling is not supported in Nova 1.0. "
+                "Please use Nova 2.0 for tool calling capabilities."
+            )
+
+        system_content, converse_messages = (
+            DatasetTransformer._convert_openai_messages_to_converse(
+                messages, nova_version="1.0"
+            )
+        )
+
+        return DatasetTransformer._build_converse_conversation(
+            system_content, converse_messages, tools=None
+        )
+
+    @staticmethod
+    def convert_openai_to_converse_sft_nova_two(rec, column_mappings=None):
+        """
+        Convert OpenAI format to Converse format for Nova 2.0.
+        Supports optional 'reasoning' field in assistant messages, tool/function calls, and tool configurations.
+        """
+        if "messages" not in rec:
+            raise ValueError(
+                f"'messages' key not found in record {rec}. Expected OpenAI format."
+            )
+
+        messages = rec["messages"]
+        tools = rec.get("tools")
+
+        system_content, converse_messages = (
+            DatasetTransformer._convert_openai_messages_to_converse(
+                messages, nova_version="2.0"
+            )
+        )
+
+        return DatasetTransformer._build_converse_conversation(
+            system_content, converse_messages, tools
+        )
+
+    @staticmethod
+    def convert_to_cpt(rec, column_mappings):
+        # These are the required columns for CPT format.
+        text_col = column_mappings.get("text")
+
+        # Check if these columns exist before returning a formatted response.
+        if text_col not in rec:
+            raise ValueError(
+                f"'text' column not found in record {rec}, which is required for CPT.\n"
+                f"Make sure to add a column mapping for 'text' when initializing DatasetLoader."
+            )
+        else:
+            result = {"text": rec[text_col]}
             return result

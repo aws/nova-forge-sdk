@@ -15,6 +15,7 @@ import json
 import re
 import subprocess
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import boto3
@@ -23,40 +24,59 @@ from sagemaker.debugger import TensorBoardOutputConfig
 from sagemaker.inputs import TrainingInput
 from sagemaker.pytorch import PyTorch
 
-from amzn_nova_customization_sdk.recipe_builder.base_recipe_builder import (
-    HYPERPOD_RECIPE_PATH,
-)
+from amzn_nova_customization_sdk.recipe.recipe_config import HYPERPOD_RECIPE_PATH
 from amzn_nova_customization_sdk.util.logging import logger
 
 
+@dataclass
+class JobConfig:
+    job_name: str
+    image_uri: str
+    recipe_path: str
+    output_s3_path: Optional[str] = None
+    data_s3_path: Optional[str] = None
+    input_s3_data_type: Optional[str] = None
+    mlflow_tracking_uri: Optional[str] = None  # MLflow tracking server ARN
+    mlflow_experiment_name: Optional[str] = None
+    mlflow_run_name: Optional[str] = None
+    # TODO: The mlflow config is populated in recipe for both SMTJ and SMHP but will only work fro SMHP as SMTJ support for mlfow is only through boto3, fix this wit sagemaker 3 update
+
+
 class RuntimeManager(ABC):
+    def __init__(
+        self, instance_type: str, instance_count: int, kms_key_id: Optional[str]
+    ):
+        self._instance_type = instance_type
+        self._instance_count = instance_count
+        self._kms_key_id = kms_key_id
+
     @property
-    @abstractmethod
     def instance_type(self) -> str:
         """Type of instance (e.g., ml.p5.48xlarge)."""
-        pass
+        return self._instance_type
 
     @property
-    @abstractmethod
     def instance_count(self) -> int:
         """Number of instances used."""
-        pass
+        return self._instance_count
+
+    # Needed to update the instance_count if user decides to override its value
+    @instance_count.setter
+    def instance_count(self, value: int) -> None:
+        self._instance_count = value
+
+    @property
+    def kms_key_id(self) -> Optional[str]:
+        """Optional KMS Key Id to use in S3 Bucket encryption, training jobs and deployments."""
+        return self._kms_key_id
 
     @abstractmethod
-    def _setup(self) -> None:
+    def setup(self) -> None:
         """Prepare environment and dependencies"""
         pass
 
     @abstractmethod
-    def execute(
-        self,
-        job_name: str,
-        data_s3_path: Optional[str],
-        output_s3_path: str,
-        image_uri: str,
-        recipe: str,
-        input_s3_data_type: Optional[str],
-    ) -> str:
+    def execute(self, job_config: JobConfig) -> str:
         """Launch a job and return a job id."""
         pass
 
@@ -65,6 +85,67 @@ class RuntimeManager(ABC):
         """Tear down or release resources."""
         pass
 
+    @classmethod
+    def _s3_bucket_arn_from_path(cls, s3_path):
+        """Extract S3 bucket ARN from a single S3 path."""
+        if not s3_path:
+            return None
+        bucket = s3_path.split("/")[2]
+        return f"arn:aws:s3:::{bucket}"
+
+    @classmethod
+    def _s3_object_arn_from_path(cls, s3_path):
+        """Extract S3 object ARN from a single S3 path."""
+        if not s3_path:
+            return None
+        bucket = s3_path.split("/")[2]
+        # Allow access to the specific path and subdirectories
+        if len(s3_path.split("/")) > 3:
+            # Has a path component, use it
+            path = "/".join(s3_path.split("/")[3:])
+            return f"arn:aws:s3:::{bucket}/{path}*"
+        else:
+            # Just bucket, allow all objects
+            return f"arn:aws:s3:::{bucket}/*"
+
+    @classmethod
+    def required_calling_role_permissions(cls, data_s3_path=None, output_s3_path=None):
+        """Base permissions required by all runtime managers."""
+        permissions = []
+
+        # Collect unique bucket ARNs
+        bucket_arns = set()
+        for s3_path in [data_s3_path, output_s3_path]:
+            bucket_arn = cls._s3_bucket_arn_from_path(s3_path)
+            if bucket_arn:
+                bucket_arns.add(bucket_arn)
+
+        # Add bucket-level permissions
+        for bucket_arn in bucket_arns:
+            permissions.extend(
+                [
+                    ("s3:CreateBucket", bucket_arn),
+                    ("s3:ListBucket", bucket_arn),
+                ]
+            )
+
+        # Add input-specific permissions (read-only)
+        if data_s3_path:
+            data_object_arn = cls._s3_object_arn_from_path(data_s3_path)
+            permissions.append(("s3:GetObject", data_object_arn))
+
+        # Add output-specific permissions (read-write)
+        if output_s3_path:
+            output_object_arn = cls._s3_object_arn_from_path(output_s3_path)
+            permissions.extend(
+                [
+                    ("s3:GetObject", output_object_arn),
+                    ("s3:PutObject", output_object_arn),
+                ]
+            )
+
+        return permissions
+
 
 class SMTJRuntimeManager(RuntimeManager):
     def __init__(
@@ -72,22 +153,47 @@ class SMTJRuntimeManager(RuntimeManager):
         instance_type: str,
         instance_count: int,
         execution_role: Optional[str] = None,
+        kms_key_id: Optional[str] = None,
+        encrypt_inter_container_traffic: bool = False,
+        subnets: Optional[list[str]] = None,
+        security_group_ids: Optional[list[str]] = None,
     ):
-        self._instance_type = instance_type
-        self._instance_count = instance_count
         # NOTE: Not setting execution_role directly due to issues with mypy type inference
         self._execution_role = execution_role
-        self._setup()
 
-    @property
-    def instance_type(self) -> str:
-        return self._instance_type
+        self.subnets = subnets
+        self.security_group_ids = security_group_ids
+        self.encrypt_inter_container_traffic = encrypt_inter_container_traffic
 
-    @property
-    def instance_count(self) -> int:
-        return self._instance_count
+        super().__init__(instance_type, instance_count, kms_key_id)
+        self.setup()
 
-    def _setup(self) -> None:
+    @classmethod
+    def required_calling_role_permissions(cls, data_s3_path=None, output_s3_path=None):
+        """Required permissions for SMTJ calling role operations and execution role validation."""
+        # Start with base S3 permissions
+        permissions = super().required_calling_role_permissions(
+            data_s3_path, output_s3_path
+        )
+
+        # Add SMTJ-specific permissions
+        permissions.extend(
+            [
+                ("sagemaker:CreateTrainingJob", "*"),
+                ("sagemaker:DescribeTrainingJob", "*"),
+                "iam:GetRole",
+                "iam:PassRole",
+                "iam:GetPolicy",
+                "iam:GetPolicyVersion",
+                "iam:ListRolePolicies",
+                "iam:GetRolePolicy",
+                "iam:ListAttachedRolePolicies",
+            ]
+        )
+
+        return permissions
+
+    def setup(self) -> None:
         boto_session = boto3.session.Session()
         self.region = boto_session.region_name or "us-east-1"
         self.sagemaker_client = boto3.client("sagemaker", region_name=self.region)
@@ -102,82 +208,63 @@ class SMTJRuntimeManager(RuntimeManager):
         # Delete temporary attribute so customers don't confuse it with the actual attribute
         del self._execution_role
 
-    def execute(
-        self,
-        job_name: str,
-        data_s3_path: Optional[str],
-        output_s3_path: str,
-        image_uri: str,
-        recipe: str,
-        input_s3_data_type: Optional[str],
-    ) -> str:
-        """
-        Start a SageMaker training job
+    def execute(self, job_config: JobConfig) -> str:
+        from amzn_nova_customization_sdk.validation.validator import Validator
 
-        Args:
-            job_name: Name of the training job
-            data_s3_path: S3 path to input data
-            output_s3_path: S3 path for output artifacts
-            image_uri: Image URI for training
-            recipe: Training recipe
-            input_s3_data_type: The s3_data_type of TrainingInput
+        Validator.validate_job_name(job_name=job_config.job_name)
 
-        Returns:
-            str: Training job name
-        """
         try:
-            tensorboard_output_config = TensorBoardOutputConfig(
-                s3_output_path=output_s3_path,
+            assert job_config.output_s3_path is not None
+
+            tensorboard_output = TensorBoardOutputConfig(
+                s3_output_path=job_config.output_s3_path,
             )
 
             estimator_config = {
-                "output_path": output_s3_path,
-                "base_job_name": job_name,
+                "output_path": job_config.output_s3_path,
+                "base_job_name": job_config.job_name,
                 "role": self.execution_role,
                 "instance_count": self.instance_count,
                 "instance_type": self.instance_type,
-                "training_recipe": recipe,
+                "training_recipe": job_config.recipe_path,
                 "sagemaker_session": self.sagemaker_session,
-                "image_uri": image_uri,
-                "tensorboard_output_config": tensorboard_output_config,
+                "image_uri": job_config.image_uri,
+                "tensorboard_output_config": tensorboard_output,
                 "disable_profiler": True,
                 "debugger_hook_config": False,
+                "encrypt_inter_container_traffic": self.encrypt_inter_container_traffic,
+                "security_group_ids": self.security_group_ids,
+                "subnets": self.subnets,
+                "output_kms_key": self.kms_key_id,
             }
 
             estimator = PyTorch(**estimator_config)
 
             # For eval job, the input could be none
             # https://docs.aws.amazon.com/sagemaker/latest/dg/nova-model-evaluation.html#nova-model-evaluation-notebook
-            if data_s3_path:
+            if job_config.data_s3_path:
                 train_kwargs: Dict[str, Any] = {
-                    "s3_data": data_s3_path,
+                    "s3_data": job_config.data_s3_path,
                     "distribution": "FullyReplicated",
                 }
+                if job_config.input_s3_data_type is not None:
+                    train_kwargs["s3_data_type"] = job_config.input_s3_data_type
 
-                if input_s3_data_type is not None:
-                    train_kwargs["s3_data_type"] = input_s3_data_type
-
-                train = TrainingInput(**train_kwargs)
-
-                inputs = {"train": train}
-
-                estimator.fit(inputs=inputs, job_name=job_name, wait=False)
+                estimator.fit(
+                    inputs={"train": TrainingInput(**train_kwargs)},
+                    job_name=job_config.job_name,
+                    wait=False,
+                )
             else:
-                estimator.fit(job_name=job_name, wait=False)
+                estimator.fit(job_name=job_config.job_name, wait=False)
 
-            return job_name
+            return job_config.job_name
 
         except Exception as e:
             logger.error(f"Failed to start training job: {str(e)}")
             raise
 
     def cleanup(self, job_name: str) -> None:
-        """
-        Cleanup resources associated with the training job
-
-        Args:
-            job_name: Training job to clean up
-        """
         try:
             self.sagemaker_client.stop_training_job(TrainingJobName=job_name)
             self.sagemaker_client.close()
@@ -189,23 +276,56 @@ class SMTJRuntimeManager(RuntimeManager):
 # TODO: Might need to take RIG as input in case of multiple RIGs
 class SMHPRuntimeManager(RuntimeManager):
     def __init__(
-        self, instance_type: str, instance_count: int, cluster_name: str, namespace: str
+        self,
+        instance_type: str,
+        instance_count: int,
+        cluster_name: str,
+        namespace: str,
+        kms_key_id: Optional[str] = None,
     ):
-        self._instance_type = instance_type
-        self._instance_count = instance_count
+        from amzn_nova_customization_sdk.validation.validator import Validator
+
+        Validator.validate_cluster_name(cluster_name=cluster_name)
+        Validator.validate_namespace(namespace=namespace)
+
         self.cluster_name = cluster_name
         self.namespace = namespace
-        self._setup()
+        super().__init__(instance_type, instance_count, kms_key_id)
+        self.setup()
 
-    @property
-    def instance_type(self) -> str:
-        return self._instance_type
+    @classmethod
+    def required_calling_role_permissions(cls, data_s3_path=None, output_s3_path=None):
+        """Required permissions for HyperPod operations."""
+        # Start with base S3 permissions
+        permissions = super().required_calling_role_permissions(
+            data_s3_path, output_s3_path
+        )
 
-    @property
-    def instance_count(self) -> int:
-        return self._instance_count
+        # Add SMHP-specific permissions
+        permissions.extend(
+            [
+                (
+                    "sagemaker:DescribeCluster",
+                    lambda infra: f"arn:aws:sagemaker:{infra.region}:*:cluster/{infra.cluster_name}",
+                ),
+                (
+                    "eks:DescribeCluster",
+                    lambda infra: f"arn:aws:eks:{infra.region}:*:cluster/*",
+                ),
+                (
+                    "eks:ListAddons",
+                    lambda infra: f"arn:aws:eks:{infra.region}:*:cluster/{infra.cluster_name}",
+                ),
+                ("sagemaker:ListClusters", "*"),
+            ]
+        )
 
-    def _setup(self) -> None:
+        return permissions
+
+    def setup(self) -> None:
+        boto_session = boto3.session.Session()
+        self.region = boto_session.region_name or "us-east-1"
+
         response = subprocess.run(
             [
                 "hyperpod",
@@ -230,34 +350,11 @@ class SMHPRuntimeManager(RuntimeManager):
             f"Successfully connected to HyperPod cluster '{self.cluster_name}' in namespace '{self.namespace}'."
         )
 
-    # TODO: Should adjust the input params of the ABC because HyperPod is a bit different from SMTJ
-    def execute(
-        self,
-        job_name: str,
-        data_s3_path: Optional[str],
-        output_s3_path: str,
-        image_uri: str,
-        recipe: str,
-        input_s3_data_type: Optional[str],
-    ) -> str:
-        """
-        Start a SageMaker HyperPod job
-
-        Args:
-            job_name: Name of the HyperPod job
-            data_s3_path: S3 path to input data
-            output_s3_path: S3 path for output artifacts
-            image_uri: Image URI for training
-            recipe: Training recipe
-            input_s3_data_type: The s3_data_type of TrainingInput
-
-        Returns:
-            str: HyperPod job ID
-        """
+    def execute(self, job_config: JobConfig) -> str:
         try:
             # Scrub recipe path so that it will be recognized by the HyperPod CLI
-            recipe = (
-                recipe.split(HYPERPOD_RECIPE_PATH, 1)[1]
+            recipe_path = (
+                job_config.recipe_path.split(HYPERPOD_RECIPE_PATH, 1)[1]
                 .lstrip("/")
                 .lstrip("\\")
                 .removesuffix(".yaml")
@@ -266,7 +363,7 @@ class SMHPRuntimeManager(RuntimeManager):
             override_parameters = json.dumps(
                 {
                     "instance_type": self.instance_type,
-                    "container": image_uri,
+                    "container": job_config.image_uri,
                 }
             )
             response = subprocess.run(
@@ -276,7 +373,7 @@ class SMHPRuntimeManager(RuntimeManager):
                     "--namespace",
                     self.namespace,
                     "--recipe",
-                    recipe,
+                    recipe_path,
                     "--override-parameters",
                     override_parameters,
                 ],
@@ -293,12 +390,10 @@ class SMHPRuntimeManager(RuntimeManager):
             raise
 
     def cleanup(self, job_name: str) -> None:
-        """
-        Cleanup resources associated with the HyperPod job
+        from amzn_nova_customization_sdk.validation.validator import Validator
 
-        Args:
-            job_name: HyperPod job to clean up
-        """
+        Validator.validate_job_name(job_name=job_name)
+
         try:
             response = subprocess.run(
                 [

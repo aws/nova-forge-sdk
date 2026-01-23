@@ -23,17 +23,7 @@
                     "bedrock:GetCustomModel",
                     "bedrock:GetCustomModelDeployment"
                 ],
-                "Resource": "*"
-            }
-        ]
-    },
-    "passrole_policy": {
-        "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Effect": "Allow",
-                "Action": "iam:PassRole",
-                "Resource": "*"
+                "Resource": "RESOURCE_PLACEHOLDER"
             }
         ]
     },
@@ -46,7 +36,7 @@
                     "s3:GetObject",
                     "s3:ListBucket"
                 ],
-                "Resource": "*"
+                "Resource": "S3_BUCKET_PLACEHOLDER"
             }
         ]
     }

@@ -19,28 +19,20 @@ from typing import Optional
 from urllib.parse import urlparse
 
 import boto3
+from botocore.client import BaseClient
 from botocore.exceptions import ClientError
 
-from amzn_nova_customization_sdk.manager.runtime_manager import (
-    RuntimeManager,
-    SMHPRuntimeManager,
-    SMTJRuntimeManager,
-)
-from amzn_nova_customization_sdk.model.model_config import (
-    IMAGE_REPO_REGISTRY,
-    METHOD_IMAGE_REGISTRY,
-    REGION_TO_ESCROW_ACCOUNT_MAPPING,
-    RUNTIME_PREFIX_REGISTRY,
-)
-from amzn_nova_customization_sdk.model.model_enums import (
-    Platform,
-    TrainingMethod,
-    Version,
+from amzn_nova_customization_sdk.model.result import TrainingResult
+from amzn_nova_customization_sdk.recipe.recipe_config import BYOD_AVAILABLE_EVAL_TASKS
+from amzn_nova_customization_sdk.util.checkpoint_util import (
+    extract_checkpoint_path_from_job_output,
 )
 from amzn_nova_customization_sdk.util.logging import logger
 
 
-def set_output_s3_path(region: str, output_s3_path: Optional[str] = None) -> str:
+def set_output_s3_path(
+    region: str, output_s3_path: Optional[str] = None, kms_key_id: Optional[str] = None
+) -> str:
     """
     Constructs the output S3 path.
 
@@ -58,12 +50,12 @@ def set_output_s3_path(region: str, output_s3_path: Optional[str] = None) -> str
         try:
             s3_client.head_bucket(Bucket=output_bucket)
         except Exception:
-            try:
-                s3_client.create_bucket(Bucket=output_bucket)
-            except Exception as e:
-                raise Exception(
-                    f"Failed to create output bucket {output_bucket}: {str(e)}"
-                )
+            kms_arn = (
+                f"arn:aws:kms:{region}:{account_id}:key/{kms_key_id}"
+                if kms_key_id
+                else None
+            )
+            create_s3_bucket(s3_client, output_bucket, kms_arn)
         logger.info(
             f"No output S3 bucket was provided. Using default output S3 bucket '{output_bucket}'."
         )
@@ -76,14 +68,14 @@ def set_output_s3_path(region: str, output_s3_path: Optional[str] = None) -> str
             return output_s3_path
         except ClientError as e:
             error_code = e.response["Error"]["Code"]
-            if error_code == "NoSuchBucket":
-                try:
-                    s3_client.create_bucket(Bucket=output_bucket)
-                    return output_s3_path
-                except Exception as ce:
-                    raise Exception(
-                        f"Failed to create output bucket {output_bucket}: {str(ce)}"
-                    )
+            if error_code in ("404", "NoSuchBucket"):
+                kms_arn = (
+                    f"arn:aws:kms:{region}:{account_id}:key/{kms_key_id}"
+                    if kms_key_id
+                    else None
+                )
+                create_s3_bucket(s3_client, output_bucket, kms_arn)
+                return output_s3_path
             elif error_code in ("403", "Forbidden", "AccessDenied"):
                 raise Exception(
                     f"Bucket '{output_bucket}' already exists, but is not owned by you. Please provide a different value for output_s3_path, or omit that parameter."
@@ -92,30 +84,115 @@ def set_output_s3_path(region: str, output_s3_path: Optional[str] = None) -> str
                 raise
 
 
-def set_image_uri(
-    region: str, method: TrainingMethod, version: Version, infra: RuntimeManager
-) -> str:
+def create_s3_bucket(
+    s3_client: BaseClient, output_bucket: str, kms_key_arn: Optional[str] = None
+) -> None:
     """
-    Constructs the image URI.
+    Creates an S3 bucket
 
     Raises:
-        ValueError: If infrastructure manager type is invalid
+        Exception: If unable to create the S3 bucket
     """
-    prefix = (
-        f"{REGION_TO_ESCROW_ACCOUNT_MAPPING[region]}"
-        f".dkr.ecr.{region}.amazonaws.com/{IMAGE_REPO_REGISTRY[method]}:"
-    )
+    try:
+        s3_client.create_bucket(Bucket=output_bucket)
 
-    if isinstance(infra, SMTJRuntimeManager):
-        platform_infix = RUNTIME_PREFIX_REGISTRY["SMTJRuntimeManager"]
-        platform = Platform.SMTJ
-    elif isinstance(infra, SMHPRuntimeManager):
-        platform_infix = RUNTIME_PREFIX_REGISTRY["SMHPRuntimeManager"]
-        platform = Platform.SMHP
-    else:
-        raise ValueError("Invalid infrastructure manager")
+        if kms_key_arn:
+            s3_client.put_bucket_encryption(
+                Bucket=output_bucket,
+                ServerSideEncryptionConfiguration={
+                    "Rules": [
+                        {
+                            "ApplyServerSideEncryptionByDefault": {
+                                "SSEAlgorithm": "aws:kms",
+                                "KMSMasterKeyID": kms_key_arn,
+                            }
+                        }
+                    ]
+                },
+            )
 
-    method_suffix = (
-        METHOD_IMAGE_REGISTRY.get(platform, {}).get(version, {}).get(method, "")
-    )
-    return prefix + platform_infix + method_suffix
+            logger.info(
+                f"Created '{output_bucket}' with SSE-S3 encryption using KMS key {kms_key_arn}."
+            )
+        else:
+            logger.info(f"Created '{output_bucket}' with SSE-S3 encryption.")
+    except Exception as e:
+        raise Exception(f"Failed to create output bucket {output_bucket}: {str(e)}")
+
+
+def resolve_model_checkpoint_path(
+    model_path: Optional[str],
+    job_result: Optional[TrainingResult],
+    customizer_job_id: Optional[str],
+    customizer_output_s3_path: Optional[str],
+    customizer_model_path: Optional[str],
+    fail_on_error: bool = False,
+) -> Optional[str]:
+    """
+    Resolves the model checkpoint path using a fallback chain.
+
+    Priority order:
+    1. Explicit model_path parameter (if provided)
+    2. Extract from job_result (if provided)
+    3. Customizer's model_path (if set)
+    4. Extract from customizer's most recent job (if job_id exists)
+
+    Args:
+        model_path: Explicitly provided model path
+        job_result: Optional TrainingResult to extract checkpoint from
+        customizer_job_id: Job ID from the customizer instance
+        customizer_output_s3_path: Output S3 path from the customizer instance
+        customizer_model_path: Model path from the customizer instance
+        fail_on_error: If True, raises exception when path cannot be resolved. If False, logs warning and returns None.
+
+    Returns:
+        Optional[str]: Resolved model checkpoint path, or None if fail_on_error=False and no path found
+
+    Raises:
+        Exception: If fail_on_error=True and no path can be resolved or extraction fails
+    """
+    try:
+        # 1. Use explicit model_path if provided
+        if model_path is not None:
+            return model_path
+
+        # 2. Try to extract from job_result if provided
+        if job_result is not None:
+            return extract_checkpoint_path_from_job_output(
+                output_s3_path=job_result.model_artifacts.output_s3_path,
+                job_result=job_result,
+            )
+
+        # 3. Use customizer's model_path if set
+        if customizer_model_path is not None:
+            return customizer_model_path
+
+        # 4. Try to extract from customizer's most recent job
+        if customizer_job_id and customizer_output_s3_path:
+            return extract_checkpoint_path_from_job_output(
+                output_s3_path=customizer_output_s3_path, job_id=customizer_job_id
+            )
+
+        # No path could be resolved
+        raise Exception(
+            "No model path provided and no recent training job found. "
+            "Please provide model_path or job_result parameter."
+        )
+    except Exception as e:
+        if fail_on_error:
+            raise
+        logger.warning(f"Could not resolve model checkpoint path: {e}")
+        return None
+
+
+def requires_custom_eval_data(eval_task) -> bool:
+    """
+    Determines if an evaluation task requires custom (BYOD) data.
+
+    Args:
+        eval_task: The evaluation task to check (EvaluationTask enum)
+
+    Returns:
+        True if the task requires custom data, False otherwise
+    """
+    return eval_task.value in BYOD_AVAILABLE_EVAL_TASKS

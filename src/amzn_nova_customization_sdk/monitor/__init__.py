@@ -11,16 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from abc import ABC
-from typing import Optional
+from .log_monitor import CloudWatchLogMonitor
+from .mlflow_monitor import MLflowMonitor
 
-from amzn_nova_customization_sdk.model.model_enums import Platform
-
-
-class Monitor(ABC):
-    def __init__(
-        self, job_id: str, platform: Platform, started_time: Optional[int] = None
-    ):
-        self.job_id = job_id
-        self.platform = platform
-        self.started_time = started_time
+__all__ = [
+    "MLflowMonitor",
+    "CloudWatchLogMonitor",
+]

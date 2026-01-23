@@ -37,14 +37,25 @@ import csv
 import json
 import random
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple
+from io import StringIO
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, cast
 
-import fsspec
+import boto3
 import jsonschema
+from botocore.exceptions import ClientError
 
+from amzn_nova_customization_sdk.dataset.dataset_validator import (
+    CPTDatasetValidator,
+    EvalDatasetValidator,
+    RFTDatasetValidator,
+    SFTDatasetValidator,
+)
 from amzn_nova_customization_sdk.model.model_enums import Model, TrainingMethod
+from amzn_nova_customization_sdk.recipe.recipe_config import EvaluationTask
 
 from ..util.logging import logger
+from ..util.recipe import load_file_content
 from .dataset_transformers import DatasetTransformer
 from .transform_format_schema import TRANSFORM_CONFIG
 
@@ -209,6 +220,42 @@ class DatasetLoader(ABC):
         )
         return train_loader, val_loader, test_loader
 
+    def get_transformer_function(self, method_name: str):
+        """
+        Map transformer method name to actual function.
+        """
+        transformer_map = {
+            "convert_to_converse_sft_nova_one": DatasetTransformer.convert_to_converse_sft_nova_one,
+            "convert_to_converse_sft_nova_two": DatasetTransformer.convert_to_converse_sft_nova_two,
+            "convert_openai_to_converse_sft_nova_one": DatasetTransformer.convert_openai_to_converse_sft_nova_one,
+            "convert_openai_to_converse_sft_nova_two": DatasetTransformer.convert_openai_to_converse_sft_nova_two,
+            "convert_to_openai_rft": DatasetTransformer.convert_to_openai_rft,
+            "convert_to_evaluation": DatasetTransformer.convert_to_evaluation,
+            "convert_to_cpt": DatasetTransformer.convert_to_cpt,
+        }
+
+        if method_name not in transformer_map:
+            raise ValueError(f"Unknown transformer method: {method_name}")
+
+        return transformer_map[method_name]
+
+    def validate_against_schema(self, schema: dict) -> bool:
+        """
+        Validate all records in raw_dataset against a schema.
+
+        Args:
+            schema: JSON schema to validate against
+
+        Returns:
+            True if all records are valid, False otherwise
+        """
+        try:
+            for row in self.raw_dataset:
+                jsonschema.validate(instance=row, schema=schema)
+            return True
+        except jsonschema.exceptions.ValidationError:
+            return False
+
     def transform(self, method: TrainingMethod, model: Model) -> "DatasetLoader":
         """
         Transform the dataset to the required format for the training method and model.
@@ -225,14 +272,14 @@ class DatasetLoader(ABC):
             return self
 
         # Find the right schema for the training method and model combination.
-        transform_config = None
+        transform_config: Optional[Dict[str, Any]] = None
         for (methods, models), config in TRANSFORM_CONFIG.items():
             if (method in methods) and (
                 models is None
                 or models == model
                 or (isinstance(models, tuple) and model in models)
             ):
-                transform_config = config
+                transform_config = cast(Dict[str, Any], config)
                 break
 
         if not transform_config:
@@ -241,43 +288,92 @@ class DatasetLoader(ABC):
                 f"Note: RFT is only supported on Nova 2.0."
             )
 
-        # Try to validate the dataset against the schema for the selected training method.
-        try:
-            [
-                jsonschema.validate(instance=row, schema=transform_config["schema"])
-                for row in self.raw_dataset
-            ]
+        target_schema = transform_config["schema"]
+
+        # Step 1: Check if already in target format
+        if self.validate_against_schema(target_schema):
             logger.info(transform_config["success_msg"])
             self.transformed_dataset = self.raw_dataset
+            return self
 
-        # Attempt to transform the dataset to the required format.
-        except jsonschema.exceptions.ValidationError as validate_e:
-            logger.info(transform_config["transform_msg"])
-            method_name = transform_config["transformer_method"]
+        # Step 2: Try each transformer in order (based on source format detection)
+        transformers: List[Dict[str, Any]] = transform_config.get("transformers", [])
 
-            # Map the right transformation function to the method.
-            if method_name == "convert_to_converse_sft_nova_one":
-                transformer_func = DatasetTransformer.convert_to_converse_sft_nova_one
-            elif method_name == "convert_to_converse_sft_nova_two":
-                transformer_func = DatasetTransformer.convert_to_converse_sft_nova_two
-            elif method_name == "convert_to_openai_rft":
-                transformer_func = DatasetTransformer.convert_to_openai_rft
-            elif method_name == "convert_to_evaluation":
-                transformer_func = DatasetTransformer.convert_to_evaluation
-            else:
-                raise ValueError(f"Unknown transformer method: {method_name}")
+        for transformer_info in transformers:
+            source_schema = transformer_info.get("source_schema")
+            method_name = transformer_info["method"]
+            transform_msg = transformer_info["msg"]
 
-            try:
-                self.transformed_dataset = [
-                    transformer_func(rec, self.column_mappings)
-                    for rec in self.raw_dataset
-                ]
-            except Exception as transform_e:
-                raise DataPrepError(
-                    f"These errors were caught when transforming the dataset: \n"
-                    f"- {validate_e.message}. Check: {validate_e.json_path}\n"
-                    f"- {transform_e}"
-                )
+            # If source_schema is None, this is the generic/fallback transformer
+            if source_schema is None:
+                logger.info(transform_msg)
+                transformer_func = self.get_transformer_function(method_name)
+                try:
+                    self.transformed_dataset = [
+                        transformer_func(rec, self.column_mappings)
+                        for rec in self.raw_dataset
+                    ]
+                    return self
+                except Exception as e:
+                    raise DataPrepError(
+                        f"Error transforming dataset using generic format: {str(e)}\n"
+                        f"Make sure to add the correct column mappings when initializing DatasetLoader."
+                    )
+
+            # Validate against the source schema
+            if self.validate_against_schema(source_schema):
+                logger.info(transform_msg)
+                transformer_func = self.get_transformer_function(method_name)
+                try:
+                    self.transformed_dataset = [
+                        transformer_func(rec, self.column_mappings)
+                        for rec in self.raw_dataset
+                    ]
+                    return self
+                except Exception as e:
+                    raise DataPrepError(
+                        f"Error transforming dataset from detected format: {str(e)}"
+                    )
+
+        # This shouldn't happen if config is set up correctly (should have a fallback)
+        raise DataPrepError(
+            f"Unable to transform dataset. No suitable transformer found for the given data format."
+        )
+
+    def validate(
+        self,
+        method: TrainingMethod,
+        model: Model,
+        eval_task: Optional[EvaluationTask] = None,
+    ) -> "DatasetLoader":
+        # Default to the transformed_dataset if one exists, otherwise use the raw_dataset.
+        if self.transformed_dataset:
+            dataset = self.transformed_dataset
+        elif self.raw_dataset:
+            dataset = self.raw_dataset
+        else:
+            logger.info("Dataset is empty. Call load() method to load data first")
+            return self
+
+        # Select the right validator for the provided method and validate.
+        if method in (TrainingMethod.SFT_LORA, TrainingMethod.SFT_FULL):
+            # Handles SFT 1.0 and 2.0
+            sft_validator = SFTDatasetValidator(dataset, model)
+            sft_validator.validate(dataset, model)
+        elif method == TrainingMethod.EVALUATION:
+            # Handles BYOD Eval datasets, NOT LLM-as-judge.
+            eval_validator = EvalDatasetValidator(dataset, model, eval_task)
+            eval_validator.validate(dataset, model)
+        elif method in (TrainingMethod.RFT_FULL, TrainingMethod.RFT_LORA):
+            rft_validator = RFTDatasetValidator(dataset, model)
+            rft_validator.validate(dataset, model)
+        elif method == TrainingMethod.CPT:
+            cpt_validator = CPTDatasetValidator(dataset, model)
+            cpt_validator.validate(dataset, model)
+        else:
+            logger.info(
+                "Skipping validation. Validation isn't available for that model/method combo right now."
+            )
         return self
 
     def save_data(self, save_path: str) -> str:
@@ -295,21 +391,42 @@ class DatasetLoader(ABC):
         elif self.raw_dataset:
             dataset = self.raw_dataset
         else:
-            logger.warn("Warning: Dataset is empty. An empty dataset will be saved.")
+            logger.warning("Warning: Dataset is empty. An empty dataset will be saved.")
             dataset = []
 
         try:
-            # fsppec handles saving the data file to either s3 or a local directory.
-            with fsspec.open(save_path, "w", encoding="utf-8") as f:
-                if ".jsonl" in save_path:
-                    for item in dataset:
-                        f.write(json.dumps(item, ensure_ascii=False) + "\n")
-                elif ".json" in save_path:
-                    json.dump(dataset, f, indent=2, ensure_ascii=False)
-                else:
-                    raise DataPrepError(
-                        f"Unsupported format: {format}. Use 'json' or 'jsonl'"
+            # Prepare the data based on format
+            if save_path.endswith(".jsonl"):
+                data = "\n".join(
+                    json.dumps(item, ensure_ascii=False) for item in dataset
+                )
+            elif save_path.endswith(".json"):
+                data = json.dumps(dataset, indent=2, ensure_ascii=False)
+            else:
+                raise DataPrepError(
+                    f"Unsupported format: {format}. Use 'json' or 'jsonl'"
+                )
+
+            # Try to save to S3 first
+            if save_path.startswith("s3://"):
+                s3_path = save_path[5:]  # Remove 's3://'
+                bucket, key = s3_path.split("/", 1)
+
+                s3_client = boto3.client("s3")
+                try:
+                    s3_client.put_object(
+                        Bucket=bucket,
+                        Key=key,
+                        Body=data.encode("utf-8"),
+                        ContentType="application/json",
                     )
+                except ClientError as e:
+                    raise DataPrepError(f"Failed to upload to S3: {e}")
+            # Otherwise save to local file
+            else:
+                local_path = Path(save_path)
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                local_path.write_text(data, encoding="utf-8")
             logger.info(f"Dataset saved successfully to {save_path}")
             return save_path
 
@@ -322,12 +439,16 @@ class JSONLDatasetLoader(DatasetLoader):
     def load(self, path: str) -> "DatasetLoader":
         self.raw_dataset = []
         try:
-            with fsspec.open(path, "r", encoding="utf-8-sig") as f:
-                for line in f:
+            f = load_file_content(
+                file_path=path, extension=".jsonl", encoding="utf-8-sig"
+            )
+            for line in f.splitlines():
+                line = line.strip()
+                if line:
                     try:
-                        self.raw_dataset.append(json.loads(line.strip()))
+                        self.raw_dataset.append(json.loads(line))
                     except json.JSONDecodeError as e:
-                        logger.error(f"Error parsing line: {line.strip()}. Error: {e}")
+                        logger.error(f"Error parsing line: {line}. Error: {e}")
         except Exception as e:
             logger.error(f"Error loading JSONL file {path}: {str(e)}")
         return self
@@ -337,12 +458,12 @@ class JSONDatasetLoader(DatasetLoader):
     def load(self, path: str) -> "DatasetLoader":
         self.raw_dataset = []
         try:
-            with fsspec.open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    self.raw_dataset = data
-                else:
-                    self.raw_dataset = [data]
+            f = load_file_content(file_path=path, extension=".json", encoding="utf-8")
+            data = json.loads(f)
+            if isinstance(data, list):
+                self.raw_dataset = data
+            else:
+                self.raw_dataset = [data]
         except Exception as e:
             logger.error(f"Error loading JSON file {path}: {str(e)}")
         return self
@@ -354,14 +475,16 @@ class CSVDatasetLoader(DatasetLoader):
         self.raw_dataset = []
         # Try removing BOM from CSV if present.
         try:
-            with fsspec.open(path, "r", encoding="utf-8-sig") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    self.raw_dataset.append(row)
+            f = load_file_content(
+                file_path=path, extension=".csv", encoding="utf-8-sig"
+            )
+            reader = csv.DictReader(StringIO(f))
+            for row in reader:
+                self.raw_dataset.append(row)
         except UnicodeError:
             # If that fails, try regular utf-8
-            with fsspec.open(path, "r", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    self.raw_dataset.append(row)
+            f = load_file_content(file_path=path, extension=".csv", encoding="utf-8")
+            reader = csv.DictReader(StringIO(f))
+            for row in reader:
+                self.raw_dataset.append(row)
         return self

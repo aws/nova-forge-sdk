@@ -21,61 +21,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, TypedDict
 
-from amzn_nova_customization_sdk.model.model_enums import (
-    DeployPlatform,
-    Platform,
-    TrainingMethod,
-    Version,
-)
+from amzn_nova_customization_sdk.model.model_enums import DeployPlatform
 from amzn_nova_customization_sdk.util.bedrock import check_deployment_status
 
 REGION_TO_ESCROW_ACCOUNT_MAPPING = {
     "us-east-1": "708977205387",
     "eu-west-2": "470633809225",
-}
-
-IMAGE_REPO_REGISTRY = {
-    TrainingMethod.RFT: "nova-fine-tune-repo",
-    TrainingMethod.RFT_LORA: "nova-fine-tune-repo",
-    TrainingMethod.SFT_LORA: "nova-fine-tune-repo",
-    TrainingMethod.SFT_FULLRANK: "nova-fine-tune-repo",
-    TrainingMethod.EVALUATION: "nova-evaluation-repo",
-}
-
-RUNTIME_PREFIX_REGISTRY = {
-    "SMTJRuntimeManager": "SM-TJ-",
-    "SMHPRuntimeManager": "SM-HP-",
-}
-
-METHOD_IMAGE_REGISTRY = {
-    Platform.SMTJ: {
-        Version.ONE: {
-            TrainingMethod.EVALUATION: "Eval-latest",
-            TrainingMethod.SFT_FULLRANK: "SFT-latest",
-            TrainingMethod.SFT_LORA: "SFT-latest",
-        },
-        Version.TWO: {
-            TrainingMethod.EVALUATION: "Eval-V2-latest",
-            TrainingMethod.RFT: "RFT-V2-latest",
-            TrainingMethod.RFT_LORA: "RFT-V2-latest",
-            TrainingMethod.SFT_FULLRANK: "SFT-V2-latest",
-            TrainingMethod.SFT_LORA: "SFT-V2-latest",
-        },
-    },
-    Platform.SMHP: {
-        Version.ONE: {
-            TrainingMethod.EVALUATION: "Eval-latest",
-            TrainingMethod.SFT_FULLRANK: "SFT-latest",
-            TrainingMethod.SFT_LORA: "SFT-latest",
-        },
-        Version.TWO: {
-            TrainingMethod.EVALUATION: "Eval-V2-latest",
-            TrainingMethod.RFT: "RFT-TRAIN-V2-latest",
-            TrainingMethod.RFT_LORA: "RFT-TRAIN-V2-latest",
-            TrainingMethod.SFT_FULLRANK: "SFT-V2-latest",
-            TrainingMethod.SFT_LORA: "SFT-V2-latest",
-        },
-    },
 }
 
 

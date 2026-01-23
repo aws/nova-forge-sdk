@@ -316,6 +316,289 @@ class TestSMTJBatchInferenceResult(unittest.TestCase):
             self.mock_sagemaker_client.describe_training_job.call_count, 1
         )  # Still 1)
 
+    @patch("boto3.client")
+    @patch("builtins.print")
+    def test_get_completed_without_save(self, mock_print, mock_boto3_client):
+        self.mock_sagemaker_client.describe_training_job.return_value = {
+            "TrainingJobStatus": "Completed"
+        }
+
+        mock_s3_client = Mock()
+        mock_boto3_client.return_value = mock_s3_client
+
+        test_results = {
+            "prompt": "'role': 'system', 'content': 'test_system' 'role': 'user', 'content': 'test_user'",
+            "inference": "test_inference",
+            "gold": "test_gold",
+        }
+
+        with tempfile.TemporaryDirectory() as source_dir:
+            with tempfile.TemporaryDirectory() as cache_dir:
+                results_dir = Path(source_dir) / "run_name" / "eval_results"
+                results_dir.mkdir(parents=True)
+
+                results_file = results_dir / "inference_output.jsonl"
+                with open(results_file, "w") as f:
+                    f.write(json.dumps(test_results) + "\n")
+
+                tar_path = Path(source_dir) / "output.tar.gz"
+                with tarfile.open(tar_path, "w:gz") as tar:
+                    tar.add(results_dir.parent, arcname="run_name")
+
+                def mock_download_file(bucket, key, local_path):
+                    import shutil
+
+                    shutil.copy2(tar_path, local_path)
+
+                mock_s3_client.download_file.side_effect = mock_download_file
+
+                with patch("tempfile.mkdtemp", return_value=cache_dir):
+                    result = self.result.get()
+
+                expected_result = {
+                    "system": "test_system",
+                    "query": "test_user",
+                    "gold_response": "test_gold",
+                    "inference_response": "test_inference",
+                }
+
+                self.assertIn("inference_results", result)
+                self.assertEqual(len(result["inference_results"]), 1)
+                self.assertEqual(result["inference_results"][0], expected_result)
+
+                mock_print.assert_any_call("Job 'test-job-123' completed successfully.")
+
+    @patch("boto3.client")
+    @patch("builtins.print")
+    def test_get_completed_with_s3_save(self, mock_print, mock_boto3_client):
+        self.mock_sagemaker_client.describe_training_job.return_value = {
+            "TrainingJobStatus": "Completed"
+        }
+
+        mock_s3_client = Mock()
+        mock_boto3_client.return_value = mock_s3_client
+
+        test_results = {
+            "prompt": "'role': 'system', 'content': 'test_system' 'role': 'user', 'content': 'test_user'",
+            "inference": "test_inference",
+            "gold": "test_gold",
+        }
+
+        with tempfile.TemporaryDirectory() as source_dir:
+            with tempfile.TemporaryDirectory() as cache_dir:
+                results_dir = Path(source_dir) / "run_name" / "eval_results"
+                results_dir.mkdir(parents=True)
+
+                results_file = results_dir / "inference_output.jsonl"
+                with open(results_file, "w") as f:
+                    f.write(json.dumps(test_results) + "\n")
+
+                tar_path = Path(source_dir) / "output.tar.gz"
+                with tarfile.open(tar_path, "w:gz") as tar:
+                    tar.add(results_dir.parent, arcname="run_name")
+
+                def mock_download_file(bucket, key, local_path):
+                    import shutil
+
+                    shutil.copy2(tar_path, local_path)
+
+                mock_s3_client.download_file.side_effect = mock_download_file
+
+                with patch("tempfile.mkdtemp", return_value=cache_dir):
+                    s3_save_path = "s3://test-bucket/results/output.jsonl"
+                    result = self.result.get(s3_path=s3_save_path)
+
+                mock_s3_client.put_object.assert_called_once()
+                call_args = mock_s3_client.put_object.call_args
+
+                self.assertEqual(call_args[1]["Bucket"], "test-bucket")
+                self.assertEqual(call_args[1]["Key"], "results/output.jsonl")
+                self.assertEqual(call_args[1]["ContentType"], "application/jsonlines")
+
+                body_content = call_args[1]["Body"].decode("utf-8")
+                lines = body_content.strip().split("\n")
+                self.assertEqual(len(lines), 1)
+                parsed = json.loads(lines[0])
+                self.assertIn("system", parsed)
+                self.assertIn("query", parsed)
+
+                mock_print.assert_any_call(
+                    f"Successfully saved the results to {s3_save_path}."
+                )
+
+    @patch("builtins.print")
+    def test_get_completed_with_local_save(self, mock_print):
+        self.mock_sagemaker_client.describe_training_job.return_value = {
+            "TrainingJobStatus": "Completed"
+        }
+
+        test_results = {
+            "prompt": "'role': 'system', 'content': 'test_system' 'role': 'user', 'content': 'test_user'",
+            "inference": "test_inference",
+            "gold": "test_gold",
+        }
+
+        with tempfile.TemporaryDirectory() as source_dir:
+            with tempfile.TemporaryDirectory() as cache_dir:
+                with tempfile.TemporaryDirectory() as output_dir:
+                    results_dir = Path(source_dir) / "run_name" / "eval_results"
+                    results_dir.mkdir(parents=True)
+
+                    results_file = results_dir / "inference_output.jsonl"
+                    with open(results_file, "w") as f:
+                        f.write(json.dumps(test_results) + "\n")
+
+                    tar_path = Path(source_dir) / "output.tar.gz"
+                    with tarfile.open(tar_path, "w:gz") as tar:
+                        tar.add(results_dir.parent, arcname="run_name")
+
+                    with patch("boto3.client") as mock_boto3:
+                        mock_s3_client = Mock()
+                        mock_boto3.return_value = mock_s3_client
+
+                        def mock_download_file(bucket, key, local_path):
+                            import shutil
+
+                            shutil.copy2(tar_path, local_path)
+
+                        mock_s3_client.download_file.side_effect = mock_download_file
+
+                        with patch("tempfile.mkdtemp", return_value=cache_dir):
+                            local_save_path = (
+                                Path(output_dir) / "results" / "output.jsonl"
+                            )
+                            result = self.result.get(s3_path=str(local_save_path))
+
+                    self.assertTrue(local_save_path.exists())
+
+                    with open(local_save_path, "r") as f:
+                        content = f.read()
+                        lines = content.strip().split("\n")
+                        self.assertEqual(len(lines), 1)
+                        parsed = json.loads(lines[0])
+                        self.assertIn("system", parsed)
+                        self.assertIn("query", parsed)
+
+                    mock_print.assert_any_call(
+                        f"Successfully saved the results to {local_save_path}."
+                    )
+
+    @patch("builtins.print")
+    def test_get_in_progress(self, mock_print):
+        self.mock_sagemaker_client.describe_training_job.return_value = {
+            "TrainingJobStatus": "InProgress"
+        }
+
+        result = self.result.get()
+
+        self.assertEqual(result, {})
+
+        mock_print.assert_any_call(
+            "Job 'test-job-123' still running in progress. Please wait until the job is completed."
+        )
+
+    @patch("builtins.print")
+    def test_get_failed(self, mock_print):
+        self.mock_sagemaker_client.describe_training_job.return_value = {
+            "TrainingJobStatus": "Failed"
+        }
+
+        result = self.result.get()
+
+        self.assertEqual(result, {})
+
+        mock_print.assert_any_call(
+            "Cannot show inference result. Job 'test-job-123' in Failed status."
+        )
+
+    @patch("boto3.client")
+    @patch("builtins.print")
+    def test_get_completed_no_results_file(self, mock_print, mock_boto3_client):
+        self.mock_sagemaker_client.describe_training_job.return_value = {
+            "TrainingJobStatus": "Completed"
+        }
+
+        mock_s3_client = Mock()
+        mock_boto3_client.return_value = mock_s3_client
+
+        with tempfile.TemporaryDirectory() as source_dir:
+            with tempfile.TemporaryDirectory() as cache_dir:
+                tar_path = Path(source_dir) / "output.tar.gz"
+                with tarfile.open(tar_path, "w:gz") as tar:
+                    pass  # Empty file
+
+                def mock_download_file(bucket, key, local_path):
+                    import shutil
+
+                    shutil.copy2(tar_path, local_path)
+
+                mock_s3_client.download_file.side_effect = mock_download_file
+
+                with patch("tempfile.mkdtemp", return_value=cache_dir):
+                    result = self.result.get()
+
+                self.assertEqual(result, {})
+
+                mock_print.assert_any_call(
+                    "No inference output jsonl file found for job test-job-123"
+                )
+
+    @patch("boto3.client")
+    @patch("builtins.print")
+    def test_get_save_error_handling(self, mock_print, mock_boto3_client):
+        self.mock_sagemaker_client.describe_training_job.return_value = {
+            "TrainingJobStatus": "Completed"
+        }
+
+        mock_s3_client = Mock()
+        mock_boto3_client.return_value = mock_s3_client
+
+        test_results = {
+            "prompt": "'role': 'system', 'content': 'test_system' 'role': 'user', 'content': 'test_user'",
+            "inference": "test_inference",
+            "gold": "test_gold",
+        }
+
+        with tempfile.TemporaryDirectory() as source_dir:
+            with tempfile.TemporaryDirectory() as cache_dir:
+                results_dir = Path(source_dir) / "run_name" / "eval_results"
+                results_dir.mkdir(parents=True)
+
+                results_file = results_dir / "inference_output.jsonl"
+                with open(results_file, "w") as f:
+                    f.write(json.dumps(test_results) + "\n")
+
+                tar_path = Path(source_dir) / "output.tar.gz"
+                with tarfile.open(tar_path, "w:gz") as tar:
+                    tar.add(results_dir.parent, arcname="run_name")
+
+                def mock_download_file(bucket, key, local_path):
+                    import shutil
+
+                    shutil.copy2(tar_path, local_path)
+
+                mock_s3_client.download_file.side_effect = mock_download_file
+
+                from botocore.exceptions import ClientError
+
+                mock_s3_client.put_object.side_effect = ClientError(
+                    {"Error": {"Code": "AccessDenied", "Message": "Access Denied"}},
+                    "PutObject",
+                )
+
+                with patch("tempfile.mkdtemp", return_value=cache_dir):
+                    s3_save_path = "s3://test-bucket/results/output.jsonl"
+
+                    with self.assertRaises(ClientError):
+                        self.result.get(s3_path=s3_save_path)
+
+                    error_calls = [
+                        call
+                        for call in mock_print.call_args_list
+                        if "Error saving inference results" in str(call)
+                    ]
+                    self.assertGreater(len(error_calls), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

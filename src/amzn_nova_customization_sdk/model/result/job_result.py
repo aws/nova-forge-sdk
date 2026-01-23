@@ -89,6 +89,11 @@ class SMTJStatusManager(JobStatusManager):
 class SMHPStatusManager(JobStatusManager):
     def __init__(self, cluster_name: str, namespace: str):
         super().__init__()
+        from amzn_nova_customization_sdk.validation.validator import Validator
+
+        Validator.validate_cluster_name(cluster_name=cluster_name)
+        Validator.validate_namespace(namespace=namespace)
+
         self.cluster_name = cluster_name
         self.namespace = namespace
 
@@ -123,6 +128,10 @@ class SMHPStatusManager(JobStatusManager):
             or self._job_status == JobStatus.FAILED
         ):
             return self._job_status, self._raw_status
+
+        from amzn_nova_customization_sdk.validation.validator import Validator
+
+        Validator.validate_job_name(job_name=job_id)
 
         try:
             # Connect cluster before making call

@@ -1,0 +1,25 @@
+run:
+  name: '{{name}}'
+  model_type: '{{model_type}}'
+  model_name_or_path: '{{model_name_or_path}}'
+  replicas: '{{replicas}}'
+  data_s3_path: '{{data_s3_path}}'
+  output_s3_path: '{{output_s3_path}}'
+  mlflow_tracking_uri: '{{mlflow_tracking_uri}}'
+  mlflow_experiment_name : '{{mlflow_experiment_name}}'
+  mlflow_run_name : '{{mlflow_run_name}}'
+
+evaluation:
+  task: rft_eval
+  strategy: rft_eval
+  metric: all
+
+inference:
+  max_new_tokens: 8196
+  top_k: -1
+  top_p: 1.0
+  temperature: 0
+  top_logprobs: '{{top_logprobs}}'
+
+rl_env:
+  reward_lambda_arn: '{{reward_lambda_arn}}'

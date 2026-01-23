@@ -15,6 +15,7 @@
 Helper functions for Sagemaker management.
 """
 
+import json
 from typing import Any, Dict, List, Optional
 
 import boto3
@@ -131,3 +132,48 @@ def get_cluster_instance_info(
         raise RuntimeError(
             f"Failed to get cluster instance info for {cluster_name}: {str(e)}"
         )
+
+
+def _get_hub_content(
+    hub_name: str,
+    hub_content_name: str,
+    hub_content_type: str,
+    region: str,
+) -> Dict[str, Any]:
+    """
+     Get hub content from SageMaker via the DescribeHubContent API
+
+    Args:
+        hub_name: Name of the SageMaker Hub
+        hub_content_name: Name of the hub content
+        hub_content_type: Type of hub content
+        region: AWS region
+
+    Returns:
+        Dict containing hub content
+    """
+    sagemaker_client = boto3.client("sagemaker", region_name=region)
+
+    try:
+        response = sagemaker_client.describe_hub_content(
+            HubName=hub_name,
+            HubContentType=hub_content_type,
+            HubContentName=hub_content_name,
+        )
+
+        # Parse HubContentDocument if it's a JSON string
+        if "HubContentDocument" in response:
+            hub_content_document = response["HubContentDocument"]
+            if isinstance(hub_content_document, str):
+                try:
+                    response["HubContentDocument"] = json.loads(hub_content_document)
+                except (json.JSONDecodeError, TypeError):
+                    # If parsing fails, leave the string as is
+                    pass
+
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to get SageMaker hub content for '{hub_content_name}': {str(e)}"
+        )
+
+    return response
