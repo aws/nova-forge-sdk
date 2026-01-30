@@ -120,25 +120,25 @@ class TestLoadFileContent(unittest.TestCase):
     def test_load_file_content_s3(self, mock_boto_client):
         content = "key: value"
         mock_s3 = MagicMock()
-        mock_s3.get_object.return_value = {"Body": BytesIO(content.encode("utf-8"))}
+        # Mock iter_lines to return an iterator
+        mock_body = MagicMock()
+        mock_body.iter_lines.return_value = iter([content.encode("utf-8")])
+        mock_s3.get_object.return_value = {"Body": mock_body}
         mock_boto_client.return_value = mock_s3
 
         with patch(
             "amzn_nova_customization_sdk.util.recipe._parse_s3_uri",
             return_value=("bucket", "key.yaml"),
         ):
-            result = load_file_content("s3://bucket/key.yaml", ".yaml")
-            self.assertEqual(result, content)
+            result = list(load_file_content("s3://bucket/key.yaml", ".yaml"))
+            self.assertEqual(result, [content])
 
-    @patch("amzn_nova_customization_sdk.util.recipe.Path.read_text")
-    def test_load_file_content_local(self, mock_read_text):
-        mock_read_text.return_value = "field: value"
-        with patch(
-            "amzn_nova_customization_sdk.util.recipe._parse_s3_uri",
-            return_value=None,
-        ):
-            result = load_file_content("/tmp/file.yaml")
-            self.assertEqual(result, "field: value")
+    @patch("amzn_nova_customization_sdk.util.recipe._parse_s3_uri", return_value=None)
+    def test_load_file_content_local(self, mock_parse_s3_uri):
+        content = "field: value"
+        with patch("builtins.open", unittest.mock.mock_open(read_data=content)):
+            result = list(load_file_content("/tmp/file.yaml"))
+            self.assertEqual(result, [content])
 
     @patch("amzn_nova_customization_sdk.util.recipe.boto3.client")
     @patch("amzn_nova_customization_sdk.util.recipe._parse_s3_uri")
@@ -155,29 +155,29 @@ class TestLoadFileContent(unittest.TestCase):
         mock_boto_client.return_value = mock_s3
 
         with self.assertRaises(FileLoadError) as context:
-            load_file_content("s3://bucket/key.yaml")
+            list(load_file_content("s3://bucket/key.yaml"))
 
         self.assertIn("Failed to load S3 file", str(context.exception))
 
     @patch("amzn_nova_customization_sdk.util.recipe._parse_s3_uri", return_value=None)
     def test_load_file_content_file_not_found(self, mock_parse_s3_uri):
-        with patch.object(Path, "read_text", side_effect=FileNotFoundError):
+        with patch("builtins.open", side_effect=FileNotFoundError):
             with self.assertRaises(FileLoadError) as context:
-                load_file_content("local_file.yaml")
+                list(load_file_content("local_file.yaml"))
 
             self.assertIn("File not found", str(context.exception))
 
     @patch("amzn_nova_customization_sdk.util.recipe._parse_s3_uri", return_value=None)
     def test_load_file_content_os_error(self, mock_parse_s3_uri):
-        with patch.object(Path, "read_text", side_effect=OSError("disk error")):
+        with patch("builtins.open", side_effect=OSError("disk error")):
             with self.assertRaises(FileLoadError) as context:
-                load_file_content("local_file.yaml")
+                list(load_file_content("local_file.yaml"))
 
             self.assertIn("Failed to read file", str(context.exception))
 
     def test_load_file_content_wrong_extension(self):
         with self.assertRaises(FileLoadError) as context:
-            load_file_content("file.txt", ".yaml")
+            list(load_file_content("file.txt", ".yaml"))
         self.assertIn("must have .yaml extension", str(context.exception))
 
 
@@ -1084,6 +1084,89 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
             )
 
         self.assertIn("CPT is not supported on SMTJ", str(context.exception))
+
+    @patch("amzn_nova_customization_sdk.util.recipe._get_hub_content")
+    def test_get_hub_recipe_metadata_dpo_lora(self, mock_get_hub_content):
+        mock_get_hub_content.return_value = {
+            "HubContentDocument": {
+                "RecipeCollection": [
+                    {
+                        "DisplayName": "Nova Pro LoRA DPO on GPU",
+                        "Name": "nova_pro_1_0_p5_p4d_gpu_lora_dpo",
+                        "RecipeFilePath": "recipes/fine-tuning/nova/nova_1_0/nova_pro/DPO/nova_pro_1_0_p5_p4d_gpu_lora_dpo.yaml",
+                        "HostingConfigs": [{"InstanceType": "ml.p5.48xlarge"}],
+                        "CustomizationTechnique": "DPO",
+                        "InstanceCount": 6,
+                        "Type": "FineTuning",
+                        "Versions": ["1.0.0"],
+                        "Hardware": "GPU",
+                        "SupportedInstanceTypes": ["ml.p5.48xlarge"],
+                        "Peft": "LORA",
+                        "SequenceLength": "16K",
+                        "ServerlessMeteringType": "Token-based",
+                        "HpEksPayloadTemplateS3Uri": "s3://jumpstart-cache-prod-us-east-1/recipes/nova_pro_1_0_p5_p4d_gpu_lora_dpo_payload_template_k8s_v1.0.20.yaml",
+                        "HpEksOverrideParamsS3Uri": "s3://jumpstart-cache-prod-us-east-1/recipes/nova_pro_1_0_p5_p4d_gpu_lora_dpo_override_params_k8s_v1.0.20.json",
+                        "SmtjRecipeTemplateS3Uri": "s3://jumpstart-cache-prod-us-east-1/recipes/nova_pro_1_0_p5_p4d_gpu_lora_dpo_payload_template_sm_jobs_v1.0.20.yaml",
+                        "SmtjOverrideParamsS3Uri": "s3://jumpstart-cache-prod-us-east-1/recipes/nova_pro_1_0_p5_p4d_gpu_lora_dpo_override_params_sm_jobs_v1.0.20.json",
+                        "SmtjImageUri": "708977205387.dkr.ecr.us-east-1.amazonaws.com/nova-fine-tune-repo:SM-TJ-DPO-latest",
+                    }
+                ]
+            }
+        }
+
+        result = get_hub_recipe_metadata(
+            model=Model.NOVA_PRO,
+            method=TrainingMethod.DPO_LORA,
+            platform=Platform.SMHP,
+            instance_type="ml.p5.48xlarge",
+            region="us-east-1",
+        )
+
+        self.assertEqual(result["CustomizationTechnique"], "DPO")
+        self.assertEqual(result["Peft"], "LORA")
+        self.assertIn("HpEksPayloadTemplateS3Uri", result)
+        self.assertIn("HpEksOverrideParamsS3Uri", result)
+
+    @patch("amzn_nova_customization_sdk.util.recipe._get_hub_content")
+    def test_get_hub_recipe_metadata_dpo_full(self, mock_get_hub_content):
+        mock_get_hub_content.return_value = {
+            "HubContentDocument": {
+                "RecipeCollection": [
+                    {
+                        "DisplayName": "Nova Pro DPO on GPU",
+                        "Name": "nova_pro_1_0_p5_gpu_dpo",
+                        "RecipeFilePath": "recipes/fine-tuning/nova/nova_1_0/nova_pro/DPO/nova_pro_1_0_p5_gpu_dpo.yaml",
+                        "HostingConfigs": [{"InstanceType": "ml.p5.48xlarge"}],
+                        "CustomizationTechnique": "DPO",
+                        "InstanceCount": 6,
+                        "Type": "FineTuning",
+                        "Versions": ["1.0.0"],
+                        "Hardware": "GPU",
+                        "SupportedInstanceTypes": ["ml.p5.48xlarge"],
+                        "SequenceLength": "16K",
+                        "ServerlessMeteringType": "Token-based",
+                        "HpEksPayloadTemplateS3Uri": "s3://jumpstart-cache-prod-us-east-1/recipes/nova_pro_1_0_p5_gpu_dpo_payload_template_k8s_v1.0.20.yaml",
+                        "HpEksOverrideParamsS3Uri": "s3://jumpstart-cache-prod-us-east-1/recipes/nova_pro_1_0_p5_gpu_dpo_override_params_k8s_v1.0.20.json",
+                        "SmtjRecipeTemplateS3Uri": "s3://jumpstart-cache-prod-us-east-1/recipes/nova_pro_1_0_p5_gpu_dpo_payload_template_sm_jobs_v1.0.20.yaml",
+                        "SmtjOverrideParamsS3Uri": "s3://jumpstart-cache-prod-us-east-1/recipes/nova_pro_1_0_p5_gpu_dpo_override_params_sm_jobs_v1.0.20.json",
+                        "SmtjImageUri": "708977205387.dkr.ecr.us-east-1.amazonaws.com/nova-fine-tune-repo:SM-TJ-DPO-latest",
+                    }
+                ]
+            }
+        }
+
+        result = get_hub_recipe_metadata(
+            model=Model.NOVA_PRO,
+            method=TrainingMethod.DPO_FULL,
+            platform=Platform.SMHP,
+            instance_type="ml.p5.48xlarge",
+            region="us-east-1",
+        )
+
+        self.assertEqual(result["CustomizationTechnique"], "DPO")
+        self.assertNotIn("Peft", result)
+        self.assertIn("HpEksPayloadTemplateS3Uri", result)
+        self.assertIn("HpEksOverrideParamsS3Uri", result)
 
     @patch("amzn_nova_customization_sdk.util.recipe._get_hub_content")
     def test_get_hub_recipe_metadata_checks_instance_type(self, mock_get_hub_content):

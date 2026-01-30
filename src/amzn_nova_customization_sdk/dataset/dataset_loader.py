@@ -37,13 +37,11 @@ import csv
 import json
 import random
 from abc import ABC, abstractmethod
-from io import StringIO
+from itertools import islice, tee
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, cast
 
-import boto3
 import jsonschema
-from botocore.exceptions import ClientError
 
 from amzn_nova_customization_sdk.dataset.dataset_validator import (
     CPTDatasetValidator,
@@ -54,6 +52,8 @@ from amzn_nova_customization_sdk.dataset.dataset_validator import (
 from amzn_nova_customization_sdk.model.model_enums import Model, TrainingMethod
 from amzn_nova_customization_sdk.recipe.recipe_config import EvaluationTask
 
+from ..util.dataset_writer import DatasetWriter
+from ..util.iterator_utils import peek
 from ..util.logging import logger
 from ..util.recipe import load_file_content
 from .dataset_transformers import DatasetTransformer
@@ -81,10 +81,10 @@ class DatasetLoader(ABC):
 
     def __init__(self, **column_mappings):
         self.column_mappings = column_mappings
-        self.raw_dataset: List[Dict] = []
-        self.transformed_dataset: List[Dict] = []
+        # Store callables that return iterators
+        self.raw_dataset: Callable[[], Iterator[Dict]] = lambda: iter([])
+        self.transformed_dataset: Callable[[], Iterator[Dict]] = lambda: iter([])
         self.transformer = DatasetTransformer()
-        pass
 
     @abstractmethod
     def load(self, path: str) -> "DatasetLoader":
@@ -106,17 +106,28 @@ class DatasetLoader(ABC):
         Args:
             n: Number of rows to display (default: 10)
         """
-        if not self.raw_dataset:
-            logger.info("Dataset is empty. Call load() method to load data first")
-            return
-        if self.transformed_dataset:
+        # Try transformed dataset first
+        transformed_iter = self.transformed_dataset()
+        peeked_value, transformed_iter = peek(transformed_iter)
+
+        if peeked_value:
             logger.info("Showing transformed dataset:")
-            for i, row in enumerate(self.transformed_dataset[:n]):
+            transformed_items = islice(transformed_iter, n)
+            for i, row in enumerate(transformed_items):
+                logger.info(f"\nRow {i}: {json.dumps(row)}")
+            return
+
+        # Fall back to raw dataset
+        raw_iter = self.raw_dataset()
+        peeked_value, raw_iter = peek(raw_iter)
+
+        if peeked_value:
+            logger.info("Showing raw dataset:")
+            raw_items = islice(raw_iter, n)
+            for i, row in enumerate(raw_items):
                 logger.info(f"\nRow {i}: {json.dumps(row)}")
         else:
-            logger.info("Showing raw dataset:")
-            for i, row in enumerate(self.raw_dataset[:n]):
-                logger.info(f"\nRow {i}: {json.dumps(row)}")
+            logger.info("Dataset is empty. Call load() method to load data first")
 
     def split_data(
         self,
@@ -136,19 +147,6 @@ class DatasetLoader(ABC):
 
         Returns: Tuple of three DatasetLoader objects (train, val, test)
         """
-        # Checks if transformed_dataset has data. If so, this is what we'll split. If not, split raw_data.
-        if self.transformed_dataset:
-            dataset = self.transformed_dataset
-        elif self.raw_dataset:
-            dataset = self.raw_dataset
-        else:
-            raise DataPrepError("Dataset is empty. Call load() method first")
-
-        # Shuffle data
-        random.seed(seed)
-        shuffled_data = dataset.copy()
-        random.shuffle(shuffled_data)
-
         # Assign default ratio values if none are provided, else ask for all three to be provided.
         if (train_ratio, val_ratio, test_ratio) == (None, None, None):
             train_ratio = 0.8
@@ -160,12 +158,38 @@ class DatasetLoader(ABC):
                 f"You provided: (Train: {train_ratio}, Val: {val_ratio}, Test: {test_ratio})"
             )
 
-        if len(shuffled_data) < 10:
+        # Validate the ratios
+        if any(r < 0 for r in [train_ratio, val_ratio, test_ratio]):
+            raise DataPrepError(
+                "Calculated ratio is negative. Provided ratios sum to > 1.0"
+            )
+        if abs(train_ratio + val_ratio + test_ratio - 1.0) > 1e-6:
+            raise DataPrepError(
+                f"Split ratios must sum to 1.0. Current Ratios: "
+                f"(Train: {train_ratio}, Val: {val_ratio}, Test: {test_ratio} -> Total: {abs(train_ratio + val_ratio + test_ratio)})"
+            )
+
+        # Materialize the dataset once - try transformed first, then raw
+        transformed_iter = self.transformed_dataset()
+        dataset = list(transformed_iter)  # Warning: collects full dataset into memory
+
+        if not dataset:
+            raw_iter = self.raw_dataset()
+            dataset = list(raw_iter)  # Warning: collects full dataset into memory
+        if not dataset:
+            raise DataPrepError("Dataset is empty. Call load() method first")
+
+        if len(dataset) < 10:
             logger.info(
                 "The provided dataset is small. Data will be split, but consider adding more data for better results."
             )
 
-        n_total = len(shuffled_data)
+        # Create shuffled indices instead of shuffling the data itself
+        random.seed(seed)
+        indices = list(range(len(dataset)))
+        random.shuffle(indices)
+
+        n_total = len(dataset)
         n_train = max(1, round(n_total * train_ratio)) if train_ratio > 0 else 0
         remaining = n_total - n_train
 
@@ -189,35 +213,31 @@ class DatasetLoader(ABC):
             else:
                 n_train -= 1
 
-        # Validate the ratios
-        if any(r < 0 for r in [train_ratio, val_ratio, test_ratio]):
-            raise DataPrepError(
-                "Calculated ratio is negative. Provided ratios sum to > 1.0"
-            )
-        if abs(train_ratio + val_ratio + test_ratio - 1.0) > 1e-6:
-            raise DataPrepError(
-                f"Split ratios must sum to 1.0. Current Ratios: "
-                f"(Train: {train_ratio}, Val: {val_ratio}, Test: {test_ratio} -> Total: {abs(train_ratio + val_ratio + test_ratio)})"
-            )
+        # Split indices into train/val/test
+        train_indices = indices[:n_train]
+        val_indices = indices[n_train : n_train + n_val]
+        test_indices = indices[n_train + n_val :]
 
-        # Split the data into train/val/test
-        train_data = shuffled_data[:n_train]
-        val_data = shuffled_data[n_train : n_train + n_val]
-        test_data = shuffled_data[n_train + n_val :]
+        # Create lazy generators that yield items based on indices
+        def make_dataset_generator(
+            split_indices: List[int],
+        ) -> Callable[[], Iterator[Dict]]:
+            def generator():
+                for idx in split_indices:
+                    yield dataset[idx]
 
-        # Create new DatasetLoaders for each split.
+            return generator
+
         train_loader = self.__class__(**self.column_mappings)
-        train_loader.raw_dataset = train_data
+        train_loader.raw_dataset = make_dataset_generator(train_indices)
 
         val_loader = self.__class__(**self.column_mappings)
-        val_loader.raw_dataset = val_data
+        val_loader.raw_dataset = make_dataset_generator(val_indices)
 
         test_loader = self.__class__(**self.column_mappings)
-        test_loader.raw_dataset = test_data
+        test_loader.raw_dataset = make_dataset_generator(test_indices)
 
-        logger.info(
-            f"Data split: {len(train_data)} train, {len(val_data)} val, {len(test_data)} test"
-        )
+        logger.info(f"Data split: {n_train} train, {n_val} val, {n_test} test")
         return train_loader, val_loader, test_loader
 
     def get_transformer_function(self, method_name: str):
@@ -250,7 +270,7 @@ class DatasetLoader(ABC):
             True if all records are valid, False otherwise
         """
         try:
-            for row in self.raw_dataset:
+            for row in self.raw_dataset():
                 jsonschema.validate(instance=row, schema=schema)
             return True
         except jsonschema.exceptions.ValidationError:
@@ -267,7 +287,11 @@ class DatasetLoader(ABC):
         Returns:
             self: Updates the value of the transformed_dataset if a change is made.
         """
-        if not self.raw_dataset:
+        # Check if dataset is empty using tee to peek without consuming
+        raw_iter = self.raw_dataset()  # Call the callable to get iterator
+        peeked_value, raw_iter = peek(raw_iter)
+
+        if peeked_value is None:
             logger.info("Dataset is empty. Call load() method to load data first")
             return self
 
@@ -304,36 +328,42 @@ class DatasetLoader(ABC):
             method_name = transformer_info["method"]
             transform_msg = transformer_info["msg"]
 
-            # If source_schema is None, this is the generic/fallback transformer
-            if source_schema is None:
-                logger.info(transform_msg)
-                transformer_func = self.get_transformer_function(method_name)
-                try:
-                    self.transformed_dataset = [
-                        transformer_func(rec, self.column_mappings)
-                        for rec in self.raw_dataset
-                    ]
-                    return self
-                except Exception as e:
-                    raise DataPrepError(
-                        f"Error transforming dataset using generic format: {str(e)}\n"
-                        f"Make sure to add the correct column mappings when initializing DatasetLoader."
-                    )
+            # Check if this transformer applies (None = generic/fallback, otherwise validate schema)
+            should_apply = source_schema is None or self.validate_against_schema(
+                source_schema
+            )
 
-            # Validate against the source schema
-            if self.validate_against_schema(source_schema):
+            if should_apply:
                 logger.info(transform_msg)
                 transformer_func = self.get_transformer_function(method_name)
-                try:
-                    self.transformed_dataset = [
-                        transformer_func(rec, self.column_mappings)
-                        for rec in self.raw_dataset
-                    ]
-                    return self
-                except Exception as e:
-                    raise DataPrepError(
-                        f"Error transforming dataset from detected format: {str(e)}"
-                    )
+
+                # Determine error message based on transformer type
+                error_suffix = (
+                    "\nMake sure to add the correct column mappings when initializing DatasetLoader."
+                    if source_schema is None
+                    else ""
+                )
+
+                # Create a lazy transformer
+                def transform_generator(
+                    captured_source_schema=source_schema,
+                    captured_error_suffix=error_suffix,
+                ):
+                    try:
+                        for rec in self.raw_dataset():
+                            yield transformer_func(rec, self.column_mappings)
+                    except Exception as e:
+                        error_type = (
+                            "using generic format"
+                            if captured_source_schema is None
+                            else "from detected format"
+                        )
+                        raise DataPrepError(
+                            f"Error transforming dataset {error_type}: {str(e)}{captured_error_suffix}"
+                        )
+
+                self.transformed_dataset = transform_generator
+                return self
 
         # This shouldn't happen if config is set up correctly (should have a fallback)
         raise DataPrepError(
@@ -346,11 +376,18 @@ class DatasetLoader(ABC):
         model: Model,
         eval_task: Optional[EvaluationTask] = None,
     ) -> "DatasetLoader":
-        # Default to the transformed_dataset if one exists, otherwise use the raw_dataset.
-        if self.transformed_dataset:
-            dataset = self.transformed_dataset
-        elif self.raw_dataset:
-            dataset = self.raw_dataset
+        # Check which dataset to use - try transformed first, then raw
+        transformed_iter = self.transformed_dataset()
+        raw_iter = self.raw_dataset()
+
+        peeked_transformed, transformed_iter = peek(transformed_iter)
+        peeked_raw, raw_iter = peek(raw_iter)
+
+        # Recreate the iterator to use (since peek consumed the original)
+        if peeked_transformed:
+            dataset = transformed_iter
+        elif peeked_raw:
+            dataset = raw_iter
         else:
             logger.info("Dataset is empty. Call load() method to load data first")
             return self
@@ -358,17 +395,17 @@ class DatasetLoader(ABC):
         # Select the right validator for the provided method and validate.
         if method in (TrainingMethod.SFT_LORA, TrainingMethod.SFT_FULL):
             # Handles SFT 1.0 and 2.0
-            sft_validator = SFTDatasetValidator(dataset, model)
+            sft_validator = SFTDatasetValidator()
             sft_validator.validate(dataset, model)
         elif method == TrainingMethod.EVALUATION:
             # Handles BYOD Eval datasets, NOT LLM-as-judge.
-            eval_validator = EvalDatasetValidator(dataset, model, eval_task)
+            eval_validator = EvalDatasetValidator(eval_task)
             eval_validator.validate(dataset, model)
         elif method in (TrainingMethod.RFT_FULL, TrainingMethod.RFT_LORA):
-            rft_validator = RFTDatasetValidator(dataset, model)
+            rft_validator = RFTDatasetValidator(model)
             rft_validator.validate(dataset, model)
         elif method == TrainingMethod.CPT:
-            cpt_validator = CPTDatasetValidator(dataset, model)
+            cpt_validator = CPTDatasetValidator()
             cpt_validator.validate(dataset, model)
         else:
             logger.info(
@@ -378,55 +415,42 @@ class DatasetLoader(ABC):
 
     def save_data(self, save_path: str) -> str:
         """
-        Saves the dataset to a local or S3 directory.
+        Saves the dataset to a local or S3 directory using lazy streaming.
 
         Args:
             save_path (str): Path where to save the file
 
         Returns: Path where the file was saved
         """
-        # Check if the dataset is empty.
-        if self.transformed_dataset:
-            dataset = self.transformed_dataset
-        elif self.raw_dataset:
-            dataset = self.raw_dataset
-        else:
+        # Get iterator - try transformed first, then raw
+        transformed_iter = self.transformed_dataset()
+        peeked_value, dataset_iter = peek(transformed_iter)
+
+        if peeked_value is None:
+            raw_iter = self.raw_dataset()
+            peeked_value, dataset_iter = peek(raw_iter)
+
+        if peeked_value is None:
             logger.warning("Warning: Dataset is empty. An empty dataset will be saved.")
-            dataset = []
+            dataset_iter = iter([])
 
         try:
-            # Prepare the data based on format
+            # Determine format
             if save_path.endswith(".jsonl"):
-                data = "\n".join(
-                    json.dumps(item, ensure_ascii=False) for item in dataset
-                )
+                is_jsonl = True
             elif save_path.endswith(".json"):
-                data = json.dumps(dataset, indent=2, ensure_ascii=False)
+                is_jsonl = False
             else:
                 raise DataPrepError(
-                    f"Unsupported format: {format}. Use 'json' or 'jsonl'"
+                    "Unsupported format. Use '.json' or '.jsonl' extension"
                 )
 
-            # Try to save to S3 first
+            # Save to S3 or local file using DatasetWriter
             if save_path.startswith("s3://"):
-                s3_path = save_path[5:]  # Remove 's3://'
-                bucket, key = s3_path.split("/", 1)
-
-                s3_client = boto3.client("s3")
-                try:
-                    s3_client.put_object(
-                        Bucket=bucket,
-                        Key=key,
-                        Body=data.encode("utf-8"),
-                        ContentType="application/json",
-                    )
-                except ClientError as e:
-                    raise DataPrepError(f"Failed to upload to S3: {e}")
-            # Otherwise save to local file
+                DatasetWriter.save_to_s3(save_path, dataset_iter, is_jsonl)
             else:
-                local_path = Path(save_path)
-                local_path.parent.mkdir(parents=True, exist_ok=True)
-                local_path.write_text(data, encoding="utf-8")
+                DatasetWriter.save_to_local(save_path, dataset_iter, is_jsonl)
+
             logger.info(f"Dataset saved successfully to {save_path}")
             return save_path
 
@@ -437,54 +461,82 @@ class DatasetLoader(ABC):
 # === DATASET LOADER CLASSES ===
 class JSONLDatasetLoader(DatasetLoader):
     def load(self, path: str) -> "DatasetLoader":
-        self.raw_dataset = []
-        try:
-            f = load_file_content(
-                file_path=path, extension=".jsonl", encoding="utf-8-sig"
-            )
-            for line in f.splitlines():
-                line = line.strip()
-                if line:
-                    try:
-                        self.raw_dataset.append(json.loads(line))
-                    except json.JSONDecodeError as e:
-                        logger.error(f"Error parsing line: {line}. Error: {e}")
-        except Exception as e:
-            logger.error(f"Error loading JSONL file {path}: {str(e)}")
+        """Lazy load JSONL file - creates a generator function."""
+
+        def jsonl_generator():
+            """Generator that yields records from JSONL file line by line."""
+            try:
+                for line in load_file_content(
+                    file_path=path, extension=".jsonl", encoding="utf-8-sig"
+                ):
+                    line = line.strip()
+                    if line:
+                        try:
+                            yield json.loads(line)
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Error parsing line: {line}. Error: {e}")
+            except Exception as e:
+                logger.error(f"Error loading JSONL file {path}: {str(e)}")
+
+        self.raw_dataset = jsonl_generator
         return self
 
 
 class JSONDatasetLoader(DatasetLoader):
     def load(self, path: str) -> "DatasetLoader":
-        self.raw_dataset = []
-        try:
-            f = load_file_content(file_path=path, extension=".json", encoding="utf-8")
-            data = json.loads(f)
-            if isinstance(data, list):
-                self.raw_dataset = data
-            else:
-                self.raw_dataset = [data]
-        except Exception as e:
-            logger.error(f"Error loading JSON file {path}: {str(e)}")
+        """
+        Load JSON file - creates a generator function.
+        Note: JSON files must be fully parsed, so this loads the entire file into memory.
+        For large datasets, prefer JSONL format which supports true streaming.
+        """
+
+        def json_generator():
+            """Generator that yields records from JSON file."""
+            try:
+                # JSON requires full parsing, so we need to collect all lines
+                lines = list(
+                    load_file_content(
+                        file_path=path, extension=".json", encoding="utf-8"
+                    )
+                )
+                content = "\n".join(lines)
+                data = json.loads(content)
+                if isinstance(data, list):
+                    yield from data
+                else:
+                    yield data
+            except Exception as e:
+                logger.error(f"Error loading JSON file {path}: {str(e)}")
+
+        self.raw_dataset = json_generator
         return self
 
 
 class CSVDatasetLoader(DatasetLoader):
-    # Loads the dataset from CSV format and stores it as JSONL.
     def load(self, path: str) -> "DatasetLoader":
-        self.raw_dataset = []
-        # Try removing BOM from CSV if present.
-        try:
-            f = load_file_content(
-                file_path=path, extension=".csv", encoding="utf-8-sig"
-            )
-            reader = csv.DictReader(StringIO(f))
-            for row in reader:
-                self.raw_dataset.append(row)
-        except UnicodeError:
-            # If that fails, try regular utf-8
-            f = load_file_content(file_path=path, extension=".csv", encoding="utf-8")
-            reader = csv.DictReader(StringIO(f))
-            for row in reader:
-                self.raw_dataset.append(row)
+        """
+        Load CSV file - creates a generator function.
+        Note: CSV parsing requires reading the header first, but rows are streamed lazily.
+        """
+
+        def csv_generator():
+            """Generator that yields records from CSV file row by row."""
+            try:
+                # Stream lines and parse as CSV
+                lines = load_file_content(
+                    file_path=path, extension=".csv", encoding="utf-8-sig"
+                )
+                reader = csv.DictReader(lines)
+                yield from reader
+            except UnicodeError:
+                # If that fails, try regular utf-8
+                lines = load_file_content(
+                    file_path=path, extension=".csv", encoding="utf-8"
+                )
+                reader = csv.DictReader(lines)
+                yield from reader
+            except Exception as e:
+                logger.error(f"Error loading CSV file {path}: {str(e)}")
+
+        self.raw_dataset = csv_generator
         return self

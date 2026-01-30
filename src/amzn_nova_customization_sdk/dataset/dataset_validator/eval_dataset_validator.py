@@ -18,7 +18,7 @@ This module implements validation for evaluation datasets,
 ensuring they meet all requirements for model evaluation.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, Iterator, List, Optional
 
 from pydantic import BaseModel, field_validator
 
@@ -124,12 +124,15 @@ class EvalDatasetValidator(BaseDatasetValidator):
 
     def __init__(
         self,
-        dataset: List[Dict],
-        model: Model,
         eval_task: Optional[EvaluationTask] = None,
     ):
-        self.dataset = dataset
-        self.model = model
+        """
+        Initialize the evaluation dataset validator.
+
+        Args:
+            eval_task: Optional evaluation task type
+        """
+        super().__init__()
         self.eval_task = eval_task
 
     # Helper functions for the validate function
@@ -137,9 +140,9 @@ class EvalDatasetValidator(BaseDatasetValidator):
         return EvalDatasetSample
 
     def get_success_message(self) -> str:
-        return f"Validation succeeded for {len(self.dataset)} samples on an Evaluation BYOD dataset."
+        return f"Validation succeeded for {self.num_samples} samples on an Evaluation BYOD dataset."
 
-    def validate(self, dataset: List[Dict], model: Model) -> None:
+    def validate(self, dataset: Iterator[Dict], model: Model) -> None:
         if self.eval_task and self.eval_task in (
             EvaluationTask.LLM_JUDGE,
             EvaluationTask.RUBRIC_LLM_JUDGE,

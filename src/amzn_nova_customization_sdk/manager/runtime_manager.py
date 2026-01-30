@@ -384,7 +384,10 @@ class SMHPRuntimeManager(RuntimeManager):
 
             if matched_job_name := re.search(r"NAME: (\S+)", response.stdout):
                 return matched_job_name.group(1)
-            raise ValueError(f"Could not find job name in output: {response.stdout}")
+            raise ValueError(
+                f"Could not find job name in output. There may be an issue with the helm installation, "
+                f"assumed role permissions to trigger jobs on the cluster, or job specification. Output: {response.stdout}"
+            )
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to start HyperPod job: {e.stderr}")
             raise

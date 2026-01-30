@@ -179,7 +179,7 @@ class TestCPTDatasetValidator(unittest.TestCase):
             )
 
     def test_cpt_get_optional_fields(self):
-        validator = CPTDatasetValidator([], Model.NOVA_LITE_2)
+        validator = CPTDatasetValidator()
         optional_fields = validator.get_optional_fields()
         self.assertEqual(optional_fields, [])
         self.assertIsInstance(optional_fields, list)

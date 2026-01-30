@@ -72,9 +72,6 @@ from amzn_nova_customization_sdk.util.bedrock import (
     monitor_model_create,
     update_provisioned_throughput_model,
 )
-from amzn_nova_customization_sdk.util.checkpoint_util import (
-    extract_checkpoint_path_from_job_output,
-)
 from amzn_nova_customization_sdk.util.data_mixing import DataMixing
 from amzn_nova_customization_sdk.util.logging import logger
 from amzn_nova_customization_sdk.util.platform_util import (
@@ -104,6 +101,7 @@ class NovaModelCustomizer:
         mlflow_monitor: Optional[MLflowMonitor] = None,
         deployment_mode: DeploymentMode = DeploymentMode.FAIL_IF_EXISTS,
         data_mixing_enabled: bool = False,
+        image_uri: Optional[str] = None,
     ):
         """
         Initializes a NovaModelCustomizer instance.
@@ -122,6 +120,8 @@ class NovaModelCustomizer:
             deployment_mode: Behavior when deploying to existing endpoint name. Options:
                            FAIL_IF_EXISTS (default), UPDATE_IF_EXISTS
             data_mixing: Enable data mixing. Default is False.
+            image_uri: Optional custom ECR image URI to override the default training image.
+                      Must be in format: <account>.dkr.ecr.<region>.amazonaws.com/<repository>:<tag>
 
         Raises:
             ValueError: If region is unsupported or model is invalid
@@ -145,6 +145,7 @@ class NovaModelCustomizer:
 
         self.region = region
         self._model = model
+        self._image_uri = image_uri
         self._method = method
         self.infra = infra
         self.data_s3_path = data_s3_path
@@ -255,6 +256,7 @@ class NovaModelCustomizer:
             data_mixing_enabled=self.data_mixing_enabled,
             instance_type=self.instance_type,
             eval_task=getattr(self, "eval_task", None),
+            image_uri_override=self._image_uri,
         )
 
         # Load default configuration into DataMixing instance if enabled
@@ -343,6 +345,7 @@ class NovaModelCustomizer:
             validation_data_s3_path=validation_data_s3_path,
             mlflow_monitor=self.mlflow_monitor,
             data_mixing_instance=self.data_mixing,
+            image_uri_override=self._image_uri,
         )
 
         (
@@ -484,6 +487,11 @@ class NovaModelCustomizer:
             customizer_model_path=self.model_path,
         )
 
+        if resolved_model_path is None:
+            logger.warning(
+                f"Could not resolve model checkpoint path for evaluate job! Falling back to base model {self.model}"
+            )
+
         # Validate platform compatibility
         checkpoint_platform = None
         if resolved_model_path and resolved_model_path.startswith("s3://"):
@@ -530,6 +538,7 @@ class NovaModelCustomizer:
             processor_config=processor,
             rl_env_config=rl_env,
             mlflow_monitor=self.mlflow_monitor,
+            image_uri_override=self._image_uri,
         )
 
         (
@@ -937,6 +946,11 @@ class NovaModelCustomizer:
             customizer_model_path=self.model_path,
         )
 
+        if resolved_model_path is None:
+            logger.warning(
+                f"Could not resolve model checkpoint path for evaluate job! Falling back to base model {self.model}"
+            )
+
         # Validate platform compatibility
         checkpoint_platform = None
         if resolved_model_path and resolved_model_path.startswith("s3://"):
@@ -974,6 +988,7 @@ class NovaModelCustomizer:
             output_s3_path=output_s3_path or self.output_s3_path,
             model_path=resolved_model_path,
             mlflow_monitor=self.mlflow_monitor,
+            image_uri_override=self._image_uri,
         )
 
         (

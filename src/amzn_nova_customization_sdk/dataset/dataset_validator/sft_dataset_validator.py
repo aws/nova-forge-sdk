@@ -18,7 +18,7 @@ This module implements validation for Nova 1.0 and 2.0 datasets in the Nova Conv
 ensuring they meet all requirements for supervised fine-tuning.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, Iterator, List, Optional
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
@@ -392,7 +392,11 @@ class Message(BaseModel):
         if has_image or has_video or has_document:
             if self.role.lower() == "assistant":
                 raise ValueError(
-                    "Invalid content, image/video/documents cannot be included when role is 'assistant'"
+                    "Invalid content, multimodal data cannot be included when role is 'assistant'."
+                )
+            if model == Model.NOVA_MICRO:
+                raise ValueError(
+                    "Invalid content, multimodal data cannot be used with Nova Micro. Please use another model."
                 )
 
         if has_reasoning and self.role.lower() != "assistant":
@@ -612,18 +616,12 @@ class SFTDatasetValidator(BaseDatasetValidator):
     Validator for SFT (Supervised Fine-Tuning) datasets in Nova Converse format.
     """
 
-    def __init__(self, dataset: List[Dict], model: Model):
-        self.dataset = dataset
-        self.model = model
-
     # Helper functions for the validate function.
     def get_sample_model(self) -> type[BaseModel]:
         return SFTConverseDatasetSample
 
     def get_success_message(self) -> str:
-        return (
-            f"Validation succeeded for {len(self.dataset)} samples on an SFT dataset."
-        )
+        return f"Validation succeeded for {self.num_samples} samples on an SFT dataset."
 
     def get_optional_fields(self) -> List[str]:
         """

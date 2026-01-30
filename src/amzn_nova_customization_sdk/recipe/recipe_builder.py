@@ -42,7 +42,7 @@ from amzn_nova_customization_sdk.util.data_mixing import DataMixing
 from amzn_nova_customization_sdk.util.logging import logger
 from amzn_nova_customization_sdk.util.recipe import (
     RecipePath,
-    load_file_content,
+    load_file_as_string,
     load_recipe_templates,
 )
 from amzn_nova_customization_sdk.validation.validator import Validator
@@ -73,6 +73,7 @@ class RecipeBuilder:
         processor_config: Optional[Dict[str, Any]] = None,
         rl_env_config: Optional[Dict[str, Any]] = None,
         data_mixing_instance: Optional[DataMixing] = None,
+        image_uri_override: Optional[str] = None,
     ):
         self.region = region
         self.job_name = job_name
@@ -96,6 +97,9 @@ class RecipeBuilder:
 
         # datamixing
         self.data_mixing_instance = data_mixing_instance
+
+        # Image URI override
+        self.image_uri_override = image_uri_override
 
         # MLflow
         if mlflow_monitor:
@@ -176,7 +180,7 @@ class RecipeBuilder:
             else:
                 return obj
 
-        input_recipe_str = load_file_content(input_recipe_path, ".yaml")
+        input_recipe_str = load_file_as_string(input_recipe_path, ".yaml")
 
         try:
             input_recipe_dict: Dict[str, Any] = yaml.safe_load(input_recipe_str)
@@ -772,6 +776,8 @@ class RecipeBuilder:
                     | TrainingMethod.RFT_FULL
                     | TrainingMethod.SFT_LORA
                     | TrainingMethod.SFT_FULL
+                    | TrainingMethod.DPO_LORA
+                    | TrainingMethod.DPO_FULL
                 ):
                     path_components.append("fine-tuning")
                 case _:
@@ -835,6 +841,7 @@ class RecipeBuilder:
                 instance_type=self.instance_type,
                 data_mixing_enabled=True if self.data_mixing_instance else False,
                 eval_task=getattr(self, "eval_task", None),
+                image_uri_override=self.image_uri_override,
             )
         )
 
