@@ -18,7 +18,7 @@ This module implements validation for Nova 2.0 RFT datasets in the OpenAI format
 ensuring they meet all requirements for reinforcement fine-tuning with and without tool use.
 """
 
-from typing import Dict, List, Optional, Union
+from typing import Dict, Iterator, List, Optional, Union
 
 from pydantic import BaseModel, field_validator
 
@@ -210,24 +210,22 @@ class RFTDatasetValidator(BaseDatasetValidator):
     - Optional reference answers for evaluation
     """
 
-    def __init__(self, dataset: List[Dict], model: Model):
+    def __init__(self, model: Model):
         """
         Initialize the RFT dataset validator.
 
         Args:
-            dataset: List of RFT dataset samples to validate
             model: The Nova model being used (must be NOVA_LITE_2 for RFT)
 
         Raises:
             ValueError: If the model isn't NOVA_LITE_2.
         """
+        super().__init__()
         if model != Model.NOVA_LITE_2:
             raise ValueError(
                 f"RFT is only supported on Nova 2.0 Lite (NOVA_LITE_2). "
                 f"Current model: {model}. Please use Model.NOVA_LITE_2 for validating and using RFT datasets."
             )
-        self.dataset = dataset
-        self.model = model
 
     def get_sample_model(self):
         """
@@ -241,9 +239,7 @@ class RFTDatasetValidator(BaseDatasetValidator):
         Returns:
             str: Success message with sample count
         """
-        return (
-            f"Validation succeeded for {len(self.dataset)} samples on an RFT dataset."
-        )
+        return f"Validation succeeded for {self.num_samples} samples on an RFT dataset."
 
     def get_optional_fields(self) -> List[str]:
         """

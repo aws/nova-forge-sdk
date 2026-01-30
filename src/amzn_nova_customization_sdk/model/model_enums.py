@@ -89,6 +89,8 @@ class TrainingMethod(Enum):
     """Supported training methods."""
 
     CPT = "cpt"
+    DPO_LORA = "dpo_lora"
+    DPO_FULL = "dpo_full"
     RFT_LORA = "rft_lora"
     RFT_FULL = "rft_full"
     SFT_LORA = "sft_lora"

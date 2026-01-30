@@ -39,6 +39,11 @@ LAMBDA_ARN_REGEX = re.compile(
     r"^arn:aws:lambda:[a-z0-9-]+:\d{12}:function:[A-Za-z0-9-_]+$"
 )
 
+# ECR image URI pattern: account.dkr.ecr.region.amazonaws.com/repository:tag
+ECR_IMAGE_URI_REGEX = re.compile(
+    r"^\d{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/[a-zA-Z0-9][a-zA-Z0-9._/-]*:[a-zA-Z0-9._-]+$"
+)
+
 # https://docs.aws.amazon.com/sagemaker/latest/APIReference/API_TrainingJob.html
 JOB_NAME_REGEX = re.compile(r"^[a-zA-Z0-9\-]{1,63}$")
 
@@ -1028,6 +1033,24 @@ class Validator:
         if not CLUSTER_NAME_REGEX.match(cluster_name):
             raise ValueError(
                 f"Cluster name must fit pattern ${CLUSTER_NAME_REGEX.pattern}"
+            )
+
+    @staticmethod
+    def validate_ecr_image_uri(image_uri: str) -> None:
+        """
+        Validation method that checks ECR image URI format
+
+        Args:
+            image_uri: User provided ECR image URI
+
+        Raises:
+            ValueError: If validation fails
+        """
+        if not ECR_IMAGE_URI_REGEX.match(image_uri):
+            raise ValueError(
+                f"Image URI must be a valid ECR image URI in format: "
+                f"<account>.dkr.ecr.<region>.amazonaws.com/<repository>:<tag>. "
+                f"Provided: {image_uri}"
             )
 
     @classmethod

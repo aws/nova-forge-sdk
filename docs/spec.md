@@ -45,6 +45,8 @@ def __init__(
 - `mlflow_monitor` (Optional[MLflowMonitor]): Optional MLflow monitoring configuration for experiment tracking
 - `deployment_mode` (DeploymentMode): Behavior when deploying to existing endpoint name. Options: FAIL_IF_EXISTS (default), UPDATE_IF_EXISTS
 - `data_mixing_enabled` (bool): Enable data mixing feature for CPT and SFT training on SageMaker HyperPod. Default is False
+  - **Note:** The `data_mixing_enabled` parameter must be set to `True` during initialization to use data mixing features. 
+  - **Note:** Datamixing is only supported for CPT, SFT_LORA, and SFT_FULL methods on SageMaker HyperPod (SMHP). 
 
 **Raises:**
 - `ValueError`: If region is unsupported or model is invalid
@@ -167,12 +169,13 @@ def train(
 - `job_name` (str): User-defined name for the training job
 - `recipe_path` (Optional[str]): Path for a YAML recipe file (both S3 and local paths are accepted)
 - `overrides` (Optional[Dict[str, Any]]): Dictionary of configuration overrides. Example overrides below:
- - `max_epochs` (int): Maximum number of training epochs
- - `lr` (float): Learning rate
- - `warmup_steps` (int): Number of warmup steps
- - `loraplus_lr_ratio` (float): LoRA+ learning rate ratio
- - `global_batch_size` (int): Global batch size
- - `max_length` (int): Maximum sequence length
+  - `max_epochs` (int): Maximum number of training epochs
+  - `lr` (float): Learning rate
+  - `warmup_steps` (int): Number of warmup steps
+  - `loraplus_lr_ratio` (float): LoRA+ learning rate ratio
+  - `global_batch_size` (int): Global batch size
+  - `max_length` (int): Maximum sequence length
+  - A full list of available overrides can be found via the [Nova Customization public documentation](https://docs.aws.amazon.com/nova/latest/userguide/customize-fine-tune-sagemaker.html) or by referencing the training recipes [here](https://docs.aws.amazon.com/sagemaker/latest/dg/nova-model-recipes.html). 
 - `rft_lambda_arn` (Optional[str]): Rewards Lambda ARN (only used for RFT training methods)
 - `validation_data_s3_path` (Optional[str]): Validation S3 path, only applicable for CPT (but is still optional for CPT)
 - `dry_run` (Optional[bool]): Actually starts a job if False, otherwise just performs validation.
@@ -285,7 +288,7 @@ byom_eval_result = customizer.evaluate(
 #### `deploy()`
 Creates a custom model and deploys it to Amazon Bedrock.
 
-Deployment behavior when endpoint already exists is controlled by the deployment_mode
+Deployment behavior when endpoint already exists is controlled by the `deployment_mode`
 parameter set during NovaModelCustomizer initialization:
 - FAIL_IF_EXISTS: Raise error (default, safest)
 - UPDATE_IF_EXISTS: Try in-place update, fail if not supported (PT only)
@@ -303,9 +306,9 @@ def deploy(
 ) -> DeploymentResult
 ```
 
-**Note:** If DeployPlatform.BEDROCK_PT is selected, you must include a value for pt_units. 
+* **Note:** If DeployPlatform.BEDROCK_PT is selected, you must include a value for pt_units. 
 
-**Note:** If `model_artifact_path` is provided, we will NOT attempt to resolve `model_artifact_path` from `job_result` or the enclosing `NovaModelCustomizer` object.
+* **Note:** If `model_artifact_path` is provided, we will NOT attempt to resolve `model_artifact_path` from `job_result` or the enclosing `NovaModelCustomizer` object.
 
 **Parameters:**
 - `model_artifact_path` (Optional[str]): S3 path to the trained model checkpoint. If not provided, will attempt to extract from job_result or the `job_id` field of the Customizer.
@@ -440,6 +443,7 @@ class JobConfig:
     mlflow_experiment_name: Optional[str] = None
     mlflow_run_name: Optional[str] = None
 ```
+* The specific instance types that can be used with the runtime managers (SMTJ, SMHP) can be found in `docs/instance_type_spec.md`. This file also defines which instance types can be used with a specific model and method.
 ### SMTJRuntimeManager
 Manages SageMaker Training Jobs.
 
@@ -591,7 +595,7 @@ def __init__(
 - `**column_mappings`: Keyword arguments mapping standard column names to dataset column names
   - Example: `question="input"` where "question" is the standard name and "input" is your column name
 #### Column Mappings
-If you are transforming a plain JSON or CSV file from a generic format (e.g. 'input/output') to another format (e.g. Converse for SFT), you need to provide "column mappings" to connect your generic column/field name to the expected ones in the transformation function.
+If you are transforming a plain JSON, JSONL, or CSV file from a generic format (e.g. 'input/output') to another format (e.g. Converse for SFT), you need to provide "column mappings" to connect your generic column/field name to the expected ones in the transformation function.
 
 For example, if your plain dataset has "input" and "output" columns, and you want to transform it for SFT (which requrires "question" and "answer"), you would provide the following:
 ```python
@@ -601,18 +605,18 @@ loader = JSONDatasetLoader(
 )
 ```
 Below is a list of accepted column mapping parameters for transformations. 
-* SFT: question, answer
-  * Optional: system, [image/video required options]: image_format/video_format, s3_uri, bucket_owner
-  * 2.0: reasoning_text, tools/toolsConfig*
-* RFT: question, reference_answer
-  * Optional: system, id, tools*
-* Eval: query, response
-  * Optional: images, metadata
-* CPT: text
+* SFT: `question`, `answer`
+  * Optional: `system`, [image/video required options]: `image_format`/`video_format`, `s3_uri`, `bucket_owner`
+  * 2.0: `reasoning_text`, `tools`/`toolsConfig`*
+* RFT: `question`, `reference_answer`
+  * Optional: `system`, `id`, `tools`*
+* Eval: `query`, `response`
+  * Optional: `images`, `metadata`
+* CPT: `text`
 
 Additional Notes: 
 * If you're providing multimodal data in a generic format, you need to provide ALL three of the following fields:
-  * `image_format` OR `video_format`, `s3_uri`, `bucket_owner`
+  * `image_format` OR `video_format` + `s3_uri`, `bucket_owner`
 * *`tools/toolsConfig` (SFT 2.0) and `tools` (RFT) parameters can *only* be provided when transforming from OpenAI Messages format to Converse or OpenAI. A generic format *cannot* be provided for this transformation to work.
 
 ---
@@ -760,7 +764,10 @@ train_loader, val_loader, test_loader = loader.split_data(
 ```
 ---
 #### `transform()`
-Transforms dataset to the required format for a specific training method and model.
+Transforms dataset to the required format for a specific training method and model. Currently the following transformations are supported:
+* Q/A-formatted CSV/JSON/JSONL to SFT 1.0, SFT 2.0 (without reasoningContent, Tools), RFT, Eval, CPT
+* OpenAI Messages format to SFT 1.0 and SFT 2.0 (with Tools)
+
 **Signature:**
 ```python
 def transform(
@@ -818,10 +825,16 @@ loader.validate(
  model=Model.NOVA_MICRO
 )
 ```
+If you're validating a BYOD Evaluation dataset, you need to provide another parameter, `eval_task` to the `validate` function. For example:
 ```
-Validation succeeded for 22 samples on an SFT dataset.
+loader.validate(
+    method=TrainingMethod.EVALUATION, 
+    model=Model.NOVA_LITE_2, 
+    eval_task=EvaluationTask.GEN_QA
+)
+
+>> Validation succeeded for 22 samples on an Evaluation BYOD dataset
 ```
----
 #### `save_data()`
 Saves the dataset to a local or S3 location.
 **Signature:**
@@ -884,22 +897,30 @@ if status == JobStatus.COMPLETED:
  print("Job finished!")
 ```
 
-##### `dump(file_path: Optional[str] = None)`
+##### `dump(file_path: Optional[str] = None, file_name: Optional[str] = None)`
 Save the job result to file_path path
 
 **Signature:**
 ```python
 def dump(
  self, 
- file_path: Optional[str] = None
-) -> None
+ file_path: Optional[str] = None,
+ file_name: Optional[str] = None
+) -> Path
 ```
+
+**Parameters:**
+- `file_path` (Optional[str]): Directory path to save the result. Saves to current directory if not provided
+- `file_name` (Optional[str]): The file name of the result. Default to `<job_id>_<platform>.json` if not provided
+
+**Returns:**
+- `Path`: The full result file path
 
 **Example:**
 ```python
 result.dump()
 # Result will be saved to ./{job_id}_{platform}.json under current dir
-result.dump('/customized/path/customized_name.json')
+result.dump(file_path='/customized/path', file_name='customized_name.json')
 # Result will be saved to /customized/path/customized_name.json
 ```
 
@@ -924,7 +945,7 @@ job_result = BaseJobResult.load('./my_job_result.json')
 ```
 
 ---
-### EvaluationResult(ABC)
+### EvaluationResult (ABC)
 Result object for SageMaker Training Job evaluation tasks.
 
 **Attributes:**
@@ -1064,6 +1085,14 @@ def clean(
 
 MLflow monitoring configuration for Nova model training. This class provides experiment tracking capabilities through MLflow integration.
 
+**MLflow Integration Features:**
+- Automatic logging of training metrics
+- Model artifact and checkpoint tracking
+- Hyperparameter recording
+- Support for SageMaker MLflow tracking servers
+- Custom MLflow tracking server support (with proper network configuration)
+
+
 #### Constructor
 
 **Signature:**
@@ -1090,24 +1119,24 @@ from amzn_nova_customization_sdk.monitor import *
 
 # With explicit tracking URI
 monitor = MLflowMonitor(
- tracking_uri="arn:aws:sagemaker:us-east-1:123456:mlflow-app/app-xxx",
- experiment_name="nova-customization",
- run_name="sft-run-1"
+    tracking_uri="arn:aws:sagemaker:us-east-1:123456:mlflow-app/app-xxx",
+    experiment_name="nova-customization",
+    run_name="sft-run-1"
 )
 
 # With default tracking URI (if available)
 monitor = MLflowMonitor(
- experiment_name="nova-customization",
- run_name="sft-run-1"
+    experiment_name="nova-customization",
+    run_name="sft-run-1"
 )
 
 # Use with NovaModelCustomizer
 customizer = NovaModelCustomizer(
- model=Model.NOVA_LITE_2,
- method=TrainingMethod.SFT_LORA,
- infra=runtime_manager,
- data_s3_path="s3://bucket/data",
- mlflow_monitor=monitor
+    model=Model.NOVA_LITE_2,
+    method=TrainingMethod.SFT_LORA,
+    infra=runtime_manager,
+    data_s3_path="s3://bucket/data",
+    mlflow_monitor=monitor
 )
 ```
 
@@ -1162,21 +1191,21 @@ The MLflow integration supports:
 Supported Nova models with their configurations.
 **Values:**
 - `Model.NOVA_MICRO`: Amazon Nova Micro (Version 1)
- - `model_type`: "amazon.nova-micro-v1:0:128k"
- - `model_path`: "nova-micro/prod"
- - `version`: Version.ONE
+  - `model_type`: "amazon.nova-micro-v1:0:128k"
+  - `model_path`: "nova-micro/prod"
+  - `version`: Version.ONE
 - `Model.NOVA_LITE`: Amazon Nova Lite (Version 1)
- - `model_type`: "amazon.nova-lite-v1:0:300k"
- - `model_path`: "nova-lite/prod"
- - `version`: Version.ONE
+  - `model_type`: "amazon.nova-lite-v1:0:300k"
+  - `model_path`: "nova-lite/prod"
+  - `version`: Version.ONE
 - `Model.NOVA_LITE_2`: Amazon Nova Lite (Version 2)
- - `model_type`: "amazon.nova-2-lite-v1:0:256k"
- - `model_path`: "nova-lite-2/prod"
- - `version`: Version.TWO
+  - `model_type`: "amazon.nova-2-lite-v1:0:256k"
+  - `model_path`: "nova-lite-2/prod"
+  - `version`: Version.TWO
 - `Model.NOVA_PRO`: Amazon Nova Pro (Version 1)
- - `model_type`: "amazon.nova-pro-v1:0:300k"
- - `model_path`: "nova-pro/prod"
- - `version`: Version.ONE
+  - `model_type`: "amazon.nova-pro-v1:0:300k"
+  - `model_path`: "nova-pro/prod"
+  - `version`: Version.ONE
 
 **Methods:**
 ##### `from_model_type()`
@@ -1201,6 +1230,8 @@ Supported training methods.
 
 **Values:**
 - `TrainingMethod.CPT`: Continued Pre-Training
+- `TrainingMethod.DPO_LORA`: Direct Preference Optimization with LoRA
+- `TrainingMethod.DPO_FULL`: Direct Preference Optimization (full rank)
 - `TrainingMethod.SFT_LORA`: Supervised Fine-Tuning with LoRA
 - `TrainingMethod.SFT_FULL`: Supervised Fine-Tuning (full rank)
 - `TrainingMethod.RFT_LORA`: Reinforcement Fine-Tuning with LoRA
@@ -1221,6 +1252,9 @@ Deployment behavior when an endpoint with the same name already exists.
 **Values:**
 - `DeploymentMode.FAIL_IF_EXISTS`: Raise an error if endpoint already exists (safest, default)
 - `DeploymentMode.UPDATE_IF_EXISTS`: Try in-place update only, fail if not supported (PT only)
+
+**Note:** Only `FAIL_IF_EXISTS` and `UPDATE_IF_EXISTS` modes are currently supported. `UPDATE_IF_EXISTS` is only applicable for Bedrock Provisioned Throughput (PT) deployments.
+
 ---
 ### EvaluationTask Enum
 Supported evaluation tasks.
@@ -1229,7 +1263,7 @@ Common values include:
 - `EvaluationTask.GPQA`: General Physics Question Answering
 - `EvaluationTask.MATH`: Mathematical Problem Solving
 - `EvaluationTask.GEN_QA`: Custom Dataset Evaluation
-- And many more...
+- The full list of available tasks can be found here: [AWS Documentation](https://docs.aws.amazon.com/sagemaker/latest/dg/nova-model-evaluation.html#nova-model-evaluation-benchmark)
 ---
 ### Platform Enum
 Infrastructure platforms.
@@ -1245,74 +1279,7 @@ Job execution status.
 - `JobStatus.IN_PROGRESS`: Job is running
 - `JobStatus.COMPLETED`: Job completed successfully
 - `JobStatus.FAILED`: Job failed
----
-## Complete Usage Example
 
-```python
-from amzn_nova_customization_sdk import *
-
-# 1. Prepare dataset
-loader = JSONLDatasetLoader()
-loader.load("s3://my-bucket/raw-data.jsonl")
-loader.transform(method=TrainingMethod.SFT_LORA, model=Model.NOVA_MICRO)
-# Split into train/val/test
-train, val, test = loader.split_data(train_ratio=0.8, val_ratio=0.1, test_ratio=0.1)
-train.save_data("s3://my-bucket/train.jsonl")
-val.save_data("s3://my-bucket/val.jsonl")
-
-# 2. Set up infrastructure
-infra = SMTJRuntimeManager(
-    instance_type="ml.p5.48xlarge",
-    instance_count=1
-)
-
-# 3. Set up MLflow monitoring (optional)
-mlflow_monitor = MLflowMonitor(
-    tracking_uri="arn:aws:sagemaker:us-east-1:123456:mlflow-app/app-xxx",
-    experiment_name="nova-customization-example",
-    run_name="sft-experiment-1"
-)
-
-# 4. Initialize customizer
-customizer = NovaModelCustomizer(
-    model=Model.NOVA_MICRO,
-    method=TrainingMethod.SFT_LORA,
-    infra=infra,
-    data_s3_path="s3://my-bucket/train.jsonl",
-    output_s3_path="s3://my-bucket/output/",
-    mlflow_monitor=mlflow_monitor  # Enable MLflow tracking
-)
-
-# 5. Train model
-training_result = customizer.train(
-    job_name="my-training-job",
-    overrides={
-        'max_epochs': 5,
-        'lr': 5e-6,
-        'global_batch_size': 64
-    }
-)
-# Monitor logs
-customizer.get_logs(limit=50)
-
-# 6. Evaluate model
-eval_result = customizer.evaluate(
-    job_name="my-eval-job",
-    eval_task=EvaluationTask.MMLU,
-    model_path=training_result.model_artifacts.checkpoint_s3_path
-)
-# Wait for completion and get results
-results = eval_result.get()
-eval_result.show()
-
-# 7. Deploy model
-deployment = customizer.deploy(
-    model_artifact_path=training_result.model_artifacts.checkpoint_s3_path,
-    deploy_platform=DeployPlatform.BEDROCK_OD,
-    endpoint_name="my-custom-model"
-)
-print(f"Model deployed at: {deployment.endpoint.uri}")
-```
 ---
 ## Error Handling
 All SDK functions may raise exceptions. It's recommended to wrap calls in try-except blocks:
@@ -1343,5 +1310,6 @@ Common exceptions:
 - AWS Documentation: [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/)
 - AWS Documentation: [Amazon SageMaker](https://docs.aws.amazon.com/sagemaker/)
 - SDK GitHub Repository: Check for updates and examples
-- Support: Use AWS Support for technical assistance---
-_Last Updated: January 21, 2026_
+- Support: Use AWS Support for technical assistance 
+---
+_Last Updated: January 23, 2026_

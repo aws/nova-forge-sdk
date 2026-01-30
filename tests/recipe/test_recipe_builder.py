@@ -255,6 +255,40 @@ class TestRecipeBuilder(unittest.TestCase):
 
         self.assertFalse(hasattr(builder, "validation_data_s3_path"))
 
+    def test_initialization_dpo_lora_method(self):
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=self.platform,
+            model=self.mock_model,
+            method=TrainingMethod.DPO_LORA,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+        )
+
+        self.assertEqual(builder.method, TrainingMethod.DPO_LORA)
+        self.assertEqual(builder.model, self.mock_model)
+
+    def test_initialization_dpo_full_method(self):
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=self.platform,
+            model=self.mock_model,
+            method=TrainingMethod.DPO_FULL,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+        )
+
+        self.assertEqual(builder.method, TrainingMethod.DPO_FULL)
+        self.assertEqual(builder.model, self.mock_model)
+
     def test_load_input_recipe_valid_yaml(self):
         builder = RecipeBuilder(
             region=self.region,
@@ -273,7 +307,7 @@ class TestRecipeBuilder(unittest.TestCase):
         yaml_content = yaml.dump(test_recipe)
 
         with patch(
-            "amzn_nova_customization_sdk.recipe.recipe_builder.load_file_content",
+            "amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string",
             return_value=yaml_content,
         ):
             builder._load_input_recipe("test_path.yaml")
@@ -295,7 +329,7 @@ class TestRecipeBuilder(unittest.TestCase):
         )
 
         with patch(
-            "amzn_nova_customization_sdk.recipe.recipe_builder.load_file_content",
+            "amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string",
             return_value="invalid: yaml: content:",
         ):
             with self.assertRaises(ValueError) as context:
@@ -320,7 +354,7 @@ class TestRecipeBuilder(unittest.TestCase):
         yaml_content = "- item1\n- item2\n- item3"
 
         with patch(
-            "amzn_nova_customization_sdk.recipe.recipe_builder.load_file_content",
+            "amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string",
             return_value=yaml_content,
         ):
             with self.assertRaises(ValueError) as context:
@@ -526,6 +560,62 @@ class TestRecipeBuilder(unittest.TestCase):
             self.assertTrue(
                 path.startswith(
                     "/tmp/hyperpod_cli/sagemaker_hyperpod_recipes/recipes_collection/recipes/training/nova/forge/nova_1_0/nova_micro/"
+                )
+            )
+            self.assertTrue(path.endswith(".yaml"))
+
+    def test_generate_recipe_path_hyperpod_dpo_lora(self):
+        mock_hyperpod_cli = MagicMock()
+        mock_hyperpod_cli.__file__ = "/tmp/hyperpod_cli/__init__.py"
+
+        with patch.dict("sys.modules", {"hyperpod_cli": mock_hyperpod_cli}):
+            builder = RecipeBuilder(
+                region=self.region,
+                job_name=self.job_name,
+                platform=Platform.SMHP,
+                model=self.mock_model,
+                method=TrainingMethod.DPO_LORA,
+                instance_type=self.instance_type,
+                instance_count=self.instance_count,
+                infra=self.mock_infra,
+                output_s3_path=self.output_s3,
+                data_s3_path=self.data_s3,
+            )
+
+            recipe_path = builder._generate_recipe_path()
+            path = recipe_path.path
+
+            self.assertTrue(
+                path.startswith(
+                    "/tmp/hyperpod_cli/sagemaker_hyperpod_recipes/recipes_collection/recipes/fine-tuning/nova/nova_1_0/nova_micro/"
+                )
+            )
+            self.assertTrue(path.endswith(".yaml"))
+
+    def test_generate_recipe_path_hyperpod_dpo_full(self):
+        mock_hyperpod_cli = MagicMock()
+        mock_hyperpod_cli.__file__ = "/tmp/hyperpod_cli/__init__.py"
+
+        with patch.dict("sys.modules", {"hyperpod_cli": mock_hyperpod_cli}):
+            builder = RecipeBuilder(
+                region=self.region,
+                job_name=self.job_name,
+                platform=Platform.SMHP,
+                model=self.mock_model,
+                method=TrainingMethod.DPO_FULL,
+                instance_type=self.instance_type,
+                instance_count=self.instance_count,
+                infra=self.mock_infra,
+                output_s3_path=self.output_s3,
+                data_s3_path=self.data_s3,
+            )
+
+            recipe_path = builder._generate_recipe_path()
+            path = recipe_path.path
+
+            self.assertTrue(
+                path.startswith(
+                    "/tmp/hyperpod_cli/sagemaker_hyperpod_recipes/recipes_collection/recipes/fine-tuning/nova/nova_1_0/nova_micro/"
                 )
             )
             self.assertTrue(path.endswith(".yaml"))
@@ -1267,6 +1357,96 @@ class TestRecipeBuilder(unittest.TestCase):
     @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_customization_sdk.recipe.recipe_builder.Validator")
+    def test_build_and_validate_dpo_lora(
+        self, mock_validator, mock_download, mock_metadata
+    ):
+        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+
+        recipe_template = {
+            "run": {
+                "name": "{{name}}",
+                "replicas": 1,
+            },
+            "training_config": {"model": {"dpo_cfg": {"beta": "{{beta}}"}}},
+        }
+
+        overrides_template = {
+            "name": {"default": "", "type": "string"},
+            "beta": {"default": 0.1, "type": "float"},
+        }
+
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=self.platform,
+            model=self.mock_model,
+            method=TrainingMethod.DPO_LORA,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "recipe.yaml")
+            recipe_path, *_ = builder.build_and_validate(output_recipe_path=output_path)
+
+            with open(recipe_path, "r") as f:
+                config = yaml.safe_load(f)
+
+            self.assertEqual(config["training_config"]["model"]["dpo_cfg"]["beta"], 0.1)
+
+    @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.Validator")
+    def test_build_and_validate_dpo_full(
+        self, mock_validator, mock_download, mock_metadata
+    ):
+        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+
+        recipe_template = {
+            "run": {
+                "name": "{{name}}",
+                "replicas": 1,
+            },
+            "training_config": {"model": {"dpo_cfg": {"beta": "{{beta}}"}}},
+        }
+
+        overrides_template = {
+            "name": {"default": "", "type": "string"},
+            "beta": {"default": 0.2, "type": "float"},
+        }
+
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=self.platform,
+            model=self.mock_model,
+            method=TrainingMethod.DPO_FULL,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "recipe.yaml")
+            recipe_path, *_ = builder.build_and_validate(output_recipe_path=output_path)
+
+            with open(recipe_path, "r") as f:
+                config = yaml.safe_load(f)
+
+            self.assertEqual(config["training_config"]["model"]["dpo_cfg"]["beta"], 0.2)
+
+    @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.Validator")
     def test_build_and_validate_ignores_distributed_fused_adam(
         self, mock_validator, mock_download, mock_metadata
     ):
@@ -1344,7 +1524,7 @@ class TestRecipeBuilder(unittest.TestCase):
     @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_customization_sdk.recipe.recipe_builder.Validator")
-    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_content")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string")
     def test_build_and_validate_with_input_recipe_success(
         self, mock_load_file, mock_validator, mock_download, mock_metadata
     ):
@@ -1430,7 +1610,7 @@ class TestRecipeBuilder(unittest.TestCase):
 
             mock_load_file.assert_called_once_with(input_recipe_path, ".yaml")
 
-    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_content")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string")
     def test_load_input_recipe_converts_scientific_notation(self, mock_load_file):
         builder = RecipeBuilder(
             region=self.region,
@@ -1507,7 +1687,7 @@ class TestRecipeBuilder(unittest.TestCase):
             10,
         )
 
-    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_content")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string")
     def test_load_input_recipe_handles_lists_with_scientific_notation(
         self, mock_load_file
     ):
@@ -1557,7 +1737,7 @@ class TestRecipeBuilder(unittest.TestCase):
             ["config1", "config2"],
         )
 
-    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_content")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string")
     def test_load_input_recipe_preserves_all_data_types(self, mock_load_file):
         builder = RecipeBuilder(
             region=self.region,
@@ -1607,7 +1787,7 @@ class TestRecipeBuilder(unittest.TestCase):
         self.assertEqual(builder.input_recipe_dict["scientific_string"], 1e-5)
         self.assertIsInstance(builder.input_recipe_dict["scientific_string"], float)
 
-    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_content")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string")
     def test_load_input_recipe_handles_uppercase_scientific_notation(
         self, mock_load_file
     ):
@@ -1640,7 +1820,7 @@ class TestRecipeBuilder(unittest.TestCase):
         self.assertIsInstance(builder.input_recipe_dict["uppercase"], float)
         self.assertIsInstance(builder.input_recipe_dict["mixed_case"], float)
 
-    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_content")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string")
     def test_load_input_recipe_handles_invalid_scientific_notation_gracefully(
         self, mock_load_file
     ):
@@ -1680,7 +1860,7 @@ class TestRecipeBuilder(unittest.TestCase):
     @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_customization_sdk.recipe.recipe_builder.Validator")
-    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_content")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string")
     def test_build_and_validate_with_input_recipe_replicas_not_in_override_template(
         self, mock_load_file, mock_validator, mock_download, mock_metadata
     ):
@@ -1739,7 +1919,7 @@ class TestRecipeBuilder(unittest.TestCase):
     @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_customization_sdk.recipe.recipe_builder.Validator")
-    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_content")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string")
     def test_build_and_validate_with_input_recipe_override_name_different_from_recipe_name(
         self, mock_load_file, mock_validator, mock_download, mock_metadata
     ):
@@ -1876,7 +2056,7 @@ class TestRecipeBuilder(unittest.TestCase):
     @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_customization_sdk.recipe.recipe_builder.Validator")
-    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_content")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string")
     def test_model_type_from_input_recipe_ignored_when_different(
         self, mock_load_file, mock_validator, mock_download, mock_metadata, mock_logger
     ):
@@ -2048,7 +2228,7 @@ class TestRecipeBuilder(unittest.TestCase):
     @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_customization_sdk.recipe.recipe_builder.Validator")
-    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_content")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string")
     def test_model_name_or_path_from_input_recipe_non_s3_ignored(
         self,
         mock_load_file,
@@ -2117,7 +2297,7 @@ class TestRecipeBuilder(unittest.TestCase):
     @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_customization_sdk.recipe.recipe_builder.Validator")
-    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_content")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string")
     def test_model_name_or_path_from_input_recipe_s3_validated(
         self,
         mock_load_file,
@@ -2244,7 +2424,7 @@ class TestRecipeBuilder(unittest.TestCase):
     @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_customization_sdk.recipe.recipe_builder.Validator")
-    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_content")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string")
     def test_task_from_input_recipe_ignored_when_different(
         self, mock_load_file, mock_validator, mock_download, mock_metadata, mock_logger
     ):
@@ -2309,7 +2489,7 @@ class TestRecipeBuilder(unittest.TestCase):
     @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_customization_sdk.recipe.recipe_builder.Validator")
-    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_content")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string")
     def test_task_from_input_recipe_accepted_when_same(
         self, mock_load_file, mock_validator, mock_download, mock_metadata, mock_logger
     ):
@@ -2716,7 +2896,7 @@ class TestRecipeBuilder(unittest.TestCase):
     @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_customization_sdk.recipe.recipe_builder.Validator")
-    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_content")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string")
     def test_data_mixing_with_empty_sources(
         self, mock_load_file, mock_validator, mock_download, mock_metadata
     ):
@@ -2778,7 +2958,7 @@ class TestRecipeBuilder(unittest.TestCase):
     @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_customization_sdk.recipe.recipe_builder.Validator")
-    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_content")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string")
     def test_data_mixing_without_data_mixing_flag(
         self, mock_load_file, mock_validator, mock_download, mock_metadata
     ):
@@ -2931,7 +3111,7 @@ class TestRecipeBuilder(unittest.TestCase):
     @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_customization_sdk.recipe.recipe_builder.Validator")
-    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_content")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string")
     def test_data_mixing_fields_ignored_in_input_recipe_with_data_mixing_instance(
         self, mock_load_file, mock_validator, mock_download, mock_metadata, mock_logger
     ):

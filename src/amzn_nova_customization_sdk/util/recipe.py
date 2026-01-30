@@ -112,17 +112,18 @@ def _validate_extension(path: str, extension: str) -> None:
 
 def load_file_content(
     file_path: str, extension: Optional[str] = None, encoding: Optional[str] = "utf-8"
-) -> str:
+):
     """
-    Load file content from S3 or local filesystem.
+    Stream file content line by line from S3 or local filesystem.
+    This is a generator that yields lines lazily without loading the entire file into memory.
 
     Args:
         file_path: Path to file (either local path or S3 URI)
         extension: Optional file extension to validate
         encoding: Optional encoding format (defaults to utf-8)
 
-    Returns:
-        File content as string
+    Yields:
+        Lines from the file
 
     Raises:
         FileLoadError: If file cannot be loaded
@@ -138,18 +139,45 @@ def load_file_content(
         try:
             s3 = boto3.client("s3")
             response = s3.get_object(Bucket=bucket, Key=key)
-            return response["Body"].read().decode(encoding)
+            # Stream from S3 using iter_lines
+            for line in response["Body"].iter_lines():
+                yield line.decode(encoding)
         except ClientError as e:
             raise FileLoadError(f"Failed to load S3 file {file_path}: {e}")
+    else:
+        # Try local filesystem
+        try:
+            path = Path(file_path)
+            with open(path, "r", encoding=encoding) as f:
+                for line in f:
+                    yield line.rstrip("\n\r")
+        except FileNotFoundError:
+            raise FileLoadError(f"File not found: {file_path}")
+        except OSError as e:
+            raise FileLoadError(f"Failed to read file {file_path}: {e}")
 
-    # Try local filesystem second
-    try:
-        path = Path(file_path)
-        return path.read_text(encoding=encoding)
-    except FileNotFoundError:
-        raise FileLoadError(f"File not found: {file_path}")
-    except OSError as e:
-        raise FileLoadError(f"Failed to read file {file_path}: {e}")
+
+def load_file_as_string(
+    file_path: str, extension: Optional[str] = None, encoding: Optional[str] = "utf-8"
+) -> str:
+    """
+    Load entire file content as a string from S3 or local filesystem.
+    Use this for files that need to be fully parsed (e.g., YAML, JSON).
+    For line-by-line processing, use load_file_content() instead.
+
+    Args:
+        file_path: Path to file (either local path or S3 URI)
+        extension: Optional file extension to validate
+        encoding: Optional encoding format (defaults to utf-8)
+
+    Returns:
+        File content as string
+
+    Raises:
+        FileLoadError: If file cannot be loaded
+    """
+    lines = load_file_content(file_path, extension, encoding)
+    return "\n".join(lines)
 
 
 def _get_hub_content_name(model: Model) -> str:
@@ -238,6 +266,8 @@ def get_hub_recipe_metadata(
     # Filter recipes for training method (SageMaker stores "RFT" as "RLVR")
     METHOD_FILTER = {
         TrainingMethod.CPT: ("CustomizationTechnique", "CPT"),
+        TrainingMethod.DPO_LORA: ("CustomizationTechnique", "DPO"),
+        TrainingMethod.DPO_FULL: ("CustomizationTechnique", "DPO"),
         TrainingMethod.RFT_LORA: ("CustomizationTechnique", "RLVR"),
         TrainingMethod.RFT_FULL: ("CustomizationTechnique", "RLVR"),
         TrainingMethod.SFT_LORA: ("CustomizationTechnique", "SFT"),
@@ -563,6 +593,7 @@ def load_recipe_templates(
     instance_type: str,
     data_mixing_enabled: bool = False,
     eval_task: Optional[EvaluationTask] = None,
+    image_uri_override: Optional[str] = None,
 ) -> tuple:
     """
     Load recipe metadata and templates for Nova model customization.
@@ -578,9 +609,10 @@ def load_recipe_templates(
         instance_type: Instance type to fetch recipe metadata for
         data_mixing_enabled: Whether data mixing is enabled
         eval_task: Optional evaluation task (only for evaluation methods)
+        image_uri_override: Optional custom ECR image URI to override default
 
     Returns:
-        tuple: (recipe_metadata, recipe_template, overrides_template)
+        tuple: (recipe_metadata, recipe_template, overrides_template, image_uri)
 
     Raises:
         Exception: If recipe configuration cannot be loaded
@@ -616,5 +648,12 @@ def load_recipe_templates(
         recipe_template, overrides_template, image_uri = download_templates_from_s3(
             recipe_metadata=recipe_metadata, platform=platform, method=method
         )
+
+    # Override image URI if provided
+    if image_uri_override:
+        from amzn_nova_customization_sdk.validation.validator import Validator
+
+        Validator.validate_ecr_image_uri(image_uri_override)
+        image_uri = image_uri_override
 
     return recipe_metadata, recipe_template, overrides_template, image_uri

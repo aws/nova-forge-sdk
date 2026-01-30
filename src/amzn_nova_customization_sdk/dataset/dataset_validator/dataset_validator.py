@@ -20,11 +20,13 @@ must inherit from to ensure consistent validation interface.
 
 import re
 from abc import ABC, abstractmethod
-from typing import Dict, List
+from typing import Dict, Iterator, List
 
 from pydantic import BaseModel, ValidationError
 
 from amzn_nova_customization_sdk.model.model_enums import Model
+
+from ...util.iterator_utils import peek
 
 
 class BaseDatasetValidator(ABC):
@@ -34,6 +36,12 @@ class BaseDatasetValidator(ABC):
     All training method-specific validators should inherit
     from this class and implement the validate() method.
     """
+
+    def __init__(self):
+        """
+        Initialize the base dataset validator.
+        """
+        self.num_samples = 0
 
     @abstractmethod
     def get_sample_model(self) -> type[BaseModel]:
@@ -50,16 +58,24 @@ class BaseDatasetValidator(ABC):
         """Return a list of optional fields for this validator type."""
         pass
 
-    def validate(self, dataset: List[Dict], model: Model) -> None:
+    def validate(self, dataset: Iterator[Dict], model: Model) -> None:
         """
         Validates the entire conversation dataset against Nova format requirements.
         """
         error_message = ""
         failed_samples_id_list = []
 
+        # Track optional field consistency with minimal memory
+        optional_fields = self.get_optional_fields()
+        field_consistency: Dict[str, bool | None] = {
+            field: None for field in optional_fields
+        }
+        first_sample_with_field: Dict[str, int] = {}
+
         # Checks the first line of the dataset to quickly validate that required fields are there.
-        if dataset and isinstance(dataset[0], dict):
-            sample_keys = set(dataset[0].keys())
+        first_item, dataset = peek(dataset)
+        if first_item:
+            sample_keys = set(first_item.keys())
             if "messages" not in sample_keys and (
                 "question" in sample_keys or "answer" in sample_keys
             ):
@@ -73,6 +89,17 @@ class BaseDatasetValidator(ABC):
             try:
                 sample_model = self.get_sample_model()
                 sample_model.model_validate(sample, context={"model": model})
+
+                # Check optional field consistency
+                self._check_optional_field_consistency(
+                    sample,
+                    i,
+                    optional_fields,
+                    field_consistency,
+                    first_sample_with_field,
+                )
+
+                self.num_samples += 1
             except ValidationError as e:
                 failed_samples_id_list.append(i)
                 error_message += f"\nSample {i}:\n"
@@ -90,45 +117,73 @@ class BaseDatasetValidator(ABC):
                 f"Validation failed for samples: {failed_samples_str}\n{error_message}"
             )
             raise ValueError(final_err_msg)
-        else:
-            self.check_dataset_consistency(dataset)
-            print(f"{self.get_success_message()}")
 
-    def check_dataset_consistency(self, dataset) -> None:
-        """Check that optional fields are consistent across the dataset."""
-        if not dataset:
-            return
+        print(f"{self.get_success_message()}")
 
-        def _has_nested_field(sample, field_path):
-            """Check if a top-level field or nested field exists."""
-            keys = field_path.split(".")
+    def _check_optional_field_consistency(
+        self,
+        sample: Dict,
+        sample_index: int,
+        optional_fields: List[str],
+        field_consistency: Dict[str, bool | None],
+        first_sample_with_field: Dict[str, int],
+    ) -> None:
+        """
+        Check that optional fields are used consistently across all samples.
 
-            current = sample
+        If an optional field appears in any sample, it must appear in all samples.
 
-            for key in keys:
-                if isinstance(current, dict) and key in current:
-                    current = current[key]
-                elif isinstance(current, list):
-                    # Check if any item in the list has the key
-                    return any(
-                        _has_nested_field(item, ".".join(keys[keys.index(key) :]))
-                        for item in current
-                        if isinstance(item, dict)
+        Args:
+            sample: The current sample being validated
+            sample_index: The index of the current sample
+            optional_fields: List of field names to check for consistency
+            field_consistency: Dict tracking field state (None=never seen, True=always present)
+            first_sample_with_field: Dict tracking which sample first introduced each field
+
+        Raises:
+            ValueError: If an optional field is present in some samples but not others
+        """
+        for field_name in optional_fields:
+            has_field = self._has_nested_field(sample, field_name)
+
+            if field_consistency[field_name] is None:
+                # First time seeing this field - record its state
+                field_consistency[field_name] = has_field
+                if has_field:
+                    first_sample_with_field[field_name] = sample_index
+            elif field_consistency[field_name] != has_field:
+                # Inconsistency detected - fail fast with detailed error
+                if has_field:
+                    raise ValueError(
+                        f"Dataset consistency error: If any sample contains '{field_name}', "
+                        f"all samples must contain '{field_name}'. Field first appeared in sample "
+                        f"{first_sample_with_field[field_name]} but is missing in earlier samples."
                     )
                 else:
-                    return False
-            return True
+                    raise ValueError(
+                        f"Dataset consistency error: If any sample contains '{field_name}', "
+                        f"all samples must contain '{field_name}'. Field present in sample "
+                        f"{first_sample_with_field[field_name]} but missing in sample {sample_index}."
+                    )
 
-        for field_name in self.get_optional_fields():
-            has_field = [_has_nested_field(sample, field_name) for sample in dataset]
-            if any(has_field) and not all(has_field):
-                missing_sample = [
-                    i for i, has_field in enumerate(has_field) if not has_field
-                ]
-                raise ValueError(
-                    f"Dataset consistency error: If any sample contains '{field_name}', "
-                    f"all samples must contain '{field_name}'. Missing for sample: {missing_sample}"
+    def _has_nested_field(self, sample: Dict, field_path: str) -> bool:
+        """Check if a top-level field or nested field exists."""
+        keys = field_path.split(".")
+        current = sample
+
+        for i, key in enumerate(keys):
+            if isinstance(current, dict) and key in current:
+                current = current[key]
+            elif isinstance(current, list):
+                # Check if any item in the list has the key
+                return any(
+                    self._has_nested_field(item, ".".join(keys[i:]))
+                    for item in current
+                    if isinstance(item, dict)
                 )
+            else:
+                return False
+        return True
 
 
 # Global helper functions

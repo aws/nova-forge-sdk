@@ -18,7 +18,7 @@ This module implements validation for Nova CPT datasets in Converse JSONL format
 ensuring they meet all requirements for continued pre-training.
 """
 
-from typing import Dict, List
+from typing import Dict, Iterator, List
 
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -65,17 +65,6 @@ class CPTDatasetValidator(BaseDatasetValidator):
     - No other fields are allowed
     """
 
-    def __init__(self, dataset: List[Dict], model: Model):
-        """
-        Initialize the CPT dataset validator.
-
-        Args:
-            dataset: List of CPT dataset samples to validate
-            model: The Nova model being used (supports all Nova models)
-        """
-        self.dataset = dataset
-        self.model = model
-
     def get_sample_model(self) -> type[BaseModel]:
         """
         Returns:
@@ -88,7 +77,7 @@ class CPTDatasetValidator(BaseDatasetValidator):
         Returns:
             str: Success message with sample count
         """
-        return f"Validation succeeded for {len(self.dataset)} samples on a CPT dataset."
+        return f"Validation succeeded for {self.num_samples} samples on a CPT dataset."
 
     def get_optional_fields(self) -> List[str]:
         """
@@ -97,7 +86,7 @@ class CPTDatasetValidator(BaseDatasetValidator):
         """
         return OPTIONAL_FIELDS
 
-    def validate(self, dataset: List[Dict], model: Model) -> None:
+    def validate(self, dataset: Iterator[Dict], model: Model) -> None:
         """
         Validates the entire CPT dataset.
 
@@ -113,6 +102,7 @@ class CPTDatasetValidator(BaseDatasetValidator):
         for index, sample in enumerate(dataset):
             try:
                 sample_model(**sample)
+                self.num_samples += 1
             except Exception as e:
                 raise ValueError(f"Sample {index} validation failed: {str(e)}")
 

@@ -23,6 +23,42 @@ class TestSFTDatasetValidator(unittest.TestCase):
         return temp_file_name
 
     # SFT 1.0 Tests
+    def test_nova_micro_with_multimodal_data_fail(self):
+        """Test that Nova Micro rejects multimodal data (image/video/document)"""
+        nova_micro_image_fail = [
+            {
+                "schemaVersion": "bedrock-conversation-2024",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"text": "What's in this image?"},
+                            {
+                                "image": {
+                                    "format": "png",
+                                    "source": {
+                                        "s3Location": {
+                                            "uri": "s3://bucket/image.png",
+                                            "bucketOwner": "123456789012",
+                                        }
+                                    },
+                                }
+                            },
+                        ],
+                    },
+                    {"role": "assistant", "content": [{"text": "Response"}]},
+                ],
+            }
+        ]
+
+        test_file = self.create_temp_file(
+            "nova_micro_image_fail", nova_micro_image_fail
+        )
+        with self.assertRaises(ValueError) as context:
+            JSONLDatasetLoader().load(test_file).validate(
+                TrainingMethod.SFT_LORA, Model.NOVA_MICRO
+            )
+
     def test_sft_one_with_text_data_success(self):
         dataset_loader = JSONLDatasetLoader()
         dataset_loader.load(
