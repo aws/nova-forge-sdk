@@ -2,142 +2,42 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-from amzn_nova_customization_sdk.util.bedrock import create_bedrock_execution_role
+from amzn_nova_customization_sdk.util.bedrock import invoke_model
 
 
 class TestBedrock(unittest.TestCase):
-    @patch("boto3.client")
-    def test_create_bedrock_execution_role_with_wildcards(self, mock_boto_client):
-        mock_sts = MagicMock()
-        mock_sts.get_caller_identity.return_value = {"Account": "123456789"}
-        mock_boto_client.return_value = mock_sts
-
-        role_name = "role_name"
-        mock_iam_client = MagicMock()
-        mock_iam_client.exceptions.NoSuchEntityException = type(
-            "NoSuchEntityException", (Exception,), {}
-        )
-        mock_iam_client.exceptions.EntityAlreadyExistsException = type(
-            "EntityAlreadyExistsException", (Exception,), {}
-        )
-        mock_iam_client.get_role.side_effect = (
-            mock_iam_client.exceptions.NoSuchEntityException("Role not found")
-        )
-        mock_iam_client.create_policy.return_value = {
-            "Policy": {"Arn": "arn:aws:iam::123456789:policy/foo"}
+    def test_invoke_model_success(self):
+        mock_bedrock_runtime = MagicMock()
+        mock_body = MagicMock()
+        mock_response = {
+            "body": mock_body,
+            "ResponseMetadata": {"RequestId": "test-request-id"},
         }
+        mock_body.read.return_value = b'{"response": "test output"}'
+        mock_bedrock_runtime.invoke_model.return_value = mock_response
 
-        create_bedrock_execution_role(mock_iam_client, role_name)
+        model_id = "test-model"
+        request_body = {"input": "test"}
 
-        mock_iam_client.create_policy.assert_any_call(
-            PolicyName=f"{role_name}Bedrock_Policy",
-            PolicyDocument=json.dumps(
-                {
-                    "Version": "2012-10-17",
-                    "Statement": [
-                        {
-                            "Effect": "Allow",
-                            "Action": [
-                                "bedrock:CreateCustomModelDeployment",
-                                "bedrock:CreateCustomModel",
-                                "bedrock:CreateProvisionedModelThroughput",
-                                "bedrock:GetCustomModel",
-                                "bedrock:GetCustomModelDeployment",
-                            ],
-                            "Resource": "*",
-                        }
-                    ],
-                }
-            ),
-        )
+        result = invoke_model(model_id, request_body, mock_bedrock_runtime)
 
-        mock_iam_client.create_policy.assert_any_call(
-            PolicyName=f"{role_name}S3_Read_Policy",
-            PolicyDocument=json.dumps(
-                {
-                    "Version": "2012-10-17",
-                    "Statement": [
-                        {
-                            "Effect": "Allow",
-                            "Action": ["s3:GetObject", "s3:ListBucket"],
-                            "Resource": "*",
-                        }
-                    ],
-                }
-            ),
+        mock_bedrock_runtime.invoke_model.assert_called_once_with(
+            modelId=model_id, body=json.dumps(request_body)
         )
+        self.assertEqual(result.job_id, "test-request-id")
+        self.assertEqual(result._nonstreaming_response, '{"response": "test output"}')
 
-    @patch("boto3.client")
-    def test_create_bedrock_execution_role_with_scoped_resources(
-        self, mock_boto_client
-    ):
-        account_id = "123456789"
-        mock_sts = MagicMock()
-        mock_sts.get_caller_identity.return_value = {"Account": account_id}
-        mock_boto_client.return_value = mock_sts
+    def test_invoke_model_exception(self):
+        mock_bedrock_runtime = MagicMock()
+        mock_bedrock_runtime.invoke_model.side_effect = Exception("Test error")
 
-        role_name = "role_name"
-        scoped_resource = "resource"
-        mock_iam_client = MagicMock()
-        mock_iam_client.exceptions.NoSuchEntityException = type(
-            "NoSuchEntityException", (Exception,), {}
-        )
-        mock_iam_client.exceptions.EntityAlreadyExistsException = type(
-            "EntityAlreadyExistsException", (Exception,), {}
-        )
-        mock_iam_client.get_role.side_effect = (
-            mock_iam_client.exceptions.NoSuchEntityException("Role not found")
-        )
-        mock_iam_client.create_policy.return_value = {
-            "Policy": {"Arn": f"arn:aws:iam::{account_id}:policy/foo"}
-        }
+        model_id = "test-model"
+        request_body = {"input": "test"}
 
-        create_bedrock_execution_role(
-            mock_iam_client, role_name, scoped_resource, scoped_resource
-        )
+        with self.assertRaises(Exception) as context:
+            invoke_model(model_id, request_body, mock_bedrock_runtime)
 
-        mock_iam_client.create_policy.assert_any_call(
-            PolicyName=f"{role_name}Bedrock_Policy",
-            PolicyDocument=json.dumps(
-                {
-                    "Version": "2012-10-17",
-                    "Statement": [
-                        {
-                            "Effect": "Allow",
-                            "Action": [
-                                "bedrock:CreateCustomModelDeployment",
-                                "bedrock:CreateCustomModel",
-                                "bedrock:CreateProvisionedModelThroughput",
-                                "bedrock:GetCustomModel",
-                                "bedrock:GetCustomModelDeployment",
-                            ],
-                            "Resource": f"arn:aws:bedrock:*:*:custom-model/{scoped_resource}*",
-                        }
-                    ],
-                }
-            ),
-        )
-
-        mock_iam_client.create_policy.assert_any_call(
-            PolicyName=f"{role_name}S3_Read_Policy",
-            PolicyDocument=json.dumps(
-                {
-                    "Version": "2012-10-17",
-                    "Statement": [
-                        {
-                            "Effect": "Allow",
-                            "Action": ["s3:GetObject", "s3:ListBucket"],
-                            "Resource": [
-                                f"arn:aws:s3:::{scoped_resource}*",
-                                f"arn:aws:s3:::{scoped_resource}*/*",
-                                f"arn:aws:s3:::customer-escrow-{account_id}*",
-                                f"arn:aws:s3:::customer-escrow-{account_id}*/*",
-                            ],
-                        }
-                    ],
-                }
-            ),
-        )
+        self.assertTrue("Failed invoke Bedrock model" in str(context.exception))
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 
 from amzn_nova_customization_sdk.model.result import (
     JobStatus,
+    SingleInferenceResult,
     SMTJBatchInferenceResult,
 )
 
@@ -598,6 +599,61 @@ class TestSMTJBatchInferenceResult(unittest.TestCase):
                         if "Error saving inference results" in str(call)
                     ]
                     self.assertGreater(len(error_calls), 0)
+
+
+class TestSingleInferenceResult(unittest.TestCase):
+    def setUp(self):
+        self.job_id = "test-job-123"
+        self.started_time = datetime.now()
+        self.inference_output_path = ""
+
+        # Streaming result setup
+        def streaming_generator():
+            yield "First chunk"
+            yield "Second chunk"
+            yield "Final chunk"
+
+        self.streaming_result = SingleInferenceResult(
+            job_id=self.job_id,
+            started_time=self.started_time,
+            inference_output_path=self.inference_output_path,
+            nonstreaming_response=None,
+            streaming_response=streaming_generator(),
+        )
+
+        # Non-streaming result setup
+        self.nonstreaming_result = SingleInferenceResult(
+            job_id=self.job_id,
+            started_time=self.started_time,
+            inference_output_path=self.inference_output_path,
+            nonstreaming_response="Non-streaming response",
+            streaming_response=None,
+        )
+
+    def test_get(self):
+        # Test streaming result get
+        streaming_get = self.streaming_result.get()
+        self.assertTrue(streaming_get["inference_results"]["is_streaming"])
+        self.assertIsNotNone(streaming_get["inference_results"]["response"])
+
+        # Test non-streaming result get
+        nonstreaming_get = self.nonstreaming_result.get()
+        self.assertFalse(nonstreaming_get["inference_results"]["is_streaming"])
+        self.assertEqual(
+            nonstreaming_get["inference_results"]["response"], "Non-streaming response"
+        )
+
+    @patch("amzn_nova_customization_sdk.model.result.inference_result.logger")
+    def test_show(self, mock_logger):
+        # Test streaming result show
+        self.streaming_result.show()
+
+        # Ensure generator is consumed
+        with self.assertRaises(ValueError):
+            self.streaming_result.show()
+
+        self.nonstreaming_result.show()
+        mock_logger.info.assert_called()
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ from typing import Dict
 import boto3
 
 from amzn_nova_customization_sdk.model.model_config import ModelArtifacts
-from amzn_nova_customization_sdk.model.model_enums import TrainingMethod
+from amzn_nova_customization_sdk.model.model_enums import Model, TrainingMethod
 from amzn_nova_customization_sdk.model.result.job_result import (
     BaseJobResult,
     JobStatusManager,
@@ -32,6 +32,7 @@ from amzn_nova_customization_sdk.model.result.job_result import (
 class TrainingResult(BaseJobResult, ABC):
     method: TrainingMethod
     model_artifacts: ModelArtifacts
+    model_type: Model
     # metrics: Dict[str, float] # TODO: Implement metrics
 
     def __init__(
@@ -40,9 +41,11 @@ class TrainingResult(BaseJobResult, ABC):
         started_time: datetime,
         method: TrainingMethod,
         model_artifacts: ModelArtifacts,
+        model_type: Model,
     ):
         self.method = method
         self.model_artifacts = model_artifacts
+        self.model_type = model_type
         super().__init__(job_id, started_time)
 
     def get(self) -> Dict:
@@ -64,10 +67,11 @@ class SMTJTrainingResult(TrainingResult):
         started_time: datetime,
         method: TrainingMethod,
         model_artifacts: ModelArtifacts,
+        model_type: Model,
         sagemaker_client=None,
     ):
         self._sagemaker_client = sagemaker_client or boto3.client("sagemaker")
-        super().__init__(job_id, started_time, method, model_artifacts)
+        super().__init__(job_id, started_time, method, model_artifacts, model_type)
 
     def _create_status_manager(self) -> JobStatusManager:
         return SMTJStatusManager(self._sagemaker_client)
@@ -78,6 +82,7 @@ class SMTJTrainingResult(TrainingResult):
             "started_time": self.started_time.isoformat(),
             "method": self.method.value,
             "model_artifacts": asdict(self.model_artifacts),
+            "model_type": self.model_type.name,
         }
 
     @classmethod
@@ -87,6 +92,7 @@ class SMTJTrainingResult(TrainingResult):
             started_time=datetime.fromisoformat(data["started_time"]),
             method=TrainingMethod(data["method"]),
             model_artifacts=ModelArtifacts(**data["model_artifacts"]),
+            model_type=Model.from_model_name(data["model_type"]),
         )
 
 
@@ -102,11 +108,12 @@ class SMHPTrainingResult(TrainingResult):
         method: TrainingMethod,
         model_artifacts: ModelArtifacts,
         cluster_name: str,
+        model_type: Model,
         namespace: str = "kubeflow",
     ):
         self.cluster_name = cluster_name
         self.namespace = namespace
-        super().__init__(job_id, started_time, method, model_artifacts)
+        super().__init__(job_id, started_time, method, model_artifacts, model_type)
 
     def _create_status_manager(self) -> JobStatusManager:
         return SMHPStatusManager(self.cluster_name, self.namespace)
@@ -119,6 +126,7 @@ class SMHPTrainingResult(TrainingResult):
             "model_artifacts": asdict(self.model_artifacts),
             "cluster_name": self.cluster_name,
             "namespace": self.namespace,
+            "model_type": self.model_type.name,
         }
 
     @classmethod
@@ -129,5 +137,6 @@ class SMHPTrainingResult(TrainingResult):
             method=TrainingMethod(data["method"]),
             model_artifacts=ModelArtifacts(**data["model_artifacts"]),
             cluster_name=data["cluster_name"],
+            model_type=Model.from_model_name(data["model_type"]),
             namespace=data["namespace"],
         )

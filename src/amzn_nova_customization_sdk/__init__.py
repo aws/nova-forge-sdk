@@ -36,6 +36,14 @@ from .monitor import (
 from .recipe import (
     EvaluationTask,
 )
+from .rft_multiturn import (
+    CustomEnvironment,
+    EnvType,
+    RFTMultiturnInfrastructure,
+    VFEnvId,
+    create_rft_execution_role,
+    list_rft_stacks,
+)
 
 __all__ = [
     "CSVDatasetLoader",
@@ -54,4 +62,10 @@ __all__ = [
     "MLflowMonitor",
     "CloudWatchLogMonitor",
     "EvaluationTask",
+    "RFTMultiturnInfrastructure",
+    "EnvType",
+    "VFEnvId",
+    "CustomEnvironment",
+    "list_rft_stacks",
+    "create_rft_execution_role",
 ]

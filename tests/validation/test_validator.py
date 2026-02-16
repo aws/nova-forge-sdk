@@ -1088,7 +1088,8 @@ class TestEvaluationValidation(unittest.TestCase):
             )
 
         self.assertIn(
-            "rl_env_config is only supported for rft_eval task", str(context.exception)
+            "rl_env_config is only supported for rft_eval and rft_multiturn_eval task",
+            str(context.exception),
         )
 
     @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
@@ -1636,6 +1637,99 @@ class TestRecipeValidation(unittest.TestCase):
 
         self.assertIn("'max_steps' must be at least 4", str(context.exception))
 
+    def test_validate_recipe_save_steps_less_than_max_steps_valid(self):
+        """Test validation passes when save_steps < max_steps."""
+        recipe = {"training_config": {"max_steps": 1000, "save_steps": 100}}
+        overrides_template = {
+            "max_steps": {"type": "integer"},
+            "save_steps": {"type": "integer"},
+        }
+
+        errors = []
+        Validator._validate_recipe(
+            recipe=recipe,
+            overrides_template=overrides_template,
+            instance_type="ml.p5.48xlarge",
+            errors=errors,
+            method=TrainingMethod.SFT_LORA,
+        )
+
+        self.assertEqual(len(errors), 0)
+
+    def test_validate_recipe_save_steps_equal_to_max_steps_valid(self):
+        """Test validation passes when save_steps == max_steps."""
+        recipe = {"training_config": {"max_steps": 1000, "save_steps": 1000}}
+        overrides_template = {
+            "max_steps": {"type": "integer"},
+            "save_steps": {"type": "integer"},
+        }
+
+        errors = []
+        Validator._validate_recipe(
+            recipe=recipe,
+            overrides_template=overrides_template,
+            instance_type="ml.p5.48xlarge",
+            errors=errors,
+            method=TrainingMethod.SFT_LORA,
+        )
+
+        self.assertEqual(len(errors), 0)
+
+    def test_validate_recipe_save_steps_greater_than_max_steps_invalid(self):
+        """Test validation fails when save_steps > max_steps."""
+        recipe = {"training_config": {"max_steps": 100, "save_steps": 200}}
+        overrides_template = {
+            "max_steps": {"type": "integer"},
+            "save_steps": {"type": "integer"},
+        }
+
+        errors = []
+        Validator._validate_recipe(
+            recipe=recipe,
+            overrides_template=overrides_template,
+            instance_type="ml.p5.48xlarge",
+            errors=errors,
+            method=TrainingMethod.SFT_LORA,
+        )
+
+        self.assertEqual(len(errors), 1)
+        self.assertIn(
+            "'save_steps' (200) must be less than or equal to 'max_steps' (100)",
+            errors[0],
+        )
+
+    def test_validate_recipe_save_steps_validation_skipped_when_missing(self):
+        """Test save_steps validation is skipped when either field is missing."""
+        # Only max_steps present
+        recipe1 = {"training_config": {"max_steps": 100}}
+        overrides_template = {"max_steps": {"type": "integer"}}
+
+        errors1 = []
+        Validator._validate_recipe(
+            recipe=recipe1,
+            overrides_template=overrides_template,
+            instance_type="ml.p5.48xlarge",
+            errors=errors1,
+            method=TrainingMethod.SFT_LORA,
+        )
+
+        self.assertEqual(len(errors1), 0)
+
+        # Only save_steps present
+        recipe2 = {"training_config": {"save_steps": 100}}
+        overrides_template2 = {"save_steps": {"type": "integer"}}
+
+        errors2 = []
+        Validator._validate_recipe(
+            recipe=recipe2,
+            overrides_template=overrides_template2,
+            instance_type="ml.p5.48xlarge",
+            errors=errors2,
+            method=TrainingMethod.SFT_LORA,
+        )
+
+        self.assertEqual(len(errors2), 0)
+
 
 class TestCallingRolePermissionsValidation(unittest.TestCase):
     """Test cases for _validate_calling_role_permissions method"""
@@ -2019,7 +2113,9 @@ class TestPermissionValidationMethods(unittest.TestCase):
         required_permissions = [
             (
                 "sagemaker:DescribeCluster",
-                lambda infra: f"arn:aws:sagemaker:{infra.region}:*:cluster/{infra.cluster_name}",
+                lambda infra: (
+                    f"arn:aws:sagemaker:{infra.region}:*:cluster/{infra.cluster_name}"
+                ),
             )
         ]
 
@@ -2468,7 +2564,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
 
         self.assertEqual(
             str(context.exception),
-            f"Job name must fit pattern ${JOB_NAME_REGEX.pattern}",
+            f"Job name must fit pattern {JOB_NAME_REGEX.pattern}",
         )
 
     def test_validate_job_name_does_not_raise_exception(self):
@@ -2480,7 +2576,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
 
         self.assertEqual(
             str(context.exception),
-            f"Namespace must fit pattern ${NAMESPACE_REGEX.pattern}",
+            f"Namespace must fit pattern {NAMESPACE_REGEX.pattern}",
         )
 
     def test_validate_namespace_does_not_raise_exception(self):
@@ -2492,7 +2588,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
 
         self.assertEqual(
             str(context.exception),
-            f"Cluster name must fit pattern ${CLUSTER_NAME_REGEX.pattern}",
+            f"Cluster name must fit pattern {CLUSTER_NAME_REGEX.pattern}",
         )
 
     def test_validate_cluster_name_does_not_raise_exception(self):

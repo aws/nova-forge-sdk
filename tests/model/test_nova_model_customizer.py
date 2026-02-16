@@ -3,11 +3,17 @@ from datetime import datetime
 from unittest.mock import MagicMock, PropertyMock, create_autospec, patch
 
 import boto3
+from botocore.endpoint import Endpoint
 from botocore.exceptions import ClientError
 
 from amzn_nova_customization_sdk.manager.runtime_manager import (
     SMHPRuntimeManager,
     SMTJRuntimeManager,
+)
+from amzn_nova_customization_sdk.model.model_config import (
+    DeploymentResult,
+    EndpointInfo,
+    ModelArtifacts,
 )
 from amzn_nova_customization_sdk.model.model_enums import (
     DeploymentMode,
@@ -23,9 +29,16 @@ from amzn_nova_customization_sdk.model.result import (
     SMTJEvaluationResult,
 )
 from amzn_nova_customization_sdk.model.result.job_result import JobStatus
-from amzn_nova_customization_sdk.model.result.training_result import TrainingResult
+from amzn_nova_customization_sdk.model.result.training_result import (
+    SMTJTrainingResult,
+    TrainingResult,
+)
 from amzn_nova_customization_sdk.recipe.recipe_config import EvaluationTask
 from amzn_nova_customization_sdk.util.recipe import RecipePath
+from amzn_nova_customization_sdk.util.sagemaker import (
+    DEFAULT_CONTEXT_LENGTH,
+    DEFAULT_MAX_CONCURRENCY,
+)
 
 
 class MockRecipePath(RecipePath):
@@ -1230,6 +1243,86 @@ class TestDeploy(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_sagemaker_execution_role"
+    )
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_model_and_endpoint_config"
+    )
+    def test_deploy_sagemaker_success(
+        self, mock_create, mock_sagemaker_role_creation, mock_boto_client
+    ):
+        mock_sagemaker_role_creation.return_value = {
+            "Role": {"Arn": "sagemaker:role:arn"}
+        }
+        mock_create.return_value = "sagemaker:endpoint:arn"
+
+        result = self.customizer.deploy(
+            model_artifact_path="s3://test-bucket/model",
+            deploy_platform=DeployPlatform.SAGEMAKER,
+            sagemaker_instance_type="ml.p5.48xlarge",
+        )
+
+        mock_sagemaker_role_creation.assert_called_once()
+        mock_create.assert_called_once()
+        self.assertEqual(result.endpoint.platform, DeployPlatform.SAGEMAKER)
+        self.assertEqual(result.endpoint.uri, "sagemaker:endpoint:arn")
+
+    @patch("boto3.client")
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_sagemaker_execution_role"
+    )
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_model_and_endpoint_config"
+    )
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
+    )
+    def test_deploy_sagemaker_with_job_success(
+        self,
+        mock_checkpoint_resolution,
+        mock_create,
+        mock_sagemaker_role_creation,
+        mock_boto_client,
+    ):
+        mock_sagemaker = MagicMock()
+        mock_boto_client.return_value = mock_sagemaker
+        mock_sagemaker_role_creation.return_value = {
+            "Role": {"Arn": "sagemaker:role:arn"}
+        }
+        mock_create.return_value = "sagemaker:endpoint:arn"
+        mock_checkpoint_resolution.return_value = "s3://xn---checkpointbucket/ckpt"
+
+        mock_job_result = MagicMock()
+        mock_job_result.model_type = Model.NOVA_MICRO
+
+        result = self.customizer.deploy(
+            job_result=mock_job_result,
+            deploy_platform=DeployPlatform.SAGEMAKER,
+            sagemaker_instance_type="ml.p5.48xlarge",
+        )
+
+        mock_create.assert_called_with(
+            region="us-east-1",
+            model_name="nova-micro-sft-lora-sagemaker-model",
+            model_s3_location="s3://xn---checkpointbucket/ckpt/",
+            sagemaker_execution_role_arn="sagemaker:role:arn",
+            endpoint_config_name="nova-micro-sft-lora-sagemaker-config",
+            endpoint_name="nova-micro-sft-lora-sagemaker",
+            instance_type="ml.p5.48xlarge",
+            environment={
+                "CONTEXT_LENGTH": DEFAULT_CONTEXT_LENGTH,
+                "MAX_CONCURRENCY": DEFAULT_MAX_CONCURRENCY,
+            },
+            sagemaker_client=mock_sagemaker,
+            initial_instance_count=1,
+            deployment_mode=DeploymentMode.FAIL_IF_EXISTS,
+        )
+
+        self.assertEqual(result.endpoint.platform, DeployPlatform.SAGEMAKER)
+        self.assertEqual(result.endpoint.uri, "sagemaker:endpoint:arn")
+
+    @patch("boto3.client")
+    @patch(
         "amzn_nova_customization_sdk.model.nova_model_customizer.create_bedrock_execution_role"
     )
     @patch(
@@ -1259,6 +1352,29 @@ class TestDeploy(TestNovaModelCustomizer):
             )
 
         self.assertIn("Failed to create custom model", str(context.exception))
+
+    @patch("boto3.client")
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_sagemaker_execution_role"
+    )
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_model_and_endpoint_config"
+    )
+    def test_deploy_sagemaker_failure(
+        self, mock_create, mock_sagemaker_role_creation, mock_boto_client
+    ):
+        mock_sagemaker_role_creation.return_value = {
+            "Role": {"Arn": "sagemaker:role:arn"}
+        }
+        mock_create.side_effect = Exception("Failed to create deployment")
+
+        with self.assertRaises(Exception) as context:
+            self.customizer.deploy(
+                model_artifact_path="s3://test-bucket/model",
+                deploy_platform=DeployPlatform.SAGEMAKER,
+                sagemaker_instance_type="ml.p5.48xlarge",
+            )
+        self.assertIn("Failed to create deployment", str(context.exception))
 
     @patch("boto3.client")
     @patch(
@@ -1396,7 +1512,7 @@ class TestDeploy(TestNovaModelCustomizer):
         result = pt_customizer.deploy(
             model_artifact_path="s3://test-bucket/model.tar.gz",
             deploy_platform=DeployPlatform.BEDROCK_PT,
-            pt_units=10,
+            unit_count=10,
             endpoint_name="test-pt-endpoint",
         )
 
@@ -1995,6 +2111,71 @@ class TestPlatformValidation(TestNovaModelCustomizer):
         self.assertIn("Cannot determine platform", warning_msg)
         self.assertIsNotNone(result)
         self.mock_runtime_manager.execute.assert_called_once()
+
+    def test_invoke_inference_no_endpoint_raises_error(self):
+        """Test that an error is raised when no endpoint arn or endpoint info is provided"""
+        with self.assertRaises(ValueError):
+            self.customizer.invoke_inference({"messages": []})
+
+    @patch("boto3.client")
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.invoke_sagemaker_inference"
+    )
+    def test_invoke_inference_sagemaker_endpoint(
+        self, mock_invoke_sagemaker, mock_boto3_client
+    ):
+        # Setup
+        endpoint_arn = "arn:aws:sagemaker:us-east-1:123456789012:endpoint/test-endpoint"
+        request_body = {
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 100,
+            "stream": False,
+        }
+        mock_runtime_client = MagicMock()
+        mock_boto3_client.return_value = mock_runtime_client
+        mock_invoke_sagemaker.return_value = "Inference Result"
+
+        # Execute
+        result = self.customizer.invoke_inference(request_body, endpoint_arn)
+
+        # Assert
+        mock_boto3_client.assert_called_once_with(
+            "sagemaker-runtime", region_name="us-east-1"
+        )
+        mock_invoke_sagemaker.assert_called_once_with(
+            request_body, "test-endpoint", mock_runtime_client
+        )
+        assert result == "Inference Result"
+
+    @patch("boto3.client")
+    @patch("amzn_nova_customization_sdk.model.nova_model_customizer.invoke_model")
+    def test_invoke_inference_bedrock_endpoint(
+        self, mock_invoke_model, mock_boto3_client
+    ):
+        endpoint_arn = (
+            "arn:aws:bedrock:us-east-1:123456789012:custom-model-deployment/test-model"
+        )
+        request_body = {
+            "system": [{"text": "You are an assistant"}],
+            "messages": [{"role": "user", "content": [{"text": "Hello"}]}],
+        }
+        mock_runtime_client = MagicMock()
+        mock_boto3_client.return_value = mock_runtime_client
+        mock_invoke_model.return_value = "Bedrock Inference Result"
+
+        # Execute
+        result = self.customizer.invoke_inference(request_body, endpoint_arn)
+
+        # Assert
+        mock_boto3_client.assert_called_once_with(
+            "bedrock-runtime", region_name="us-east-1"
+        )
+        mock_invoke_model.assert_called_once_with(
+            model_id=endpoint_arn,
+            request_body=request_body,
+            bedrock_runtime=mock_runtime_client,
+        )
+        assert result == "Bedrock Inference Result"
 
 
 if __name__ == "__main__":

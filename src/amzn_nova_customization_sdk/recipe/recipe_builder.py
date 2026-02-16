@@ -37,6 +37,7 @@ from amzn_nova_customization_sdk.recipe.recipe_config import (
     HYPERPOD_RECIPE_PATH,
     EvaluationTask,
 )
+from amzn_nova_customization_sdk.rft_multiturn import RFTMultiturnInfrastructure
 from amzn_nova_customization_sdk.util.checkpoint_util import validate_checkpoint_uri
 from amzn_nova_customization_sdk.util.data_mixing import DataMixing
 from amzn_nova_customization_sdk.util.logging import logger
@@ -67,6 +68,7 @@ class RecipeBuilder:
         mlflow_monitor: Optional[MLflowMonitor] = None,
         # Method-specific inputs
         rft_lambda_arn: Optional[str] = None,
+        rft_multiturn_infra: Optional["RFTMultiturnInfrastructure"] = None,
         validation_data_s3_path: Optional[str] = None,
         eval_task: Optional[EvaluationTask] = None,
         subtask: Optional[str] = None,
@@ -118,6 +120,30 @@ class RecipeBuilder:
             self.rft_lambda_arn = rft_lambda_arn
         elif rft_lambda_arn is not None:
             logger.info("'rft_lambda_arn' is only required for RFT. Will ignore.")
+
+        # RFT Multiturn - only supported on Nova 2.0
+        self.rft_multiturn_infra = rft_multiturn_infra
+        if method in [
+            TrainingMethod.RFT_MULTITURN_LORA,
+            TrainingMethod.RFT_MULTITURN_FULL,
+        ]:
+            if model != Model.NOVA_LITE_2:
+                raise ValueError(
+                    f"{method} method is only supported on Nova 2.0. "
+                    f"You provided {model}. Please use Model.NOVA_LITE_2."
+                )
+            if not rft_multiturn_infra:
+                raise ValueError(
+                    "'rft_multiturn_infra' is required for RFT multiturn training"
+                )
+        elif (
+            method == TrainingMethod.EVALUATION
+            and eval_task == EvaluationTask.RFT_MULTITURN_EVAL
+        ):
+            if not rft_multiturn_infra:
+                raise ValueError(
+                    "'rft_multiturn_infra' is required for RFT multiturn evaluation"
+                )
 
         # CPT
         if method == TrainingMethod.CPT:
@@ -333,7 +359,7 @@ class RecipeBuilder:
             # Evaluation
             elif self.method == TrainingMethod.EVALUATION:
                 overrides_template.setdefault("task", {})["default"] = (
-                    self.eval_task.value
+                    self.eval_task.get_recipe_value()
                 )
                 overrides_template.setdefault("strategy", {})["default"] = (
                     self.strategy.value
@@ -383,8 +409,10 @@ class RecipeBuilder:
                             "max",
                             "sum",
                         ]
-                if self.rl_env_config is not None and self.rl_env_config.get(
-                    "reward_lambda_arn"
+                if (
+                    self.rl_env_config is not None
+                    and self.rl_env_config.get("reward_lambda_arn")
+                    and getattr(self, "eval_task", None) is EvaluationTask.RFT_EVAL
                 ):
                     overrides_template.setdefault("reward_lambda_arn", {})[
                         "default"
@@ -449,7 +477,8 @@ class RecipeBuilder:
                 elif key in input_recipe_key_values:
                     if (
                         self.eval_task
-                        and self.eval_task.value != input_recipe_key_values[key]
+                        and self.eval_task.get_recipe_value()
+                        != input_recipe_key_values[key]
                     ):
                         logger.warning(
                             f"{key} '{input_recipe_key_values[key]}' will be ignored from your input recipe. If you wish to use a different evaluation task than {self.eval_task.name}, please pass a different value for 'eval_task' when calling evaluate()."
@@ -518,8 +547,9 @@ class RecipeBuilder:
                                     "default"
                                 ] = overrides[recipe_template_key]
                             else:
+                                # Create a deep copy to avoid shared references
                                 overrides_template[recipe_template_key] = (
-                                    overrides_template[overrides_template_key]
+                                    overrides_template[overrides_template_key].copy()
                                 )
                                 overrides_template[overrides_template_key][
                                     "required"
@@ -567,8 +597,9 @@ class RecipeBuilder:
                                     "default"
                                 ] = input_recipe_key_values[recipe_template_key]
                             else:
+                                # Create a deep copy to avoid shared references
                                 overrides_template[recipe_template_key] = (
-                                    overrides_template[overrides_template_key]
+                                    overrides_template[overrides_template_key].copy()
                                 )
                                 overrides_template[overrides_template_key][
                                     "required"
@@ -607,8 +638,11 @@ class RecipeBuilder:
                                 )
                             ):
                                 if recipe_template_key != overrides_template_key:
+                                    # Create a deep copy to avoid shared references
                                     overrides_template[recipe_template_key] = (
-                                        overrides_template[overrides_template_key]
+                                        overrides_template[
+                                            overrides_template_key
+                                        ].copy()
                                     )
                                     overrides_template[overrides_template_key][
                                         "required"
@@ -778,6 +812,8 @@ class RecipeBuilder:
                     | TrainingMethod.SFT_FULL
                     | TrainingMethod.DPO_LORA
                     | TrainingMethod.DPO_FULL
+                    | TrainingMethod.RFT_MULTITURN_LORA
+                    | TrainingMethod.RFT_MULTITURN_FULL
                 ):
                     path_components.append("fine-tuning")
                 case _:
@@ -785,7 +821,11 @@ class RecipeBuilder:
 
             path_components.append("nova")
 
-            if self.data_mixing_instance is not None:
+            if (
+                self.data_mixing_instance is not None
+                or self.method == TrainingMethod.RFT_MULTITURN_FULL
+                or self.method == TrainingMethod.RFT_MULTITURN_LORA
+            ):
                 path_components.append("forge")
 
             match self.model.version:
@@ -842,6 +882,7 @@ class RecipeBuilder:
                 data_mixing_enabled=True if self.data_mixing_instance else False,
                 eval_task=getattr(self, "eval_task", None),
                 image_uri_override=self.image_uri_override,
+                rft_multiturn_infra=self.rft_multiturn_infra,
             )
         )
 
@@ -927,7 +968,7 @@ class RecipeBuilder:
                 else None,
             },
             rl_env_config=None
-            if getattr(self, "eval_task", None) != EvaluationTask.RFT_EVAL
+            if (getattr(self, "eval_task", None) is not EvaluationTask.RFT_EVAL)
             else {
                 "reward_lambda_arn": overrides_template.get(
                     "reward_lambda_arn", {}
@@ -936,6 +977,17 @@ class RecipeBuilder:
                 else None
             },
         )
+
+        # Remove reward_lambda_arn from recipe if RFT_MULTITURN_EVAL
+        if (
+            getattr(self, "eval_task", None) is EvaluationTask.RFT_MULTITURN_EVAL
+            and getattr(self, "rft_multiturn_infra", None) is not None
+        ):
+            if (
+                "rl_env" in final_recipe_dict
+                and "reward_lambda_arn" in final_recipe_dict["rl_env"]
+            ):
+                del final_recipe_dict["rl_env"]["reward_lambda_arn"]
 
         # Serialize the generated recipe to YAML
         final_recipe_str = yaml.dump(

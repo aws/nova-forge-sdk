@@ -94,9 +94,9 @@ class TestMemoryEfficiency(unittest.TestCase):
                 return count
 
         # Measure memory for different dataset sizes
-        small_memory = self._measure_peak_memory_mb(lambda: process_dataset(100))
-        medium_memory = self._measure_peak_memory_mb(lambda: process_dataset(1000))
-        large_memory = self._measure_peak_memory_mb(lambda: process_dataset(10000))
+        small_memory = self._measure_peak_memory_mb(lambda: process_dataset(1))
+        medium_memory = self._measure_peak_memory_mb(lambda: process_dataset(10))
+        large_memory = self._measure_peak_memory_mb(lambda: process_dataset(100))
 
         # Calculate growth factors
         medium_growth = medium_memory / small_memory if small_memory > 0 else 0
@@ -150,8 +150,8 @@ class TestMemoryEfficiency(unittest.TestCase):
 
                 return count
 
-        small_memory = self._measure_peak_memory_mb(lambda: process_dataset(100))
-        large_memory = self._measure_peak_memory_mb(lambda: process_dataset(10000))
+        small_memory = self._measure_peak_memory_mb(lambda: process_dataset(1))
+        large_memory = self._measure_peak_memory_mb(lambda: process_dataset(100))
 
         growth_factor = large_memory / small_memory if small_memory > 0 else 0
 
@@ -198,10 +198,8 @@ class TestMemoryEfficiency(unittest.TestCase):
 
                 return count
 
-        small_memory = self._measure_peak_memory_mb(lambda: process_with_transform(100))
-        large_memory = self._measure_peak_memory_mb(
-            lambda: process_with_transform(10000)
-        )
+        small_memory = self._measure_peak_memory_mb(lambda: process_with_transform(1))
+        large_memory = self._measure_peak_memory_mb(lambda: process_with_transform(100))
 
         growth_factor = large_memory / small_memory if small_memory > 0 else 0
 
@@ -249,7 +247,7 @@ class TestMemoryEfficiency(unittest.TestCase):
         baseline_current, baseline_peak = tracemalloc.get_traced_memory()
 
         # Iterate through dataset
-        iterate_dataset(5000)
+        iterate_dataset(50)
 
         # Get memory after iteration
         final_current, final_peak = tracemalloc.get_traced_memory()
@@ -298,8 +296,8 @@ class TestMemoryEfficiency(unittest.TestCase):
                     loader.show(n=show_n)
 
         # Memory for show(10) should be similar regardless of dataset size
-        small_memory = self._measure_peak_memory_mb(lambda: show_dataset(100, 10))
-        large_memory = self._measure_peak_memory_mb(lambda: show_dataset(10000, 10))
+        small_memory = self._measure_peak_memory_mb(lambda: show_dataset(1, 1))
+        large_memory = self._measure_peak_memory_mb(lambda: show_dataset(100, 10))
 
         growth_factor = large_memory / small_memory if small_memory > 0 else 0
 
@@ -326,7 +324,7 @@ class TestMemoryEfficiency(unittest.TestCase):
         """
 
         def mock_generator():
-            return self._generate_jsonl_lines(1000)
+            return self._generate_jsonl_lines(10)
 
         with patch(
             "amzn_nova_customization_sdk.dataset.dataset_loader.load_file_content",

@@ -53,6 +53,7 @@ NAMESPACE_REGEX = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 # https://docs.aws.amazon.com/eks/latest/APIReference/API_CreateCluster.html#API_CreateCluster_RequestParameters
 CLUSTER_NAME_REGEX = re.compile(r"^[0-9A-Za-z][A-Za-z0-9\-_]{1,100}$")
 
+
 TYPE_ALIASES = {
     "string": "str",
     "str": "str",
@@ -657,7 +658,7 @@ class Validator:
                 )
                 return
 
-            # Test permission to describe Sagemaker clusters
+            # Test permission to describe SageMaker clusters
             sagemaker_client = boto3.client("sagemaker", region_name=region_name)
             try:
                 sagemaker_client.describe_cluster(ClusterName=cluster_name)
@@ -885,9 +886,12 @@ class Validator:
 
             # Check rl_env_config
             if rl_env_config:
-                if eval_task != EvaluationTask.RFT_EVAL:
+                if eval_task not in [
+                    EvaluationTask.RFT_EVAL,
+                    EvaluationTask.RFT_MULTITURN_EVAL,
+                ]:
                     errors.append(
-                        f"rl_env_config is only supported for rft_eval task, but you provided {eval_task.value}"
+                        f"rl_env_config is only supported for rft_eval and rft_multiturn_eval tasks, but you provided {eval_task.value}"
                     )
                 if not rl_env_config.get("reward_lambda_arn"):
                     errors.append(f"rl_env must contain a reward_lambda_arn")
@@ -991,6 +995,22 @@ class Validator:
                         f"'{key}' must be no greater than {override_metadata['max']}. You provided {recipe_value}."
                     )
 
+        # Cross-field validation: save_steps must be <= max_steps
+        try:
+            save_steps = get_recipe_value(recipe, "save_steps")
+            max_steps = get_recipe_value(recipe, "max_steps")
+
+            if isinstance(save_steps, (int, float)) and isinstance(
+                max_steps, (int, float)
+            ):
+                if save_steps > max_steps:
+                    errors.append(
+                        f"'save_steps' ({save_steps}) must be less than or equal to 'max_steps' ({max_steps})"
+                    )
+        except Exception:
+            # If either field is missing, skip this validation
+            pass
+
     @staticmethod
     def validate_job_name(job_name: str) -> None:
         """
@@ -1003,7 +1023,7 @@ class Validator:
             ValueError: If validation fails
         """
         if not JOB_NAME_REGEX.match(job_name):
-            raise ValueError(f"Job name must fit pattern ${JOB_NAME_REGEX.pattern}")
+            raise ValueError(f"Job name must fit pattern {JOB_NAME_REGEX.pattern}")
 
     @staticmethod
     def validate_namespace(namespace: str) -> None:
@@ -1017,7 +1037,7 @@ class Validator:
             ValueError: If validation fails
         """
         if not NAMESPACE_REGEX.match(namespace):
-            raise ValueError(f"Namespace must fit pattern ${NAMESPACE_REGEX.pattern}")
+            raise ValueError(f"Namespace must fit pattern {NAMESPACE_REGEX.pattern}")
 
     @staticmethod
     def validate_cluster_name(cluster_name: str) -> None:
@@ -1032,7 +1052,7 @@ class Validator:
         """
         if not CLUSTER_NAME_REGEX.match(cluster_name):
             raise ValueError(
-                f"Cluster name must fit pattern ${CLUSTER_NAME_REGEX.pattern}"
+                f"Cluster name must fit pattern {CLUSTER_NAME_REGEX.pattern}"
             )
 
     @staticmethod

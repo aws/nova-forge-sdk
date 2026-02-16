@@ -33,14 +33,6 @@ def detect_platform_from_path(s3_path: str) -> Optional[Platform]:
 
     Returns:
         Platform.SMTJ, Platform.SMHP, or None if cannot determine
-
-    Examples:
-        >>> detect_platform_from_path("s3://customer-escrow-123-smtj-abc/model/checkpoint")
-        Platform.SMTJ
-        >>> detect_platform_from_path("s3://customer-escrow-123-hp-abc/model/checkpoint")
-        Platform.SMHP
-        >>> detect_platform_from_path("s3://my-bucket/output")
-        None
     """
     if "-smtj-" in s3_path:
         return Platform.SMTJ

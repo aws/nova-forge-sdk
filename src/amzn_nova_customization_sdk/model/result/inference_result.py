@@ -20,7 +20,7 @@ from abc import ABC
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Generator, Optional
 from urllib.parse import urlparse
 
 import boto3
@@ -266,4 +266,80 @@ class SMTJBatchInferenceResult(InferenceResult):
             job_id=data["job_id"],
             started_time=datetime.fromisoformat(data["started_time"]),
             inference_output_path=data["inference_output_path"],
+        )
+
+
+# TODO: Support Multi-modal
+@dataclass
+class SingleInferenceResult(InferenceResult):
+    def __init__(
+        self,
+        job_id: str,
+        started_time: datetime,
+        inference_output_path: str,
+        nonstreaming_response: Optional[str],
+        streaming_response: Optional[Generator[str, None, None]],
+    ):
+        self._cached_results_dir: Optional[str] = None
+        self._nonstreaming_response = nonstreaming_response
+        self._streaming_response = streaming_response
+        self._is_consumed = False
+        super().__init__(job_id, started_time, inference_output_path)
+
+    def _to_dict(self):
+        return {
+            "job_id": self.job_id,
+            "started_time": self.started_time.isoformat(),
+            "inference_output_path": self.inference_output_path,
+            "nonstreaming_response": self._nonstreaming_response,
+            "streaming_response": self._streaming_response,
+        }
+
+    def _create_status_manager(self):
+        pass
+
+    def get(self, s3_path=None) -> Dict:
+        return {
+            "inference_results": {
+                "is_streaming": True if self._streaming_response is not None else False,
+                "response": self._streaming_response
+                if self._streaming_response is not None
+                else self._nonstreaming_response,
+            }
+        }
+
+    def show(self):
+        """
+        Display the streaming results in real-time.
+
+        Warning:
+        - This method consumes the generator
+        - Subsequent calls to get() will return an empty result
+        """
+
+        if self._is_consumed:
+            raise ValueError("Streaming response generator has already been consumed")
+
+        results = self.get()
+        if results:
+            logger.info(f"Inference Results for job_id={self.job_id}:")
+            if results["inference_results"]["is_streaming"]:
+                logger.info("Response:")
+                for data in results["inference_results"]["response"]:
+                    logger.info(data)
+                self._is_consumed = True
+            else:
+                logger.info(json.dumps(results, ensure_ascii=False))
+
+    def clean(self):
+        pass
+
+    @classmethod
+    def _from_dict(cls, data) -> "SingleInferenceResult":
+        return cls(
+            job_id=data["job_id"],
+            started_time=data["started_time"],
+            inference_output_path="",
+            nonstreaming_response=data["nonstreaming_response"],
+            streaming_response=data["streaming_response"],
         )
