@@ -18,6 +18,7 @@ from amzn_nova_customization_sdk.model.result.eval_result import (
 )
 from amzn_nova_customization_sdk.model.result.inference_result import (
     InferenceResult,
+    SingleInferenceResult,
     SMTJBatchInferenceResult,
 )
 from amzn_nova_customization_sdk.model.result.job_result import BaseJobResult, JobStatus

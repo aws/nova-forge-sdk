@@ -1207,12 +1207,16 @@ class TestRecipeBuilder(unittest.TestCase):
             self.assertIn("postprocessing:\n    enabled: false", yaml_content)
 
     @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
-    @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
+    @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_local")
     @patch("amzn_nova_customization_sdk.recipe.recipe_builder.Validator")
     def test_build_and_validate_evaluation_with_rl_env_config(
         self, mock_validator, mock_download, mock_metadata
     ):
-        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+        mock_metadata.return_value = {
+            "recipe_uri": "s3://bucket/recipe",
+            "RecipeTemplatePath": "/path/to/recipe",
+            "ImageUri": "image_uri",
+        }
 
         recipe_template = {
             "run": {"name": "{{name}}", "replicas": 1},
@@ -1242,7 +1246,7 @@ class TestRecipeBuilder(unittest.TestCase):
             infra=self.mock_infra,
             output_s3_path=self.output_s3,
             data_s3_path=self.data_s3,
-            eval_task=EvaluationTask.MMLU,
+            eval_task=EvaluationTask.RFT_EVAL,
             rl_env_config=rl_env_config,
         )
 

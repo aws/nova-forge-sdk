@@ -23,6 +23,10 @@ from typing import Any, Dict, List, Optional, cast
 
 import boto3
 
+from amzn_nova_customization_sdk.iam.iam_role_creator import (
+    create_bedrock_execution_role,
+    create_sagemaker_execution_role,
+)
 from amzn_nova_customization_sdk.manager.runtime_manager import (
     JobConfig,
     RuntimeManager,
@@ -61,14 +65,15 @@ from amzn_nova_customization_sdk.monitor.log_monitor import CloudWatchLogMonitor
 from amzn_nova_customization_sdk.monitor.mlflow_monitor import MLflowMonitor
 from amzn_nova_customization_sdk.recipe.recipe_builder import RecipeBuilder
 from amzn_nova_customization_sdk.recipe.recipe_config import EvaluationTask
+from amzn_nova_customization_sdk.rft_multiturn import RFTMultiturnInfrastructure
 from amzn_nova_customization_sdk.util.bedrock import (
     BEDROCK_EXECUTION_ROLE_NAME,
     DEPLOYMENT_ARN_NAME,
     check_existing_deployment,
-    create_bedrock_execution_role,
     delete_existing_deployment,
     get_required_bedrock_deletion_permissions,
     get_required_bedrock_update_permissions,
+    invoke_model,
     monitor_model_create,
     update_provisioned_throughput_model,
 )
@@ -79,8 +84,23 @@ from amzn_nova_customization_sdk.util.platform_util import (
     validate_platform_compatibility,
 )
 from amzn_nova_customization_sdk.util.recipe import load_recipe_templates
-from amzn_nova_customization_sdk.util.sagemaker import get_model_artifacts
-from amzn_nova_customization_sdk.validation.validator import Validator
+from amzn_nova_customization_sdk.util.sagemaker import (
+    SAGEMAKER_EXECUTION_ROLE_NAME,
+    _validate_sagemaker_instance_type_for_model_deployment,
+    create_model_and_endpoint_config,
+    get_model_artifacts,
+    invoke_sagemaker_inference,
+    setup_environment_variables,
+)
+from amzn_nova_customization_sdk.validation.endpoint_validator import (
+    SAGEMAKER_ENDPOINT_ARN_REGEX,
+    validate_endpoint_arn,
+    validate_sagemaker_environment_variables,
+    validate_unit_count,
+)
+from amzn_nova_customization_sdk.validation.validator import (
+    Validator,
+)
 
 
 class NovaModelCustomizer:
@@ -175,6 +195,8 @@ class NovaModelCustomizer:
         if data_mixing_enabled:
             self.data_mixing = DataMixing()
             self._init_data_mixing(self.model, self.method, self.platform)
+
+        self.endpoint_info: Optional[EndpointInfo] = None
 
     @property
     def model(self) -> Model:
@@ -299,6 +321,7 @@ class NovaModelCustomizer:
         recipe_path: Optional[str] = None,
         overrides: Optional[Dict[str, Any]] = None,
         rft_lambda_arn: Optional[str] = None,
+        rft_multiturn_infra: Optional[RFTMultiturnInfrastructure] = None,
         validation_data_s3_path: Optional[str] = None,
         dry_run: Optional[bool] = False,
     ) -> TrainingResult | None:
@@ -318,6 +341,7 @@ class NovaModelCustomizer:
                     'max_length': 16384
                 }
             rft_lambda_arn: Optional rewards Lambda ARN, only required for RFT training methods
+            rft_multiturn_infra: Optional RFT multiturn infrastructure, required for RFT_MULTITURN methods
             validation_data_s3_path: Optional validation S3 path, only applicable for CPT (but is still optional for CPT)
             dry_run: Actually starts a job if False, otherwise just performs validation. Default is False.
 
@@ -342,6 +366,7 @@ class NovaModelCustomizer:
             output_s3_path=self.output_s3_path,
             model_path=self.model_path,
             rft_lambda_arn=rft_lambda_arn,
+            rft_multiturn_infra=rft_multiturn_infra,
             validation_data_s3_path=validation_data_s3_path,
             mlflow_monitor=self.mlflow_monitor,
             data_mixing_instance=self.data_mixing,
@@ -388,6 +413,7 @@ class NovaModelCustomizer:
                 job_id=self.job_id,
                 started_time=start_time,
                 method=self.method,
+                model_type=self.model,
                 model_artifacts=get_model_artifacts(
                     job_name=unique_job_name,
                     infra=self.infra,
@@ -401,6 +427,7 @@ class NovaModelCustomizer:
                 job_id=self.job_id,
                 started_time=start_time,
                 method=self.method,
+                model_type=self.model,
                 model_artifacts=get_model_artifacts(
                     job_name=unique_job_name,
                     infra=self.infra,
@@ -433,6 +460,7 @@ class NovaModelCustomizer:
         overrides: Optional[Dict[str, Any]] = None,
         processor: Optional[Dict[str, Any]] = None,
         rl_env: Optional[Dict[str, Any]] = None,
+        rft_multiturn_infra: Optional["RFTMultiturnInfrastructure"] = None,
         dry_run: Optional[bool] = False,
         job_result: Optional[TrainingResult] = None,
     ) -> EvaluationResult | None:
@@ -470,6 +498,7 @@ class NovaModelCustomizer:
                 {
                     'reward_lambda_arn': 'arn:aws:lambda:<region>:<account_id>:function:<reward-function-name>'
                 }
+        :param rft_multiturn_infra: Optional RFT multiturn infrastructure, required for RFT_MULTITURN_EVAL
         :param dry_run: dry_run: Actually starts a job if False, otherwise just performs validation. Default is False.
         :param job_result: Optional TrainingResult object to extract checkpoint path from.
                           If provided and model_path is None, will automatically extract
@@ -537,6 +566,7 @@ class NovaModelCustomizer:
             subtask=subtask,
             processor_config=processor,
             rl_env_config=rl_env,
+            rft_multiturn_infra=rft_multiturn_infra,
             mlflow_monitor=self.mlflow_monitor,
             image_uri_override=self._image_uri,
         )
@@ -606,10 +636,190 @@ class NovaModelCustomizer:
         self,
         model_artifact_path: Optional[str] = None,
         deploy_platform: DeployPlatform = DeployPlatform.BEDROCK_OD,
-        pt_units: Optional[int] = None,
+        unit_count: Optional[int] = 1,
         endpoint_name: Optional[str] = None,
         job_result: Optional[TrainingResult] = None,
-        bedrock_execution_role_name: str = BEDROCK_EXECUTION_ROLE_NAME,
+        execution_role_name: Optional[str] = None,
+        sagemaker_instance_type: Optional[str] = "ml.p5.48xlarge",
+        sagemaker_environment_variables: Optional[Dict[str, Any]] = None,
+    ) -> DeploymentResult:
+        """
+        Deployment method supporting both Bedrock and SageMaker platforms.
+
+        Args:
+            model_artifact_path: S3 path to the trained model checkpoint. If not provided, will attempt to extract from job_result or the `job_id` field of the Customizer.
+            deploy_platform: Platform to deploy to (Bedrock On-Demand, Provisioned Throughput, or SageMaker)
+            unit_count: Used in Bedrock Provisioned Throughput number of PT to purchase or SageMaker number of initial instances
+            endpoint_name: Name of the deployed model's endpoint (auto-generated if not provided)
+            job_result: Training job result object to use for extracting checkpoint path and validating job completion. Also used to retrieve job_id if it's not provided.
+            execution_role_name:  Optional IAM execution role name for Bedrock or SageMaker, defaults to BedrockDeployModelExecutionRole or SageMakerExecutionRoleName. If this role does not exist, it will be created.
+            sagemaker_instance_type: Optional EC2 instance type for SageMaker deployment, defaults to ml.p5.48xlarge
+            sagemaker_environment_variables: Optional environment variables for model configuration
+
+        Returns:
+            DeploymentResult with endpoint information
+        """
+
+        validate_unit_count(unit_count)
+
+        resolved_model_artifact_path = resolve_model_checkpoint_path(
+            model_path=model_artifact_path,
+            job_result=job_result,
+            customizer_job_id=self.job_id if hasattr(self, "job_id") else None,
+            customizer_output_s3_path=self.output_s3_path,
+            customizer_model_path=self.model_path,
+            fail_on_error=True,
+        )
+
+        if resolved_model_artifact_path is None:
+            raise ValueError(
+                "Model artifact path could not be resolved. Provide a valid model_path or job_result"
+            )
+
+        if deploy_platform in [DeployPlatform.BEDROCK_OD, DeployPlatform.BEDROCK_PT]:
+            if execution_role_name is None:
+                execution_role_name = BEDROCK_EXECUTION_ROLE_NAME
+
+            return self._deploy_to_bedrock(
+                model_artifact_path=resolved_model_artifact_path,
+                deploy_platform=deploy_platform,
+                pt_units=unit_count,
+                endpoint_name=endpoint_name,
+                execution_role_name=execution_role_name,
+            )
+
+        elif deploy_platform == DeployPlatform.SAGEMAKER:
+            if execution_role_name is None:
+                execution_role_name = SAGEMAKER_EXECUTION_ROLE_NAME
+
+            if job_result is not None:
+                model = job_result.model_type
+            elif self.model:
+                model = self.model
+            else:
+                raise ValueError(
+                    "model_type must be provided either through job_result in deploy() or during "
+                    "NovaModelCustomizer initialization for SageMaker deployment"
+                )
+
+            if sagemaker_instance_type is None:
+                raise ValueError(
+                    "sagemaker_instance_type cannot be None for SageMaker deployment"
+                )
+
+            _validate_sagemaker_instance_type_for_model_deployment(
+                sagemaker_instance_type, model
+            )
+
+            # Path required to end in /
+            resolved_model_artifact_path = (
+                resolved_model_artifact_path
+                if resolved_model_artifact_path.endswith("/")
+                else resolved_model_artifact_path + "/"
+            )
+
+            return self._deploy_to_sagemaker(
+                model_artifact_path=resolved_model_artifact_path,
+                endpoint_name=endpoint_name,
+                instance_type=sagemaker_instance_type,
+                unit_count=unit_count,  # type: ignore
+                environment_variables=sagemaker_environment_variables,
+                execution_role_name=execution_role_name,
+            )
+
+        else:
+            raise ValueError(f"Unsupported deployment platform: {deploy_platform}")
+
+    def _deploy_to_sagemaker(
+        self,
+        model_artifact_path: str,
+        instance_type: str,
+        unit_count: int,
+        endpoint_name: Optional[str] = None,
+        environment_variables: Optional[Dict[str, Any]] = None,
+        execution_role_name: str = SAGEMAKER_EXECUTION_ROLE_NAME,
+    ) -> DeploymentResult:
+        """
+        Internal method to deploy model to SageMaker.
+
+        Args:
+            model_artifact_path: S3 path to model artifacts
+            endpoint_name: Custom endpoint name (optional)
+            unit_count: Number of instances
+            instance_type: SageMaker instance type
+            environment_variables: Model configuration variables
+            execution_role_name: execution role name
+
+        Returns:
+            DeploymentResult with SageMaker endpoint info
+        """
+
+        if environment_variables:
+            validate_sagemaker_environment_variables(environment_variables)
+            env_vars = environment_variables
+        else:
+            # Use default environment variables if not provided
+            env_vars = setup_environment_variables()
+
+        # Generate endpoint name if not provided
+        if endpoint_name is None:
+            endpoint_name = f"{self.model.value}-{self.method.value}-sagemaker".replace(
+                "_", "-"
+            ).lower()
+
+        iam_client = boto3.client("iam")
+
+        # Check if a SageMaker IAM execution role exists, if not, create one.
+        try:
+            sagemaker_role_arn = create_sagemaker_execution_role(
+                iam_client=iam_client, role_name=execution_role_name
+            )["Role"]["Arn"]
+        except Exception as e:
+            raise Exception(
+                f"Failed to find or create the SageMaker IAM Execution Role: {str(e)}"
+            )
+
+        # Create SageMaker clients
+        sagemaker_client = boto3.client("sagemaker")
+
+        # Create model, endpoint config, and endpoint
+        model_name = f"{endpoint_name}-model"
+        endpoint_config_name = f"{endpoint_name}-config"
+
+        endpoint_arn = create_model_and_endpoint_config(
+            region=self.region,
+            model_name=model_name,
+            model_s3_location=model_artifact_path,
+            sagemaker_execution_role_arn=sagemaker_role_arn,
+            endpoint_config_name=endpoint_config_name,
+            endpoint_name=endpoint_name,
+            instance_type=instance_type,
+            environment=env_vars,
+            sagemaker_client=sagemaker_client,
+            initial_instance_count=unit_count,
+            deployment_mode=self.deployment_mode,
+        )
+
+        # Create deployment result
+        create_time = datetime.now(timezone.utc)
+        endpoint = EndpointInfo(
+            platform=DeployPlatform.SAGEMAKER,
+            endpoint_name=endpoint_name,
+            uri=endpoint_arn,
+            model_artifact_path=model_artifact_path,
+        )
+
+        self.endpoint_info = endpoint
+
+        return DeploymentResult(endpoint=endpoint, created_at=create_time)
+
+    def _deploy_to_bedrock(
+        self,
+        model_artifact_path: Optional[str] = None,
+        deploy_platform: DeployPlatform = DeployPlatform.BEDROCK_OD,
+        pt_units: Optional[int] = None,
+        endpoint_name: Optional[str] = None,
+        execution_role_name: str = BEDROCK_EXECUTION_ROLE_NAME,
     ) -> DeploymentResult:
         """
         Creates a custom model and deploys it to Bedrock.
@@ -625,8 +835,7 @@ class NovaModelCustomizer:
             deploy_platform: The platform to deploy the model to for inference (Bedrock On-Demand or Provisioned Throughput).
             pt_units: Only needed when Bedrock Provisioned Throughput is chosen. The # of PT to purchase.
             endpoint_name: The name of the deployed model's endpoint -- will be auto generated if not given.
-            job_result: Optional training job result object to use for extracting checkpoint path and validating job completion.
-            bedrock_execution_role_name: Optional IAM execution role name for Bedrock, defaults to BedrockDeployModelExecutionRole. If this role does not exist, it will be created.
+            execution_role_name: Optional IAM execution role name for Bedrock, defaults to BedrockDeployModelExecutionRole. If this role does not exist, it will be created.
 
         Returns:
             DeploymentResult: Contains the endpoint information as well as the create time of the deployment.
@@ -738,23 +947,13 @@ class NovaModelCustomizer:
                         f"Please ensure your role has the necessary Bedrock deletion permissions."
                     )
 
-        # Resolve checkpoint path
-        model_artifact_path = resolve_model_checkpoint_path(
-            model_path=model_artifact_path,
-            job_result=job_result,
-            customizer_job_id=self.job_id if hasattr(self, "job_id") else None,
-            customizer_output_s3_path=self.output_s3_path,
-            customizer_model_path=self.model_path,
-            fail_on_error=True,
-        )
-
         # TODO: If given a job ID, check the status before creating the model. If the job isn't completed, tell the user.
         # TODO: If a user already has an arn of a custom model, they should be able to directly deploy it.
 
         # Check if a Bedrock IAM execution role exists, if not, create one.
         try:
             bedrock_execution_role_arn = create_bedrock_execution_role(
-                iam_client, bedrock_execution_role_name
+                iam_client=iam_client, role_name=execution_role_name
             )["Role"]["Arn"]
         except Exception as e:
             raise Exception(
@@ -895,6 +1094,9 @@ class NovaModelCustomizer:
             uri=deployment_arn,
             model_artifact_path=self.output_s3_path,
         )
+
+        self.endpoint_info = endpoint
+
         result = DeploymentResult(endpoint=endpoint, created_at=create_time)
 
         # Log message to the user with information about the deployment.
@@ -1064,8 +1266,49 @@ class NovaModelCustomizer:
                 limit=limit, start_from_head=start_from_head, end_time=end_time
             )
         else:
-            print(
+            logger.info(
                 "No job_id and job_started_time found for this model, please call .train() or .evaluate() first."
+            )
+
+    def invoke_inference(
+        self, request_body: Dict[str, Any], endpoint_arn: Optional[str] = None
+    ):
+        """
+        Invokes single inference against an endpoint
+        :param request_body: Inference request body
+        :param endpoint_arn: Optional endpoint ARN if user does not want to use previously deployed endpoint
+        :return: Inference result. String for non-streaming response, generator for streaming response
+        """
+        model_endpoint_arn = ""
+        deployment_platform = DeployPlatform.BEDROCK_PT
+        if endpoint_arn is None and self.endpoint_info is None:
+            raise ValueError(
+                "endpoint_arn must be provided if no endpoint was previously deployed by Customizer"
+            )
+        elif endpoint_arn is not None:
+            validate_endpoint_arn(endpoint_arn=endpoint_arn)
+
+            if SAGEMAKER_ENDPOINT_ARN_REGEX.match(endpoint_arn):
+                deployment_platform = DeployPlatform.SAGEMAKER
+
+            model_endpoint_arn = endpoint_arn
+        elif self.endpoint_info is not None:
+            model_endpoint_arn = self.endpoint_info.uri
+            deployment_platform = self.endpoint_info.platform
+
+        if deployment_platform == DeployPlatform.SAGEMAKER:
+            runtime_client = boto3.client("sagemaker-runtime", region_name=self.region)
+            endpoint_name = model_endpoint_arn.split("/")[-1]
+            logger.info(f"endpoint name {endpoint_name}")
+            return invoke_sagemaker_inference(
+                request_body, endpoint_name, runtime_client
+            )
+        else:
+            runtime_client = boto3.client("bedrock-runtime", region_name=self.region)
+            return invoke_model(
+                model_id=model_endpoint_arn,
+                request_body=request_body,
+                bedrock_runtime=runtime_client,
             )
 
     def monitor_metrics(self):

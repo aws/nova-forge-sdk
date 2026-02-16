@@ -37,6 +37,13 @@ class EvaluationTask(enum.Enum):
     LLM_JUDGE = "llm_judge"
     RUBRIC_LLM_JUDGE = "rubric_llm_judge"
     RFT_EVAL = "rft_eval"
+    RFT_MULTITURN_EVAL = "rft_multiturn_eval"  # Maps to "rft_eval" in recipes
+
+    def get_recipe_value(self) -> str:
+        """Get the value to use in recipe templates."""
+        if self == EvaluationTask.RFT_MULTITURN_EVAL:
+            return "rft_eval"
+        return self.value
 
 
 class EvaluationStrategy(enum.Enum):
@@ -49,6 +56,7 @@ class EvaluationStrategy(enum.Enum):
     GEN_QA = "gen_qa"  # Strategy specific for bring your own dataset.
     JUDGE = "judge"  # Strategy specific for Nova LLM as Judge and rubric_llm_judge.
     RFT_EVAL = "rft_eval"  # Strategy specific for RFT eval
+    RFT_MULTITURN_EVAL = "rft_eval"  # Strategy specific for RFT multiturn eval
 
 
 class EvaluationMetric(enum.Enum):
@@ -73,6 +81,7 @@ EVAL_TASK_STRATEGY_MAP: Dict[EvaluationTask, EvaluationStrategy] = {
     EvaluationTask.LLM_JUDGE: EvaluationStrategy.JUDGE,
     EvaluationTask.RUBRIC_LLM_JUDGE: EvaluationStrategy.JUDGE,
     EvaluationTask.RFT_EVAL: EvaluationStrategy.RFT_EVAL,
+    EvaluationTask.RFT_MULTITURN_EVAL: EvaluationStrategy.RFT_MULTITURN_EVAL,
 }
 
 EVAL_TASK_METRIC_MAP: Dict[EvaluationTask, EvaluationMetric] = {
@@ -88,6 +97,7 @@ EVAL_TASK_METRIC_MAP: Dict[EvaluationTask, EvaluationMetric] = {
     EvaluationTask.LLM_JUDGE: EvaluationMetric.ALL,
     EvaluationTask.RUBRIC_LLM_JUDGE: EvaluationMetric.ALL,
     EvaluationTask.RFT_EVAL: EvaluationMetric.ALL,
+    EvaluationTask.RFT_MULTITURN_EVAL: EvaluationMetric.ALL,
 }
 
 # Available subtasks for each evaluation task (from nova_evaluator.py)
@@ -232,6 +242,7 @@ BYOD_AVAILABLE_EVAL_TASKS: List[str] = [
     EvaluationTask.LLM_JUDGE.value,
     EvaluationTask.RUBRIC_LLM_JUDGE.value,
     EvaluationTask.RFT_EVAL.value,
+    EvaluationTask.RFT_MULTITURN_EVAL.value,
 ]
 
 

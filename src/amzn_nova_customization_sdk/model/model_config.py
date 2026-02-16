@@ -22,10 +22,10 @@ from datetime import datetime
 from typing import Optional, TypedDict
 
 from amzn_nova_customization_sdk.model.model_enums import DeployPlatform
-from amzn_nova_customization_sdk.util.bedrock import check_deployment_status
 
 REGION_TO_ESCROW_ACCOUNT_MAPPING = {
     "us-east-1": "708977205387",
+    "us-west-2": "176779409107",
     "eu-west-2": "470633809225",
 }
 
@@ -56,4 +56,6 @@ class DeploymentResult:
 
     @property
     def status(self):
+        from amzn_nova_customization_sdk.util.bedrock import check_deployment_status
+
         return check_deployment_status(self.endpoint.uri, self.endpoint.platform)

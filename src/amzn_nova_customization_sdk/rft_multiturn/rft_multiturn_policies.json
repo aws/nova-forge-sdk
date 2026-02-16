@@ -1,0 +1,213 @@
+{
+    "trust_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {
+                    "Service": [
+                        "sagemaker.amazonaws.com",
+                        "ecs-tasks.amazonaws.com"
+                    ]
+                },
+                "Action": "sts:AssumeRole"
+            }
+        ]
+    },
+    "cloudformation_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "cloudformation:CreateStack",
+                    "cloudformation:UpdateStack",
+                    "cloudformation:DeleteStack",
+                    "cloudformation:DescribeStacks",
+                    "cloudformation:DescribeStackEvents",
+                    "cloudformation:GetTemplate",
+                    "cloudformation:GetTemplateSummary",
+                    "cloudformation:ValidateTemplate",
+                    "cloudformation:CreateChangeSet",
+                    "cloudformation:DescribeChangeSet",
+                    "cloudformation:ExecuteChangeSet",
+                    "cloudformation:DeleteChangeSet",
+                    "cloudformation:ListStacks"
+                ],
+                "Resource": "CLOUDFORMATION_RESOURCE_PLACEHOLDER"
+            }
+        ]
+    },
+    "dynamodb_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "dynamodb:CreateTable",
+                    "dynamodb:DeleteTable",
+                    "dynamodb:DescribeTable",
+                    "dynamodb:UpdateTable",
+                    "dynamodb:PutItem",
+                    "dynamodb:GetItem",
+                    "dynamodb:UpdateItem",
+                    "dynamodb:DeleteItem",
+                    "dynamodb:Query",
+                    "dynamodb:Scan"
+                ],
+                "Resource": "DYNAMODB_RESOURCE_PLACEHOLDER"
+            }
+        ]
+    },
+    "iam_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "iam:GetRole",
+                    "iam:GetRolePolicy",
+                    "iam:PassRole",
+                    "iam:CreateRole",
+                    "iam:DeleteRole",
+                    "iam:AttachRolePolicy",
+                    "iam:DetachRolePolicy",
+                    "iam:PutRolePolicy",
+                    "iam:DeleteRolePolicy",
+                    "iam:TagRole",
+                    "iam:UntagRole",
+                    "iam:ListAttachedRolePolicies"
+                ],
+                "Resource": "IAM_RESOURCE_PLACEHOLDER"
+            }
+        ]
+    },
+    "lambda_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "lambda:InvokeFunction",
+                    "lambda:InvokeFunctionUrl",
+                    "lambda:GetFunction",
+                    "lambda:CreateFunction",
+                    "lambda:UpdateFunctionCode",
+                    "lambda:UpdateFunctionConfiguration",
+                    "lambda:DeleteFunction",
+                    "lambda:AddPermission",
+                    "lambda:RemovePermission",
+                    "lambda:CreateFunctionUrlConfig",
+                    "lambda:UpdateFunctionUrlConfig",
+                    "lambda:DeleteFunctionUrlConfig",
+                    "lambda:GetFunctionUrlConfig",
+                    "lambda:CreateEventSourceMapping",
+                    "lambda:UpdateEventSourceMapping",
+                    "lambda:DeleteEventSourceMapping",
+                    "lambda:GetEventSourceMapping",
+                    "lambda:TagResource"
+                ],
+                "Resource": "LAMBDA_RESOURCE_PLACEHOLDER"
+            }
+        ]
+    },
+    "sqs_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "sqs:SendMessage",
+                    "sqs:ReceiveMessage",
+                    "sqs:DeleteMessage",
+                    "sqs:GetQueueAttributes",
+                    "sqs:GetQueueUrl",
+                    "sqs:CreateQueue",
+                    "sqs:DeleteQueue",
+                    "sqs:SetQueueAttributes",
+                    "sqs:TagQueue",
+                    "sqs:PurgeQueue"
+                ],
+                "Resource": "SQS_RESOURCE_PLACEHOLDER"
+            }
+        ]
+    },
+    "logs_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "logs:DescribeLogStreams",
+                    "logs:GetLogEvents",
+                    "logs:FilterLogEvents"
+                ],
+                "Resource": "LOGS_RESOURCE_PLACEHOLDER"
+            }
+        ]
+    },
+    "ecr_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "ecr:GetAuthorizationToken"
+                ],
+                "Resource": "*"
+            },
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "ecr:BatchCheckLayerAvailability",
+                    "ecr:GetDownloadUrlForLayer",
+                    "ecr:BatchGetImage",
+                    "ecr:DescribeRepositories",
+                    "ecr:CreateRepository"
+                ],
+                "Resource": "ECR_RESOURCE_PLACEHOLDER"
+            }
+        ]
+    },
+    "ecs_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "ecs:RunTask",
+                    "ecs:DescribeTasks",
+                    "ecs:StopTask",
+                    "ecs:RegisterTaskDefinition",
+                    "ecs:DeregisterTaskDefinition",
+                    "ecs:DeleteTaskDefinitions",
+                    "ecs:ListTaskDefinitions",
+                    "ecs:DescribeTaskDefinition",
+                    "ecs:DescribeClusters",
+                    "ecs:DescribeServices",
+                    "ecs:ListServices"
+                ],
+                "Resource": "ECS_RESOURCE_PLACEHOLDER"
+            }
+        ]
+    },
+    "s3_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "s3:GetObject",
+                    "s3:PutObject",
+                    "s3:DeleteObject",
+                    "s3:ListBucket",
+                    "s3:GetBucketLocation"
+                ],
+                "Resource": "S3_RESOURCE_PLACEHOLDER"
+            }
+        ]
+    }
+}

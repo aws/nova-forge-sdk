@@ -45,8 +45,8 @@ def __init__(
 - `mlflow_monitor` (Optional[MLflowMonitor]): Optional MLflow monitoring configuration for experiment tracking
 - `deployment_mode` (DeploymentMode): Behavior when deploying to existing endpoint name. Options: FAIL_IF_EXISTS (default), UPDATE_IF_EXISTS
 - `data_mixing_enabled` (bool): Enable data mixing feature for CPT and SFT training on SageMaker HyperPod. Default is False
-  - **Note:** The `data_mixing_enabled` parameter must be set to `True` during initialization to use data mixing features. 
-  - **Note:** Datamixing is only supported for CPT, SFT_LORA, and SFT_FULL methods on SageMaker HyperPod (SMHP). 
+  - **Note:** The `data_mixing_enabled` parameter must be set to `True` during initialization to use data mixing features.
+  - **Note:** Datamixing is only supported for CPT, SFT_LORA, and SFT_FULL methods on SageMaker HyperPod (SMHP).
 
 **Raises:**
 - `ValueError`: If region is unsupported or model is invalid
@@ -68,7 +68,7 @@ customizer = NovaModelCustomizer(
 
 # With MLflow monitoring
 mlflow_monitor = MLflowMonitor(
- tracking_uri="arn:aws:sagemaker:us-east-1:123456:mlflow-app/app-xxx",
+ tracking_uri="arn:aws:sagemaker:us-east-1:123456789012:mlflow-app/app-xxx",
  experiment_name="nova-customization",
  run_name="sft-run-1"
 )
@@ -161,7 +161,7 @@ def train(
  overrides: Optional[Dict[str, Any]] = None,
  rft_lambda_arn: Optional[str] = None,
  validation_data_s3_path: Optional[str] = None,
- dry_run: Optional[bool] = False       
+ dry_run: Optional[bool] = False
 ) -> TrainingResult
 ```
 
@@ -175,7 +175,7 @@ def train(
   - `loraplus_lr_ratio` (float): LoRA+ learning rate ratio
   - `global_batch_size` (int): Global batch size
   - `max_length` (int): Maximum sequence length
-  - A full list of available overrides can be found via the [Nova Customization public documentation](https://docs.aws.amazon.com/nova/latest/userguide/customize-fine-tune-sagemaker.html) or by referencing the training recipes [here](https://docs.aws.amazon.com/sagemaker/latest/dg/nova-model-recipes.html). 
+  - A full list of available overrides can be found via the [Nova Customization public documentation](https://docs.aws.amazon.com/nova/latest/userguide/customize-fine-tune-sagemaker.html) or by referencing the training recipes [here](https://docs.aws.amazon.com/sagemaker/latest/dg/nova-model-recipes.html).
 - `rft_lambda_arn` (Optional[str]): Rewards Lambda ARN (only used for RFT training methods)
 - `validation_data_s3_path` (Optional[str]): Validation S3 path, only applicable for CPT (but is still optional for CPT)
 - `dry_run` (Optional[bool]): Actually starts a job if False, otherwise just performs validation.
@@ -186,8 +186,9 @@ def train(
  - `method` (TrainingMethod): The training method used
  - `started_time` (datetime): Job start timestamp
  - `model_artifacts` (ModelArtifacts): Paths to model checkpoints and outputs
-   - `checkpoint_s3_path` (str, Optional): Path to the model checkpoint/trained model. 
-   - `output_s3_path` (str): Path to the metrics and output tar file. 
+   - `checkpoint_s3_path` (str, Optional): Path to the model checkpoint/trained model.
+   - `output_s3_path` (str): Path to the metrics and output tar file.
+ - `model_type` (Model): Model type of the model being trained
 
 **Raises:**
 - `Exception`: If job execution fails
@@ -276,17 +277,17 @@ print(f"Evaluation job started: {eval_result.job_id}")
 
 # BYOM eval task (by providing processor config)
 byom_eval_result = customizer.evaluate(
-    job_name='yuhag-eval-test-byom',
+    job_name='my-eval-test-byom',
     eval_task=EvaluationTask.GEN_QA,
-    data_s3_path="s3://905418167188-data/yuhag-dev/eval/gen_qa.jsonl",
+    data_s3_path="s3://bucket/data",
     processor={
-        "lambda_arn": "arn:aws:lambda:us-east-1:905418167188:function:yuhag-eval-simple-byom-lambda"
+        "lambda_arn": "arn:aws:lambda:us-east-1:123456789012:function:byom-lambda"
     }
 )
 ```
 ---
 #### `deploy()`
-Creates a custom model and deploys it to Amazon Bedrock.
+Creates a custom model and deploys it to Amazon Bedrock or SageMaker.
 
 Deployment behavior when endpoint already exists is controlled by the `deployment_mode`
 parameter set during NovaModelCustomizer initialization:
@@ -296,18 +297,19 @@ parameter set during NovaModelCustomizer initialization:
 **Signature:**
 ```python
 def deploy(
- self,
- model_artifact_path: Optional[str] = None,
- deploy_platform: DeployPlatform = DeployPlatform.BEDROCK_OD,
- pt_units: Optional[int] = None,
- endpoint_name: Optional[str] = None,
- job_result: Optional[TrainingResult] = None,
- bedrock_execution_role_name: str = BEDROCK_EXECUTION_ROLE_NAME
+  self,
+  model_artifact_path: Optional[str] = None,
+  deploy_platform: DeployPlatform = DeployPlatform.BEDROCK_OD,
+  unit_count: Optional[int] = None,
+  endpoint_name: Optional[str] = None,
+  job_result: Optional[TrainingResult] = None,
+  execution_role_name: Optional[str] = None,
+  sagemaker_instance_type: Optional[str] = "ml.p5.48xlarge",
+  sagemaker_environment_variables: Optional[Dict[str, Any]] = None,
 ) -> DeploymentResult
 ```
 
-* **Note:** If DeployPlatform.BEDROCK_PT is selected, you must include a value for pt_units. 
-
+* **Note:** If DeployPlatform.BEDROCK_PT or DeployPlatform.SAGEMAKER is selected, you must include a value for unit_count.
 * **Note:** If `model_artifact_path` is provided, we will NOT attempt to resolve `model_artifact_path` from `job_result` or the enclosing `NovaModelCustomizer` object.
 
 **Parameters:**
@@ -315,11 +317,13 @@ def deploy(
 - `deploy_platform` (DeployPlatform): Platform to deploy the model to
  - `DeployPlatform.BEDROCK_OD`: Bedrock On-Demand
  - `DeployPlatform.BEDROCK_PT`: Bedrock Provisioned Throughput
-- `pt_units` (Optional[int]): Number of Provisioned Throughput units (required only for Bedrock PT)
+ - `DeployPlatform.SAGEMAKER`: SageMaker 
+- `unit_count` (Optional[int]): Used in Bedrock Provisioned Throughput number of PT to purchase or SageMaker number of initial instances
 - `endpoint_name` (Optional[str]): Name of the deployed model's endpoint (auto-generated if not provided)
 - `job_result` (Optional[TrainingResult]): Training job result object to use for extracting checkpoint path and validating job completion. Also used to retrieve job_id if it's not provided.
-- `bedrock_execution_role_name`:  Optional IAM execution role name for Bedrock, defaults to BedrockDeployModelExecutionRole. If this role does not exist, it will be created.
-
+- `execution_role_name`:  Optional IAM execution role name for Bedrock or SageMaker, defaults to BedrockDeployModelExecutionRole or SageMakerExecutionRoleName. If this role does not exist, it will be created.
+- `sagemaker_instance_type`: Optional EC2 instance type for SageMaker deployment, defaults to ml.p5.48xlarge
+- `sagemaker_environment_variables`: Optional environment variables for model configuration
 **Returns:**
 - `DeploymentResult`: Contains:
  - `endpoint` (EndpointInfo): Endpoint information
@@ -337,14 +341,81 @@ def deploy(
 ```python
 from amzn_nova_customization_sdk.model import *
 
-deployment = customizer.deploy(
+bedrock_deployment = customizer.deploy(
  model_artifact_path="s3://escrow-bucket/my-model-artifacts/",
  deploy_platform=DeployPlatform.BEDROCK_OD,
- endpoint_name="my-custom-nova-model"
+ endpoint_name="my-custom-nova-model-bedrock"
 )
-print(f"Model deployed: {deployment.endpoint.uri}")
-print(f"Endpoint: {deployment.endpoint.endpoint_name}")
-print(f"Status: {deployment.status}")
+print(f"Model deployed: {bedrock_deployment.endpoint.uri}")
+print(f"Endpoint: {bedrock_deployment.endpoint.endpoint_name}")
+print(f"Status: {bedrock_deployment.status}")
+
+sagemaker_deployment = customizer.deploy(
+ model_artifact_path="s3://escrow-bucket/my-model-artifacts/",
+ deploy_platform=DeployPlatform.SAGEMAKER,
+ unit_count=1,
+ endpoint_name="my-custom-nova-model-sagemaker",
+ sagemaker_environment_variables={
+   "CONTEXT_LENGTH": "12000",
+   "MAX_CONCURRENCY": "16"
+ }
+)
+print(f"Model deployed: {sagemaker_deployment.endpoint.uri}")
+print(f"Endpoint: {sagemaker_deployment.endpoint.endpoint_name}")
+print(f"Status: {sagemaker_deployment.status}")
+```
+
+Optionally, you can provide a Bedrock execution role name to be used in deployment.
+Otherwise, a default Bedrock execution role will be created on your behalf.
+You can also use the following method to create a Bedrock execution role with scoped down IAM permissions.
+ 
+ 
+```python
+from amzn_nova_customization_sdk.util.bedrock import create_bedrock_execution_role
+ 
+iam_client = boto3.client("iam")
+ 
+create_bedrock_execution_role(
+    iam_client=iam_client, 
+    role_name="BedrockDeployModelExecutionRole",
+    bedrock_resource="your-model-name", # Optional: Name of the bedrock resources that IAM role should have restricted create and get access to
+    s3_resource="s3-bucket" # Optional: S3 resource that IAM role should have restricted read access to such as the training output bucket
+)
+ 
+```
+---
+#### `invoke_inference()`
+Invokes a single inference on a trained model.
+
+**Signature:**
+```python
+def invoke_inference(
+ self,
+ request_body: Dict[str, Any], 
+ endpoint_arn: Optional[str]
+) -> InferenceResult
+```
+**Parameters:**
+- `request_body` (Dict[str, Any]): Inference request body
+- `endpoint_arn` (Optional[str]):Endpoint ARN to invoke inference. Optional if user wants to send request to an already deployed endpoint on customizer
+
+**Returns:**
+- `InferenceResult`: Metadata object (`SingleInferenceResult`) containing:
+ - `job_id` (str): Batch inference job identifier
+ - `started_time` (datetime): Job start timestamp
+ - `inference_output_path` (str): Empty string
+
+**Example:**
+```python
+inference_result = customizer.invoke_inference(
+    request_body={
+      "messages": [{"role": "user", "content": "Hello! How are you?"}],
+      "max_tokens": 100,
+      "stream": False,
+    },
+    endpoint_arn="arn:aws:sagemaker:us-east-1:123456789012:endpoint/endpoint",
+)
+inference_result.show()
 ```
 ---
 #### `batch_inference()`
@@ -396,7 +467,7 @@ print(f"Batch inference started: {inference_result.job_id}")
 In a separate notebook cell, you can run the following commands to get the job status and download a formatted result file when the jobs completes.
 ```python
 inference_result.get_job_status() # Gets the job status.
-inference_result.get("s3://my-bucket/save-location/file-name.jsonl") # Uploads a formatted inference_results.jsonl file to the given s3 location. 
+inference_result.get("s3://my-bucket/save-location/file-name.jsonl") # Uploads a formatted inference_results.jsonl file to the given s3 location.
 ```
 ---
 #### `get_logs()`
@@ -604,7 +675,7 @@ loader = JSONDatasetLoader(
     answer="output"
 )
 ```
-Below is a list of accepted column mapping parameters for transformations. 
+Below is a list of accepted column mapping parameters for transformations.
 * SFT: `question`, `answer`
   * Optional: `system`, [image/video required options]: `image_format`/`video_format`, `s3_uri`, `bucket_owner`
   * 2.0: `reasoning_text`, `tools`/`toolsConfig`*
@@ -614,7 +685,7 @@ Below is a list of accepted column mapping parameters for transformations.
   * Optional: `images`, `metadata`
 * CPT: `text`
 
-Additional Notes: 
+Additional Notes:
 * If you're providing multimodal data in a generic format, you need to provide ALL three of the following fields:
   * `image_format` OR `video_format` + `s3_uri`, `bucket_owner`
 * *`tools/toolsConfig` (SFT 2.0) and `tools` (RFT) parameters can *only* be provided when transforming from OpenAI Messages format to Converse or OpenAI. A generic format *cannot* be provided for this transformation to work.
@@ -796,7 +867,7 @@ loader.transform(
 ```
 ---
 #### `validate()`
-Validates dataset when given the user's intended training method and model. 
+Validates dataset when given the user's intended training method and model.
 
 **Signature:**
 ```python
@@ -828,8 +899,8 @@ loader.validate(
 If you're validating a BYOD Evaluation dataset, you need to provide another parameter, `eval_task` to the `validate` function. For example:
 ```
 loader.validate(
-    method=TrainingMethod.EVALUATION, 
-    model=Model.NOVA_LITE_2, 
+    method=TrainingMethod.EVALUATION,
+    model=Model.NOVA_LITE_2,
     eval_task=EvaluationTask.GEN_QA
 )
 
@@ -903,7 +974,7 @@ Save the job result to file_path path
 **Signature:**
 ```python
 def dump(
- self, 
+ self,
  file_path: Optional[str] = None,
  file_name: Optional[str] = None
 ) -> Path
@@ -931,7 +1002,7 @@ Load the job result from the `file_path` path
 ```python
 @classmethod
 def load(
- cls, 
+ cls,
  file_path: str
 ) -> "BaseJobResult":
 ```
@@ -1079,6 +1150,98 @@ def clean(
 ) -> None
 ```
 ---
+### IAM Role Creation SDK
+This SDK provides utility functions for creating IAM roles with specific permissions for AWS Bedrock and SageMaker services.
+
+**Methods**
+
+#### `create_bedrock_execution_role()`
+Creates an IAM role with permissions for Bedrock model creation and deployment.
+
+**Signature:**
+```python
+def create_bedrock_execution_role(
+    iam_client, 
+    role_name: str, 
+    bedrock_resource: str = "*", 
+    s3_resource: str = "*"
+) -> Dict
+```
+
+**Parameters:**
+- `iam_client`: Boto3 IAM client
+- `role_name` (str): Name of the IAM role to create
+- `bedrock_resource` (Optional[str]): Specific Bedrock resource to restrict access. Defaults to "*" (all resources)
+- `s3_resource` (Optional[str]): Specific S3 resource to restrict access. Defaults to "*" (all resources)
+
+**Returns:**
+- `Dict`: IAM role details
+
+**Example:**
+```python
+import boto3
+from amzn_nova_customization_sdk.iam.iam_role_creator import create_bedrock_execution_role
+
+iam_client = boto3.client("iam")
+create_bedrock_execution_role(iam_client, "role-name", "bedrock_resource", "s3_resource")
+```
+
+### `create_sagemaker_execution_role()`
+Creates an IAM role with permissions for SageMaker model creation and deployment.
+
+**Signature:**
+```python
+def create_sagemaker_execution_role(
+    iam_client,
+    role_name: str,
+    s3_resource: str = "*",
+    kms_resource: str = "*",
+    ec2_condition: Optional[Dict[str, Any]] = None,
+    cloudwatch_metric_condition: Optional[Dict[str, Any]] = None,
+    cloudwatch_logstream_resource: str = "*",
+    cloudwatch_loggroup_resource: str = "*"
+) -> Dict
+```
+
+**Parameters:**
+- `iam_client`: Boto3 IAM client
+- `role_name` (str): Name of the IAM role to create
+- `s3_resource` (Optional[str]): Specific S3 resource to restrict access
+- `kms_resource` (Optional[str]): Specific KMS resource to restrict access
+- `ec2_condition` (Optional[Dict]): Conditional access for EC2 resources
+- `cloudwatch_metric_condition` (Optional[Dict]): Conditional access for CloudWatch metrics
+- `cloudwatch_logstream_resource` (Optional[str]): Specific CloudWatch log stream resource
+- `cloudwatch_loggroup_resource` (Optional[str]): Specific CloudWatch log group resource
+
+**Returns:**
+- `Dict`: IAM role details
+
+**Example:**
+```python
+import boto3
+from amzn_nova_customization_sdk.iam.iam_role_creator import create_sagemaker_execution_role
+
+iam_client = boto3.client("iam")
+create_sagemaker_execution_role(
+        iam_client,
+        role_name="role-name",
+        s3_resource="example-bucket""",
+        kms_resource="encryption-key",
+        ec2_condition={
+            "ArnLike": {
+                "ec2:Vpc": "arn:aws:ec2:*:*:vpc/example"
+            }
+        },
+        cloudwatch_metric_condition={
+            "StringEquals": {
+                "cloudwatch:namespace": ["example-namespace"]
+            }
+        },
+        cloudwatch_loggroup_resource="example-loggroup",
+        cloudwatch_logstream_resource="example-logstream"
+    )
+```
+---
 ## Monitoring
 
 ### MLflowMonitor
@@ -1119,7 +1282,7 @@ from amzn_nova_customization_sdk.monitor import *
 
 # With explicit tracking URI
 monitor = MLflowMonitor(
-    tracking_uri="arn:aws:sagemaker:us-east-1:123456:mlflow-app/app-xxx",
+    tracking_uri="arn:aws:sagemaker:us-east-1:123456789012:mlflow-app/app-xxx",
     experiment_name="nova-customization",
     run_name="sft-run-1"
 )
@@ -1159,15 +1322,58 @@ def to_dict(
 **Example:**
 ```python
 monitor = MLflowMonitor(
- tracking_uri="arn:aws:sagemaker:us-east-1:123456:mlflow-app/app-xxx",
+ tracking_uri="arn:aws:sagemaker:us-east-1:123456789012:mlflow-app/app-xxx",
  experiment_name="nova-customization"
 )
 
 config_dict = monitor.to_dict()
 # Returns: {
-#   "mlflow_tracking_uri": "arn:aws:sagemaker:us-east-1:123456:mlflow-app/app-xxx",
+#   "mlflow_tracking_uri": "arn:aws:sagemaker:us-east-1:123456789012:mlflow-app/app-xxx",
 #   "mlflow_experiment_name": "nova-customization"
 # }
+```
+
+##### `get_presigned_url()`
+
+Generates a presigned URL for accessing the MLflow tracking server UI directly without navigating through the AWS Console.
+
+**Signature:**
+```python
+def get_presigned_url(
+ self,
+ session_expiration_duration_in_seconds: int = 43200,
+ expires_in_seconds: int = 300
+) -> str
+```
+
+**Parameters:**
+- `session_expiration_duration_in_seconds` (int, optional): Duration in seconds for which the MLflow UI session is valid after accessing the presigned URL. Default is 43200 seconds (12 hours). Valid range: 1800-43200 seconds
+- `expires_in_seconds` (int, optional): Duration in seconds for which the presigned URL itself is valid. The URL must be accessed within this time. Default is 300 seconds (5 minutes). Valid range: 5-300 seconds
+
+**Returns:**
+- `str`: Presigned URL for accessing the MLflow tracking server UI. This URL must be used within `expires_in_seconds`
+
+**Raises:**
+- `ValueError`: If tracking_uri is not set
+- `RuntimeError`: If unable to generate presigned URL
+
+**Example:**
+```python
+monitor = MLflowMonitor(
+    tracking_uri="arn:aws:sagemaker:us-east-1:123456789012:mlflow-app/app-xxx",
+    experiment_name="nova-customization"
+)
+
+# Generate presigned URL with defaults
+# URL expires in 5 minutes, but session lasts 12 hours once accessed
+url = monitor.get_presigned_url()
+print(f"Access MLflow UI at: {url}")
+
+# Generate URL with custom expiration times
+url = monitor.get_presigned_url(
+    session_expiration_duration_in_seconds=3600,  # 1 hour session
+    expires_in_seconds=60  # URL expires in 1 minute
+)
 ```
 
 #### MLflow Integration Notes
@@ -1244,7 +1450,7 @@ Supported deployment platforms.
 **Values:**
 - `DeployPlatform.BEDROCK_OD`: Amazon Bedrock On-Demand
 - `DeployPlatform.BEDROCK_PT`: Amazon Bedrock Provisioned Throughput
-- `DeployPlatform.SAGEMAKER`: Amazon SageMaker (not yet implemented)
+- `DeployPlatform.SAGEMAKER`: Amazon SageMaker
 ---
 ### DeploymentMode Enum
 Deployment behavior when an endpoint with the same name already exists.
@@ -1253,7 +1459,8 @@ Deployment behavior when an endpoint with the same name already exists.
 - `DeploymentMode.FAIL_IF_EXISTS`: Raise an error if endpoint already exists (safest, default)
 - `DeploymentMode.UPDATE_IF_EXISTS`: Try in-place update only, fail if not supported (PT only)
 
-**Note:** Only `FAIL_IF_EXISTS` and `UPDATE_IF_EXISTS` modes are currently supported. `UPDATE_IF_EXISTS` is only applicable for Bedrock Provisioned Throughput (PT) deployments.
+**Note:** Only `FAIL_IF_EXISTS` and `UPDATE_IF_EXISTS` modes are currently supported. 
+`UPDATE_IF_EXISTS` is only applicable for Bedrock Provisioned Throughput (PT) deployments.
 
 ---
 ### EvaluationTask Enum
@@ -1279,6 +1486,220 @@ Job execution status.
 - `JobStatus.IN_PROGRESS`: Job is running
 - `JobStatus.COMPLETED`: Job completed successfully
 - `JobStatus.FAILED`: Job failed
+
+---
+
+## RFT Multiturn Infrastructure
+
+For RFT multiturn training and evaluation, you need to set up infrastructure to run reward functions.
+
+### Helper Functions
+
+#### create_rft_execution_role
+
+Creates an IAM role with required permissions for RFT multiturn infrastructure.
+
+**Function:**
+```python
+def create_rft_execution_role(
+    region: str = "us-east-1",
+    role_name: Optional[str] = None,
+    custom_policy_path: Optional[str] = None
+) -> str
+```
+
+**Parameters:**
+- `region` (str): AWS region. Default: "us-east-1"
+- `role_name` (Optional[str]): Custom role name. Default: "RFTExecutionRoleNovaSDK"
+- `custom_policy_path` (Optional[str]): Path to custom policy JSON file. If not provided, uses SDK default.
+
+**Returns:**
+- `str`: ARN of the created/existing role
+
+**Example:**
+```python
+from amzn_nova_customization_sdk import create_rft_execution_role
+
+# Create role with default name
+role_arn = create_rft_execution_role(region="us-east-1")
+
+# Create role with custom name
+role_arn = create_rft_execution_role(region="us-east-1", role_name="my-custom-rft-role")
+```
+
+#### list_rft_stacks
+
+Lists CloudFormation stacks in the region, optionally filtering for Nova SDK stacks.
+
+**Function:**
+```python
+def list_rft_stacks(
+    region: str = "us-east-1",
+    all_stacks: bool = False
+) -> List[str]
+```
+
+**Parameters:**
+- `region` (str): AWS region. Default: "us-east-1"
+- `all_stacks` (bool): If True, list all stacks. If False, only list Nova SDK stacks (ending with "NovaForgeSDK"). Default: False
+
+**Returns:**
+- `List[str]`: List of stack names
+
+**Example:**
+```python
+from amzn_nova_customization_sdk import list_rft_stacks
+
+# List only Nova SDK stacks
+nova_stacks = list_rft_stacks(region="us-east-1")
+
+# List all CloudFormation stacks
+all_stacks = list_rft_stacks(region="us-east-1", all_stacks=True)
+```
+
+### RFTMultiturnInfrastructure
+
+Manages infrastructure for RFT multiturn training (reward function workers).
+
+**Constructor:**
+```python
+def __init__(
+    self,
+    stack_name: str,
+    region: str = "us-east-1",
+    vf_env_id: Optional[VFEnvId] = None,
+    custom_env: Optional[CustomEnvironment] = None,
+    infrastructure_arn: Optional[str] = None,
+    python_venv_name: Optional[str] = None,
+    vpc_config: Optional[Dict[str, Any]] = None,
+    cpu: Optional[str] = None,
+    memory: Optional[str] = None,
+    rft_role_name: Optional[str] = None,
+)
+```
+
+**Parameters:**
+- `stack_name` (str): CloudFormation stack name
+- `region` (str): AWS region. Default: "us-east-1"
+- `vf_env_id` (Optional[VFEnvId]): Built-in environment ID (VFEnvId.WORDLE or VFEnvId.TERMINAL_BENCH)
+- `custom_env` (Optional[CustomEnvironment]): Custom environment (mutually exclusive with vf_env_id)
+- `infrastructure_arn` (Optional[str]): Platform ARN (EC2 instance ID, ECS cluster ARN, or None for LOCAL)
+- `python_venv_name` (Optional[str]): Python virtual environment name (required for LOCAL/EC2, optional for ECS)
+- `vpc_config` (Optional[Dict]): VPC configuration for ECS only. Dict with keys:
+  - `subnets`: List[str] - Subnet IDs
+  - `security_groups`: List[str] - Security group IDs
+- `cpu` (Optional[str]): CPU units for ECS tasks (e.g., "2048"). Ignored for LOCAL/EC2.
+- `memory` (Optional[str]): Memory in MB for ECS tasks (e.g., "4096"). Ignored for LOCAL/EC2.
+- `rft_role_name` (Optional[str]): IAM role name for RFT infrastructure. If not provided, uses default role or creates one.
+
+**Example:**
+```python
+from amzn_nova_customization_sdk import RFTMultiturnInfrastructure, CustomEnvironment, VFEnvId
+
+# Option 1: LOCAL with built-in environment
+rft_infra = RFTMultiturnInfrastructure(
+    stack_name="my-rft-stack",
+    region="us-east-1",
+    python_venv_name="my_rft_venv",
+    vf_env_id=VFEnvId.WORDLE
+)
+
+# Option 2: ECS with custom environment and VPC config
+custom_env = CustomEnvironment(
+    env_id="my-custom-env", 
+    output_dir="~/custom_envs/", 
+    env_type="single_turn"
+).create(overwrite=True)
+
+rft_infra = RFTMultiturnInfrastructure(
+    stack_name="my-rft-stack",
+    custom_env=custom_env,
+    infrastructure_arn="arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster",
+    vpc_config={
+        "subnets": ["subnet-12345", "subnet-67890"],
+        "security_groups": ["sg-12345"]
+    },
+    cpu="4096",
+    memory="8192"
+)
+
+# Deploy infrastructure
+rft_infra.setup()
+
+# Start training environment
+rft_infra.start_training_environment()
+
+# Use with NovaModelCustomizer
+customizer = NovaModelCustomizer(
+    model=Model.NOVA_LITE_2,
+    method=TrainingMethod.RFT_MULTITURN_LORA,
+    infra=runtime,
+    data_s3_path="s3://bucket/data.jsonl"
+)
+
+training_result = customizer.train(
+    job_name="rft-training",
+    rft_multiturn_infra=rft_infra
+)
+```
+
+### CustomEnvironment
+
+Create custom reward functions for RFT multiturn training.
+
+**Constructor:**
+```python
+def __init__(
+    self,
+    env_id: str,
+    local_path: str = None,
+    output_dir: str =  "~/custom_envs",
+    env_type: str = "single_turn"
+)
+```
+
+**Methods:**
+- `create(overwrite: bool = False)`: Create environment structure
+- `validate()`: Validate environment
+- `package_and_upload(bucket: Optional[str] = None)`: Upload to S3
+
+**Example:**
+```python
+custom_env = CustomEnvironment(
+    env_id="my-custom-env",
+    output_dir="~/custom_envs/",
+    env_type="single_turn"
+).create(overwrite=True)
+
+custom_env.validate()
+custom_env.package_and_upload()
+print(f"Uploaded to: {custom_env.s3_uri}")
+```
+
+### RFT Multiturn Methods
+
+**Infrastructure Management:**
+- `setup()`: Deploy CloudFormation stack (Lambda, SQS, DynamoDB)
+- `start_training_environment(vf_env_args: Dict = None)`: Start training workers
+- `start_evaluation_environment(vf_env_args: Dict = None)`: Start evaluation workers
+- `kill_task(env_type: EnvType)`: Stop workers
+- `cleanup(delete_stack: bool = False, cleanup_environment: bool = False)`: Clean up resources
+  - `delete_stack`: If True, delete CloudFormation stack
+  - `cleanup_environment`: If True, clean up environment resources:
+    - LOCAL/EC2: Delete virtual environment and starter kit directories
+    - ECS: Deregister task definitions
+
+**Monitoring:**
+- `get_logs(env_type: EnvType, limit: int = 100, start_from_head: bool = False, log_stream_name: Optional[str] = None, tail: bool = False)`: View worker logs
+  - `tail`: If True, continuously stream logs in real-time (blocks until Ctrl+C)
+- `check_all_queues()`: Check SQS queue status
+- `flush_all_queues()`: Clear all queues
+
+**Configuration:**
+- `get_configuration()`: Get infrastructure config
+- `get_recipe_overrides()`: Get recipe overrides for training
+
+**Note:** RFT multiturn only supports SageMaker HyperPod (SMHP) platform and Nova 2.0 models (NOVA_LITE_2).
 
 ---
 ## Error Handling
@@ -1310,6 +1731,6 @@ Common exceptions:
 - AWS Documentation: [Amazon Bedrock](https://docs.aws.amazon.com/bedrock/)
 - AWS Documentation: [Amazon SageMaker](https://docs.aws.amazon.com/sagemaker/)
 - SDK GitHub Repository: Check for updates and examples
-- Support: Use AWS Support for technical assistance 
+- Support: Use AWS Support for technical assistance
 ---
-_Last Updated: January 23, 2026_
+_Last Updated: February 4, 2026_

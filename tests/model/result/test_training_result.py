@@ -6,7 +6,11 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from amzn_nova_customization_sdk.model.model_config import ModelArtifacts
-from amzn_nova_customization_sdk.model.model_enums import Platform, TrainingMethod
+from amzn_nova_customization_sdk.model.model_enums import (
+    Model,
+    Platform,
+    TrainingMethod,
+)
 from amzn_nova_customization_sdk.model.result.job_result import (
     JobStatus,
     SMHPStatusManager,
@@ -34,6 +38,7 @@ class TestSMTJTrainResult(unittest.TestCase):
                 started_time=datetime(2024, 1, 1, 12, 0, 0),
                 method=TrainingMethod.SFT_LORA,
                 model_artifacts=self.model_artifacts,
+                model_type=Model.NOVA_MICRO,
             )
 
             self.assertEqual(result.job_id, "test-job-123")
@@ -41,6 +46,7 @@ class TestSMTJTrainResult(unittest.TestCase):
             self.assertEqual(result.model_artifacts, self.model_artifacts)
             self.assertEqual(result.platform, Platform.SMTJ)
             self.assertIsInstance(result.status_manager, SMTJStatusManager)
+            self.assertEqual(result.model_type, Model.NOVA_MICRO)
             mock_boto3.assert_called_once_with("sagemaker")
 
     def test_init_with_custom_client(self):
@@ -51,6 +57,7 @@ class TestSMTJTrainResult(unittest.TestCase):
             method=TrainingMethod.SFT_FULL,
             model_artifacts=self.model_artifacts,
             sagemaker_client=self.mock_sagemaker_client,
+            model_type=Model.NOVA_MICRO,
         )
 
         self.assertEqual(result._sagemaker_client, self.mock_sagemaker_client)
@@ -64,6 +71,7 @@ class TestSMTJTrainResult(unittest.TestCase):
             method=TrainingMethod.SFT_LORA,
             model_artifacts=self.model_artifacts,
             sagemaker_client=self.mock_sagemaker_client,
+            model_type=Model.NOVA_MICRO,
         )
 
         status_manager = result._create_status_manager()
@@ -79,6 +87,7 @@ class TestSMTJTrainResult(unittest.TestCase):
             method=TrainingMethod.RFT_LORA,
             model_artifacts=self.model_artifacts,
             sagemaker_client=self.mock_sagemaker_client,
+            model_type=Model.NOVA_MICRO,
         )
 
         result_dict = result._to_dict()
@@ -90,6 +99,7 @@ class TestSMTJTrainResult(unittest.TestCase):
                 "checkpoint_s3_path": "s3://bucket/checkpoint/",
                 "output_s3_path": "s3://bucket/output/",
             },
+            "model_type": Model.NOVA_MICRO.name,
         }
 
         self.assertEqual(result_dict, expected)
@@ -104,6 +114,7 @@ class TestSMTJTrainResult(unittest.TestCase):
                 "checkpoint_s3_path": "s3://bucket/checkpoint/",
                 "output_s3_path": "s3://bucket/output/",
             },
+            "model_type": "NOVA_MICRO",
         }
 
         with patch("boto3.client"):
@@ -127,6 +138,7 @@ class TestSMTJTrainResult(unittest.TestCase):
             method=TrainingMethod.SFT_LORA,
             model_artifacts=self.model_artifacts,
             sagemaker_client=self.mock_sagemaker_client,
+            model_type=Model.NOVA_MICRO,
         )
 
         result_data = result.get()
@@ -141,6 +153,7 @@ class TestSMTJTrainResult(unittest.TestCase):
             method=TrainingMethod.SFT_LORA,
             model_artifacts=self.model_artifacts,
             sagemaker_client=self.mock_sagemaker_client,
+            model_type=Model.NOVA_MICRO,
         )
 
         with patch("builtins.print") as mock_print:
@@ -157,6 +170,7 @@ class TestSMTJTrainResult(unittest.TestCase):
             method=TrainingMethod.SFT_LORA,
             model_artifacts=self.model_artifacts,
             sagemaker_client=self.mock_sagemaker_client,
+            model_type=Model.NOVA_MICRO,
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -195,6 +209,7 @@ class TestSMHPTrainResult(unittest.TestCase):
             method=TrainingMethod.SFT_LORA,
             model_artifacts=self.model_artifacts,
             cluster_name="test-cluster",
+            model_type=Model.NOVA_MICRO,
         )
 
         self.assertEqual(result.job_id, "test-job-123")
@@ -202,6 +217,7 @@ class TestSMHPTrainResult(unittest.TestCase):
         self.assertEqual(result.namespace, "kubeflow")
         self.assertEqual(result.platform, Platform.SMHP)
         self.assertIsInstance(result.status_manager, SMHPStatusManager)
+        self.assertEqual(result.model_type, Model.NOVA_MICRO)
 
     def test_init_with_custom_namespace(self):
         """Test initialization with custom namespace"""
@@ -212,6 +228,7 @@ class TestSMHPTrainResult(unittest.TestCase):
             model_artifacts=self.model_artifacts,
             cluster_name="test-cluster",
             namespace="custom-namespace",
+            model_type=Model.NOVA_MICRO,
         )
 
         self.assertEqual(result.namespace, "custom-namespace")
@@ -226,6 +243,7 @@ class TestSMHPTrainResult(unittest.TestCase):
             model_artifacts=self.model_artifacts,
             cluster_name="test-cluster",
             namespace="test-namespace",
+            model_type=Model.NOVA_MICRO,
         )
 
         status_manager = result._create_status_manager()
@@ -243,6 +261,7 @@ class TestSMHPTrainResult(unittest.TestCase):
             model_artifacts=self.model_artifacts,
             cluster_name="test-cluster",
             namespace="test-namespace",
+            model_type=Model.NOVA_MICRO,
         )
 
         result_dict = result._to_dict()
@@ -256,6 +275,7 @@ class TestSMHPTrainResult(unittest.TestCase):
             },
             "cluster_name": "test-cluster",
             "namespace": "test-namespace",
+            "model_type": Model.NOVA_MICRO.name,
         }
 
         self.assertEqual(result_dict, expected)
@@ -272,6 +292,7 @@ class TestSMHPTrainResult(unittest.TestCase):
             },
             "cluster_name": "test-cluster",
             "namespace": "test-namespace",
+            "model_type": "NOVA_MICRO",
         }
 
         result = SMHPTrainingResult._from_dict(data)
@@ -284,6 +305,7 @@ class TestSMHPTrainResult(unittest.TestCase):
         self.assertEqual(
             result.model_artifacts.checkpoint_s3_path, "s3://bucket/checkpoint/"
         )
+        self.assertEqual(result.model_type, Model.NOVA_MICRO)
 
     def test_get_method(self):
         """Test get method returns dictionary"""
@@ -293,6 +315,7 @@ class TestSMHPTrainResult(unittest.TestCase):
             method=TrainingMethod.SFT_LORA,
             model_artifacts=self.model_artifacts,
             cluster_name="test-cluster",
+            model_type=Model.NOVA_MICRO,
         )
 
         result_data = result.get()
@@ -308,6 +331,7 @@ class TestSMHPTrainResult(unittest.TestCase):
             method=TrainingMethod.SFT_LORA,
             model_artifacts=self.model_artifacts,
             cluster_name="test-cluster",
+            model_type=Model.NOVA_MICRO,
         )
 
         with patch("builtins.print") as mock_print:
@@ -325,6 +349,7 @@ class TestSMHPTrainResult(unittest.TestCase):
             model_artifacts=self.model_artifacts,
             cluster_name="test-cluster",
             namespace="test-namespace",
+            model_type=Model.NOVA_MICRO,
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -361,6 +386,7 @@ class TestSMHPTrainResult(unittest.TestCase):
                 method=method,
                 model_artifacts=self.model_artifacts,
                 cluster_name="test-cluster",
+                model_type=Model.NOVA_MICRO,
             )
 
             self.assertEqual(result.method, method)

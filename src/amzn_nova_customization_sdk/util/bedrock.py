@@ -18,12 +18,15 @@ Helper functions for Bedrock model deployment and management.
 import json
 import time
 from datetime import datetime, timezone
-from importlib import resources
 from typing import Dict, List, Optional, Tuple
 
 import boto3
+from botocore.client import BaseClient
 
 from amzn_nova_customization_sdk.model.model_enums import DeployPlatform
+from amzn_nova_customization_sdk.model.result.inference_result import (
+    SingleInferenceResult,
+)
 from amzn_nova_customization_sdk.util.logging import logger
 
 DEPLOYMENT_ARN_NAME = {
@@ -76,99 +79,6 @@ def monitor_model_create(client, model: dict, endpoint_name: str) -> str:
             logger.error(f"Error checking status: {str(e)}\n")
             raise
         time.sleep(60)  # Sleep for a minute.
-
-
-def create_bedrock_execution_role(
-    iam_client, role_name: str, bedrock_resource: str = "*", s3_resource: str = "*"
-) -> Dict:
-    """
-    Creates a new IAM Role that allows for Bedrock model creation and deployment.
-
-    Args:
-        iam_client: The boto3 client to use when creating the role.
-        role_name: The name of the role to create.
-        bedrock_resource: Optional name of the bedrock resources that IAM role should have restricted create and get access to
-        s3_resource: Optional name of additional s3 resources that IAM role should have restricted read access to such as the training output bucket
-
-    Returns:
-        Dict: The IAM role response containing role details
-
-    Raises:
-        Exception: If it fails at creating the new role.
-    """
-    sts_client = boto3.client("sts")
-    with (
-        resources.files("amzn_nova_customization_sdk.model")
-        .joinpath("bedrock_policies.json")
-        .open() as f
-    ):
-        policies = json.load(f)
-
-    # Create a new execution role for creating and deploying the models.
-    try:
-        # Checks if the role exists already.
-        bedrock_execution_role = iam_client.get_role(RoleName=role_name)
-    except iam_client.exceptions.NoSuchEntityException:
-        logger.info(f"The {role_name} role doesn't exist. Creating it now...")
-        bedrock_execution_role = iam_client.create_role(
-            RoleName=role_name,
-            AssumeRolePolicyDocument=json.dumps(policies["trust_policy"]),
-            Description="This role allows for models to be created and deployed.",
-        )
-    except Exception as e:
-        raise Exception(
-            f"Failed to create the Bedrock execution role {role_name}: {str(e)}"
-        )
-
-    if bedrock_resource != "*":
-        policies["bedrock_policy"]["Statement"][0]["Resource"] = (
-            f"arn:aws:bedrock:*:*:custom-model/{bedrock_resource}*"
-        )
-
-    else:
-        policies["bedrock_policy"]["Statement"][0]["Resource"] = "*"
-
-    # S3 resources needed are the escrow bucket and the training output bucket
-    if s3_resource != "*":
-        account_id = sts_client.get_caller_identity()["Account"]
-
-        policies["s3_read_policy"]["Statement"][0]["Resource"] = [
-            f"arn:aws:s3:::{s3_resource}*",
-            f"arn:aws:s3:::{s3_resource}*/*",
-            f"arn:aws:s3:::customer-escrow-{account_id}*",
-            f"arn:aws:s3:::customer-escrow-{account_id}*/*",
-        ]
-    else:
-        policies["s3_read_policy"]["Statement"][0]["Resource"] = "*"
-
-    # Create and attach policies
-    for policy_name in ["bedrock_policy", "s3_read_policy"]:
-        try:
-            policy_arn = iam_client.create_policy(
-                PolicyName=f"{role_name}{policy_name.title()}",
-                PolicyDocument=json.dumps(policies[policy_name]),
-            )["Policy"]["Arn"]
-
-            logger.info(
-                f"Creating {policy_name} with the following permissions {json.dumps(policies[policy_name])}."
-            )
-
-            iam_client.attach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
-        except iam_client.exceptions.EntityAlreadyExistsException:
-            # If the policy already exists, get its ARN and attach it to the role.
-            logger.info(
-                f"The {policy_name} already exists in your account, attaching it to the role now."
-            )
-            policy_arn = iam_client.get_policy(
-                PolicyArn=f"arn:aws:iam::{sts_client.get_caller_identity()['Account']}:policy/{role_name}{policy_name.title()}"
-            )["Policy"]["Arn"]
-
-            iam_client.attach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
-        except Exception as e:
-            raise Exception(
-                f"Failed to create or attach policy {policy_name}: {str(e)}"
-            )
-    return bedrock_execution_role
 
 
 def check_deployment_status(
@@ -406,3 +316,27 @@ def update_provisioned_throughput_model(
 
     except Exception as e:
         raise Exception(f"Failed to update PT deployment '{endpoint_name}': {e}")
+
+
+def invoke_model(
+    model_id: str, request_body: Dict[str, str], bedrock_runtime: BaseClient
+) -> SingleInferenceResult:
+    current_time = datetime.now(timezone.utc)
+
+    # TODO: Add support for invoke_model_with_response_stream
+    try:
+        response = bedrock_runtime.invoke_model(
+            modelId=model_id, body=json.dumps(request_body)
+        )
+        body = response["body"].read().decode("utf-8")
+
+        return SingleInferenceResult(
+            job_id=response["ResponseMetadata"]["RequestId"],
+            inference_output_path="",
+            started_time=current_time,
+            streaming_response=None,
+            nonstreaming_response=body,
+        )
+
+    except Exception as e:
+        raise Exception(f"Failed invoke Bedrock model '{model_id}': {e}")

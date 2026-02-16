@@ -306,7 +306,9 @@ class SMHPRuntimeManager(RuntimeManager):
             [
                 (
                     "sagemaker:DescribeCluster",
-                    lambda infra: f"arn:aws:sagemaker:{infra.region}:*:cluster/{infra.cluster_name}",
+                    lambda infra: (
+                        f"arn:aws:sagemaker:{infra.region}:*:cluster/{infra.cluster_name}"
+                    ),
                 ),
                 (
                     "eks:DescribeCluster",
@@ -314,7 +316,9 @@ class SMHPRuntimeManager(RuntimeManager):
                 ),
                 (
                     "eks:ListAddons",
-                    lambda infra: f"arn:aws:eks:{infra.region}:*:cluster/{infra.cluster_name}",
+                    lambda infra: (
+                        f"arn:aws:eks:{infra.region}:*:cluster/{infra.cluster_name}"
+                    ),
                 ),
                 ("sagemaker:ListClusters", "*"),
             ]

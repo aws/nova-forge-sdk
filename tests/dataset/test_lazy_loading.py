@@ -7,6 +7,8 @@ import unittest
 from io import BytesIO
 from unittest.mock import MagicMock, mock_open, patch
 
+import pytest
+
 from amzn_nova_customization_sdk.dataset.dataset_loader import (
     CSVDatasetLoader,
     JSONLDatasetLoader,

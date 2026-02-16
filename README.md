@@ -65,7 +65,11 @@ The SDK requires certain IAM permissions to perform tasks successfully. You can 
                 "iam:CreateRole",
                 "iam:GetRole",
                 "iam:PassRole",
-                "iam:SimulatePrincipalPolicy"
+                "iam:SimulatePrincipalPolicy",
+                "iam:PutRolePolicy",
+                "iam:TagRole",
+                "iam:ListAttachedRolePolicies"
+
             ],
             "Resource": "arn:aws:iam::<account_id>:role/*"
         },
@@ -74,7 +78,7 @@ The SDK requires certain IAM permissions to perform tasks successfully. You can 
             "Effect": "Allow",
             "Action": [
                 "iam:CreatePolicy",
-                "iam:GetPolicy"
+                "iam:GetPolicy",
             ],
             "Resource": "arn:aws:iam::<account_id>:policy/*"
         },
@@ -122,7 +126,29 @@ The SDK requires certain IAM permissions to perform tasks successfully. You can 
             "Resource": "arn:aws:bedrock:<region>:<account_id>:custom-model/*"
         },
         {
-            "Sid": "MLflowSagemaker",
+            "Sid": "DeployAndInvokeModelInSageMaker",
+            "Effect": "Allow",
+            "Action": [
+                "sagemaker:CreateEndpoint",
+                "sagemaker:CreateEndpointConfig",
+                "sagemaker:CreateModel",
+                "sagemaker:DeleteEndpoint",
+                "sagemaker:DeleteEndpointConfig",
+                "sagemaker:DeleteModel",
+                "sagemaker:DescribeEndpoint",
+                "sagemaker:DescribeEndpointConfig",
+                "sagemaker:InvokeEndpoint",
+                "sagemaker:InvokeEndpointWithResponseStream",
+                "sagemaker:UpdateEndpoint"
+            ],
+            "Resource": [
+               "arn:aws:sagemaker:<region>:<account_id>:endpoint/*",
+               "arn:aws:sagemaker:<region>:<account_id>:endpoint-config/*",
+               "arn:aws:sagemaker:<region>:<account_id>:model/*"
+              ]
+        },
+        {
+            "Sid": "MLflowSageMaker",
             "Effect": "Allow",
             "Action": [
                 "sagemaker-mlflow:AccessUI",
@@ -191,7 +217,45 @@ If performing RFT training, your execution role also must include the following 
 }
 ```
 
-You can optionally set your execution role via:
+If performing RFT Multiturn training, you also need the following additional permissions:
+```
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "SSMCommandsForRFTMultiturn",
+            "Effect": "Allow",
+            "Action": [
+                "ssm:SendCommand",
+                "ssm:GetCommandInvocation",
+                "ssm:ListCommandInvocations"
+            ],
+            "Resource": [
+                "arn:aws:ec2:<region>:<account_id>:instance/*",
+                "arn:aws:ssm:<region>::document/AWS-RunShellScript"
+            ]
+        },
+        {
+            "Sid": "ECSTaskManagementForRFTMultiturn",
+            "Effect": "Allow",
+            "Action": [
+                "ecs:DeregisterTaskDefinition",
+                "ecs:DescribeTasks",
+                "ecs:ListTasks",
+                "ecs:RunTask",
+                "ecs:StopTask"
+            ],
+            "Resource": [
+                "arn:aws:ecs:<region>:<account_id>:cluster/*",
+                "arn:aws:ecs:<region>:<account_id>:task/*",
+                "arn:aws:ecs:<region>:<account_id>:task-definition/*"
+            ]
+        }
+    ]
+}
+```
+
+For SMTJ jobs you can set your execution role via:
 ```
 customizer = NovaModelCustomizer(
     infra=SMTJRuntimeManager(
@@ -205,6 +269,31 @@ customizer = NovaModelCustomizer(
 )
 ```
 If you don’t explicitly set an execution role, the SDK automatically uses the IAM role associated with the credentials you’re using to make the SDK call.
+
+#### __EKS Cluster Access (HyperPod Only)__
+After creating your execution role, you must grant it access to your HyperPod cluster's EKS cluster. This is required for the SDK to submit jobs to HyperPod.
+
+**Step 1: Create an access entry for your execution role**
+```bash
+aws eks create-access-entry \
+  --cluster-name <your-cluster-name> \
+  --principal-arn arn:aws:iam::<account_id>:role/<your-execution-role-name>
+```
+
+**Step 2: Associate the cluster admin policy**
+```bash
+aws eks associate-access-policy \
+  --cluster-name <your-cluster-name> \
+  --principal-arn arn:aws:iam::<account_id>:role/<your-execution-role-name> \
+  --policy-arn arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy \
+  --access-scope type=cluster
+```
+
+Replace the following placeholders:
+- `<your-cluster-name>`: Your HyperPod cluster's EKS cluster name (e.g., `sagemaker-my-cluster-eks`)
+- `<account_id>`: Your AWS account ID
+- `<your-execution-role-name>`: The name of your execution role (e.g., `NovaCustomizationSdkExecutionRole`)
+
 
 ### Instances
 
@@ -262,14 +351,16 @@ pip install -e .
 
 | Method       | Description                              | Supported Models       |
 |--------------|------------------------------------------|------------------------|
-| `CPT`        | Continued Pre-Training                   | All models (SMHP only) |
-| `DPO_LORA`   | Direct Preference Optimization with LoRA | Nova 1.0 models        |
-| `DPO_FULL`   | Full-rank Direct Preference Optimization | Nova 1.0 models        |
-| `SFT_LORA`   | Supervised Fine-tuning with LoRA         | All models             |
-| `SFT_FULL`   | Full-rank Supervised Fine-tuning         | All models             |
-| `RFT_LORA`   | Reinforcement Fine-tuning with LoRA      | Nova 2.0 models        |
-| `RFT_FULL`   | Full Reinforcement Fine-tuning           | Nova 2.0 models        |
-| `EVALUATION` | Model evaluation                         | All models             |
+| `CPT`                | Continued Pre-Training                   | All models (SMHP only) |
+| `DPO_LORA`           | Direct Preference Optimization with LoRA | Nova 1.0 models        |
+| `DPO_FULL`           | Full-rank Direct Preference Optimization | Nova 1.0 models        |
+| `SFT_LORA`           | Supervised Fine-tuning with LoRA         | All models             |
+| `SFT_FULL`           | Full-rank Supervised Fine-tuning         | All models             |
+| `RFT_LORA`           | Reinforcement Fine-tuning with LoRA      | Nova 2.0 models        |
+| `RFT_FULL`           | Full Reinforcement Fine-tuning           | Nova 2.0 models        |
+| `RFT_MULTITURN_LORA` | RFT Multiturn with LoRA                  | Nova 2.0 models        |
+| `RFT_MULTITURN_FULL` | Full RFT Multiturn                       | Nova 2.0 models        |
+| `EVALUATION`         | Model evaluation                         | All models             |
 
 ### Platform Support
 
@@ -288,9 +379,12 @@ The Nova Customization SDK is organized into the following modules:
 | **Manager**        | Runtime infrastructure management             | `SMTJRuntimeManager`, `SMHPRuntimeManager` |
 | **Model**          | Main SDK entrypoint and orchestration         | `NovaModelCustomizer`                      |
 | **Monitor**        | Job monitoring and logging                    | `CloudWatchLogMonitor`, `MLflowMonitor`   |
+| **RFT Multiturn**  | Reinforcement fine-tuning infrastructure      | `RFTMultiturnInfrastructure`               |
 
-* For detailed API documentation: See `docs/spec.md`  
-* For usage examples: See `samples/nova_quickstart.ipynb`
+* For detailed API documentation: See [`docs/spec.md`](docs/spec.md)  
+* For usage examples: See [`samples/nova_quickstart.ipynb`](samples/nova_quickstart.ipynb)
+* For RFT Multiturn documentation: See [`docs/rft_multiturn.md`](docs/rft_multiturn.md)
+* For RFT Multiturn examples: See [`samples/rft_multiturn_quickstart.ipynb`](samples/rft_multiturn_quickstart.ipynb)
 
 ### Dataset Module
 Handles data loading, transformation, and validation for training datasets.
@@ -327,7 +421,7 @@ Provides the main SDK entrypoint for orchestrating model customization workflows
 **Main Methods:**
 - `train()` - Launch a training job
 - `evaluate()` - Launch an evaluation job
-- `deploy()` - Deploy trained model to Amazon Bedrock
+- `deploy()` - Deploy trained model to Amazon SageMaker or Bedrock
 - `batch_inference()` - Run batch inference on trained model
 - `get_logs()` - Retrieve CloudWatch logs for current job
 - `get_data_mixing_config()` - Get data mixing configuration
@@ -347,11 +441,35 @@ Provides job monitoring and experiment tracking capabilities.
 
 **Key Classes:**
 - `CloudWatchLogMonitor` - For viewing job logs
-- `MLflowMonitor` - For experiment tracking
+- `MLflowMonitor` - For experiment tracking with presigned URL generation
+
+### RFT Multiturn Module
+Manages infrastructure for reinforcement fine-tuning with multi-turn conversational tasks.
+
+**Main Methods:**
+- `setup()` - Deploy SAM stack and validate platform
+- `start_training_environment()` - Start training environment
+- `start_evaluation_environment()` - Start evaluation environment
+- `get_logs()` - Retrieve environment logs
+- `kill_task()` - Stop running task
+- `cleanup()` - Clean up infrastructure resources
+- `check_all_queues()` - Check message counts in all queues
+- `flush_all_queues()` - Purge all messages from queues
+
+**Key Classes:**
+- `RFTMultiturnInfrastructure` - Main infrastructure management class
+- `CustomEnvironment` - For creating custom reward environments
+
+**Supported Platforms:**
+- `LOCAL` - Local development environment
+- `EC2` - Amazon EC2 instances
+- `ECS` - Amazon ECS clusters
+
+**Built-in Environments:**
+- `VFEnvId.WORDLE` - Wordle game environment
+- `VFEnvId.TERMINAL_BENCH` - Terminal benchmark environment
 
 ---
-## Additional Features
-
 ### Iterative Training
 
 The Nova Customization SDK supports iterative fine-tuning of Nova models.

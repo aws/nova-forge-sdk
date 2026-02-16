@@ -34,6 +34,7 @@ from amzn_nova_customization_sdk.model.model_enums import (
     Version,
 )
 from amzn_nova_customization_sdk.recipe.recipe_config import EvaluationTask
+from amzn_nova_customization_sdk.rft_multiturn import RFTMultiturnInfrastructure
 from amzn_nova_customization_sdk.util.logging import logger
 from amzn_nova_customization_sdk.util.sagemaker import _get_hub_content
 
@@ -585,6 +586,50 @@ def download_templates_from_local(recipe_metadata: Dict[str, Any]) -> tuple:
     return recipe_template_dict, overrides_template_dict, image_uri
 
 
+def _build_rft_overrides_from_recipe(
+    recipe_str: str, method: TrainingMethod
+) -> Dict[str, Any]:
+    """
+    Build overrides template from recipe YAML for RFT multiturn.
+    Extracts all leaf fields and uses their values as defaults.
+
+    Args:
+        recipe_str: Recipe YAML as string
+
+    Returns:
+        Overrides template dict
+    """
+    import yaml
+
+    recipe_dict = yaml.safe_load(recipe_str)
+    overrides_template = {}
+
+    def extract_fields(obj: Any):
+        """Recursively extract all leaf fields"""
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if isinstance(value, dict):
+                    extract_fields(value)
+                else:
+                    overrides_template[key] = {
+                        "default": value,
+                        "type": None,  # using None to avoid float v/s int conflicts (especially for temperature)
+                        "required": False,
+                    }
+                    if key == "replicas":
+                        # List values from https://docs.aws.amazon.com/sagemaker/latest/dg/nova-reinforcement-fine-tuning.html#nova-rft-creating-jobs
+                        if method in [
+                            TrainingMethod.RFT_MULTITURN_FULL,
+                            TrainingMethod.RFT_MULTITURN_LORA,
+                        ]:
+                            overrides_template[key]["enum"] = [2, 4, 6, 8]
+                        else:  # for eval
+                            overrides_template[key]["enum"] = [1, 2, 4, 8, 16]
+
+    extract_fields(recipe_dict)
+    return overrides_template
+
+
 def load_recipe_templates(
     model: Model,
     method: TrainingMethod,
@@ -593,6 +638,7 @@ def load_recipe_templates(
     instance_type: str,
     data_mixing_enabled: bool = False,
     eval_task: Optional[EvaluationTask] = None,
+    rft_multiturn_infra: Optional[RFTMultiturnInfrastructure] = None,
     image_uri_override: Optional[str] = None,
 ) -> tuple:
     """
@@ -617,6 +663,78 @@ def load_recipe_templates(
     Raises:
         Exception: If recipe configuration cannot be loaded
     """
+    # Handle RFT Multiturn methods and eval
+    is_rft_multiturn_training = method in [
+        TrainingMethod.RFT_MULTITURN_LORA,
+        TrainingMethod.RFT_MULTITURN_FULL,
+    ]
+    is_rft_multiturn_eval = (
+        method == TrainingMethod.EVALUATION
+        and eval_task == EvaluationTask.RFT_MULTITURN_EVAL
+        and rft_multiturn_infra
+    )
+
+    if is_rft_multiturn_training or is_rft_multiturn_eval:
+        if not rft_multiturn_infra:
+            raise ValueError(
+                f"rft_multiturn_infra is required for RFT multiturn {'training' if is_rft_multiturn_training else 'evaluation'}"
+            )
+        if platform != Platform.SMHP:
+            raise ValueError(
+                f"RFT multiturn {'training' if is_rft_multiturn_training else 'eval'} is only supported on HyperPod (SMHP)"
+            )
+
+        # Determine base method for metadata
+        if is_rft_multiturn_training:
+            base_method = (
+                TrainingMethod.RFT_LORA
+                if method == TrainingMethod.RFT_MULTITURN_LORA
+                else TrainingMethod.RFT_FULL
+            )
+            base_task = eval_task
+        else:
+            base_method = method
+            base_task = EvaluationTask.RFT_EVAL
+
+        recipe_metadata = get_hub_recipe_metadata(
+            model=model,
+            method=base_method,
+            platform=platform,
+            region=region,
+            instance_type=instance_type,
+            task=base_task,
+            data_mixing=data_mixing_enabled,
+        )
+
+        recipe_path = rft_multiturn_infra.get_recipe_path(
+            method if is_rft_multiturn_training else eval_task
+        )
+        with open(recipe_path, "r") as f:
+            recipe_template_str = f.read()
+
+        import yaml
+
+        recipe_template = yaml.safe_load(recipe_template_str)
+        overrides_template = _build_rft_overrides_from_recipe(
+            recipe_template_str, method
+        )
+
+        # Apply RFT multiturn infrastructure overrides
+        rft_overrides = rft_multiturn_infra.get_recipe_overrides()
+        for key, value in rft_overrides.items():
+            if key in overrides_template:
+                overrides_template[key]["default"] = value
+
+        if is_rft_multiturn_training:
+            _, _, image_uri = download_templates_from_s3(
+                recipe_metadata=recipe_metadata, platform=platform, method=base_method
+            )
+        elif is_rft_multiturn_eval:
+            _, _, image_uri = download_templates_from_local(
+                recipe_metadata=recipe_metadata
+            )
+        return recipe_metadata, recipe_template, overrides_template, image_uri
+
     # Get recipe metadata
     recipe_metadata = get_hub_recipe_metadata(
         model=model,

@@ -56,6 +56,13 @@ class Model(Enum):
                 return model
         raise ValueError(f"Unknown model_type: {model_type}")
 
+    @classmethod
+    def from_model_name(cls, model_name: str) -> "Model":
+        for model in cls:
+            if model.name == model_name:
+                return model
+        raise ValueError(f"Unknown model name: {model_name}")
+
     NOVA_MICRO = (
         "nova_micro",
         Version.ONE,
@@ -93,6 +100,8 @@ class TrainingMethod(Enum):
     DPO_FULL = "dpo_full"
     RFT_LORA = "rft_lora"
     RFT_FULL = "rft_full"
+    RFT_MULTITURN_LORA = "rft_multiturn_lora"
+    RFT_MULTITURN_FULL = "rft_multiturn_full"
     SFT_LORA = "sft_lora"
     SFT_FULL = "sft_full"
     EVALUATION = "evaluation"
@@ -111,6 +120,7 @@ class DeployPlatform(Enum):
 
     BEDROCK_OD = "bedrock_od"
     BEDROCK_PT = "bedrock_pt"
+    SAGEMAKER = "sagemaker"
 
 
 # TODO: Figure out why the REPLACE options still have Bedrock saying the model endpoint is in use

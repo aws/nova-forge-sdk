@@ -20,6 +20,9 @@ This module provides MLflowMonitor class for tracking experiments and metrics.
 from dataclasses import dataclass, field
 from typing import Optional
 
+import boto3
+
+from amzn_nova_customization_sdk.util.logging import logger
 from amzn_nova_customization_sdk.util.mlflow import (
     get_default_mlflow_tracking_uri,
     validate_mlflow_overrides,
@@ -55,7 +58,7 @@ class MLflowMonitor:
         ...     model=Model.NOVA_LITE_2,
         ...     method=TrainingMethod.SFT_LORA,
         ...     infra=runtime_manager,
-        ...     data_s3_path="s3://bucket/data",
+        ...     data_s3_path="s3://bucket/data/...",
         ...     mlflow_monitor=monitor
         ... )
     """
@@ -108,3 +111,87 @@ class MLflowMonitor:
             config["mlflow_run_name"] = self.run_name
 
         return config
+
+    def get_presigned_url(
+        self,
+        session_expiration_duration_in_seconds: int = 43200,
+        expires_in_seconds: int = 300,
+    ) -> str:
+        """
+        Generate a presigned URL for accessing the MLflow tracking server UI.
+
+        This method creates a presigned URL that allows direct access to the MLflow
+        tracking server without requiring users to navigate through the AWS Console.
+
+        IMPORTANT: The presigned URL itself expires quickly (default 5 minutes) and must
+        be used immediately. Once accessed, the MLflow UI session remains active for the
+        longer session_expiration_duration_in_seconds (default 12 hours).
+
+        Args:
+            session_expiration_duration_in_seconds: Duration in seconds for which the
+                MLflow UI session is valid after accessing the presigned URL.
+                Default is 43200 seconds (12 hours). Valid range: 1800-43200 seconds.
+            expires_in_seconds: Duration in seconds for which the presigned URL itself
+                is valid. The URL must be accessed within this time.
+                Default is 300 seconds (5 minutes). Valid range: 5-300 seconds.
+
+        Returns:
+            Presigned URL string for accessing the MLflow tracking server.
+            This URL must be used within expires_in_seconds.
+
+        Raises:
+            ValueError: If tracking_uri is not set or is invalid.
+            RuntimeError: If unable to generate presigned URL.
+
+        """
+        if not self.tracking_uri:
+            raise ValueError(
+                "Cannot generate presigned URL: tracking_uri is not set. "
+                "Please provide a valid MLflow tracking server ARN."
+            )
+
+        # ARN format for app: arn:aws:sagemaker:region:account:mlflow-app/app-name
+        # ARN format for server: arn:aws:sagemaker:region:account:mlflow-tracking-server/name
+        arn_parts = self.tracking_uri.split(":")
+        region = arn_parts[3]
+        resource_part = arn_parts[5]  # e.g., "mlflow-app/app-HVRRVUWBNO5D"
+        is_mlflow_app = resource_part.startswith("mlflow-app/")
+
+        try:
+            # Create SageMaker client for the region
+            sagemaker_client = boto3.client("sagemaker", region_name=region)
+
+            if is_mlflow_app:
+                # Use CreatePresignedMlflowAppUrl for mlflow-app ARNs
+                response = sagemaker_client.create_presigned_mlflow_app_url(
+                    Arn=self.tracking_uri,
+                    ExpiresInSeconds=expires_in_seconds,
+                    SessionExpirationDurationInSeconds=session_expiration_duration_in_seconds,
+                )
+            else:
+                # Use CreatePresignedMlflowTrackingServerUrl for mlflow-tracking-server ARNs
+                # Extract the tracking server name from the ARN
+                tracking_server_name = resource_part.split("/", 1)[1]
+
+                response = sagemaker_client.create_presigned_mlflow_tracking_server_url(
+                    TrackingServerName=tracking_server_name,
+                    ExpiresInSeconds=expires_in_seconds,
+                    SessionExpirationDurationInSeconds=session_expiration_duration_in_seconds,
+                )
+
+            presigned_url = response.get("AuthorizedUrl")
+            if not presigned_url:
+                raise RuntimeError(
+                    "Failed to generate presigned URL: No URL returned from API"
+                )
+
+            logger.info(
+                f"Generated presigned MLflow URL (expires in {expires_in_seconds}s, "
+                f"session valid for {session_expiration_duration_in_seconds}s). The presigned URL can be used only once."
+            )
+            return presigned_url
+
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to generate presigned URL for MLflow tracking server: {e}"
+            )
