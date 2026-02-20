@@ -527,7 +527,7 @@ def download_templates_from_s3(
                 recipe_template = textwrap.dedent(recipe_template)
             else:
                 raise ValueError(
-                    "Unable to generate HyperPod recipe. Please raise an issue if the error persists: https://github.com/awslabs/sample-nova-customization-sdk/issues"
+                    "Unable to generate HyperPod recipe. Please raise an issue if the error persists: https://github.com/aws/nova-customization-sdk/issues"
                 )
 
             # Extract training image URI
@@ -541,11 +541,11 @@ def download_templates_from_s3(
                 image_uri = image_match.group(1).strip()
             else:
                 raise ValueError(
-                    "Unable to generate image URI. Please raise an issue if the error persists: https://github.com/awslabs/sample-nova-customization-sdk/issues"
+                    "Unable to generate image URI. Please raise an issue if the error persists: https://github.com/aws/nova-customization-sdk/issues"
                 )
         else:
             raise ValueError(
-                "Unable to generate HyperPod recipe. Please raise an issue if the error persists: https://github.com/awslabs/sample-nova-customization-sdk/issues"
+                "Unable to generate HyperPod recipe. Please raise an issue if the error persists: https://github.com/aws/nova-customization-sdk/issues"
             )
 
     if image_uri is None:

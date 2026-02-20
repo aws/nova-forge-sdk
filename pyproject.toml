@@ -25,6 +25,9 @@
        "wheel",
      ]
 
+     [tool.setuptools.package-data]
+     amzn_nova_customization_sdk = ["**/*.json", "**/*.yaml"]
+
      [tool.setuptools.dynamic]
      version = {attr = "amzn_nova_customization_sdk.__version__.VERSION"}
      dependencies = {file = "requirements.txt"}
