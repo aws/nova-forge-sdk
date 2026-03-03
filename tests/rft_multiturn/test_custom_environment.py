@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from amzn_nova_forge_sdk.rft_multiturn.custom_environment import (
+from amzn_nova_customization_sdk.rft_multiturn.custom_environment import (
     MULTI_TURN_TEMPLATE,
     PYPROJECT_TEMPLATE,
     README_TEMPLATE,

@@ -11,13 +11,13 @@ from pathlib import Path
 
 import pytest
 
-from amzn_nova_forge_sdk.dataset import (
+from amzn_nova_customization_sdk.dataset import (
     CSVDatasetLoader,
     JSONDatasetLoader,
     JSONLDatasetLoader,
 )
-from amzn_nova_forge_sdk.model.model_enums import Model, TrainingMethod
-from amzn_nova_forge_sdk.recipe.recipe_config import EvaluationTask
+from amzn_nova_customization_sdk.model.model_enums import Model, TrainingMethod
+from amzn_nova_customization_sdk.recipe.recipe_config import EvaluationTask
 
 
 class TestRFTMultiturnValidation:

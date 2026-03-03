@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, Mock, mock_open, patch
 
 import pytest
 
-from amzn_nova_forge_sdk.rft_multiturn.base_infra import EnvType, StackOutputs
-from amzn_nova_forge_sdk.rft_multiturn.local_infra import (
+from amzn_nova_customization_sdk.rft_multiturn.base_infra import EnvType, StackOutputs
+from amzn_nova_customization_sdk.rft_multiturn.local_infra import (
     LocalRFTInfrastructure,
 )
 

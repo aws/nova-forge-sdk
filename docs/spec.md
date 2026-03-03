@@ -58,7 +58,7 @@ def __init__(
 
 **Example:**
 ```python
-from amzn_nova_forge_sdk import *
+from amzn_nova_customization_sdk import *
 
 infra = SMTJRuntimeManager(instance_type="ml.p5.48xlarge", instance_count=2)
 
@@ -265,7 +265,7 @@ def evaluate(
 **Example:**
 
 ```python
-from amzn_nova_forge_sdk.recipe import *
+from amzn_nova_customization_sdk.recipe import *
 
 # General eval task (with overrides)
 eval_result = customizer.evaluate(
@@ -344,7 +344,7 @@ def deploy(
 
 **Example:**
 ```python
-from amzn_nova_forge_sdk.model import *
+from amzn_nova_customization_sdk.model import *
 
 bedrock_deployment = customizer.deploy(
  model_artifact_path="s3://escrow-bucket/my-model-artifacts/",
@@ -376,7 +376,7 @@ You can also use the following method to create a Bedrock execution role with sc
  
  
 ```python
-from amzn_nova_forge_sdk.util.bedrock import create_bedrock_execution_role
+from amzn_nova_customization_sdk.util.bedrock import create_bedrock_execution_role
  
 iam_client = boto3.client("iam")
  
@@ -550,7 +550,7 @@ def __init__(
 
 **Example:**
 ```python
-from amzn_nova_forge_sdk.manager import *
+from amzn_nova_customization_sdk.manager import *
 infra = SMTJRuntimeManager(
  instance_type="ml.p5.48xlarge",
  instance_count=2
@@ -613,7 +613,7 @@ def __init__(
 
 **Example:**
 ```python
-from amzn_nova_forge_sdk.manager import *
+from amzn_nova_customization_sdk.manager import *
 infra = SMHPRuntimeManager(
  instance_type="ml.p5.48xlarge",
  instance_count=4,
@@ -720,7 +720,7 @@ def load(
 
 **Example:**
 ```python
-from amzn_nova_forge_sdk.dataset import *
+from amzn_nova_customization_sdk.dataset import *
 loader = JSONLDatasetLoader()
 loader.load("s3://my-bucket/data/training.jsonl")
 ```
@@ -749,7 +749,7 @@ def load(
 
 **Example:**
 ```python
-from amzn_nova_forge_sdk.dataset import *
+from amzn_nova_customization_sdk.dataset import *
 loader = JSONDatasetLoader()
 loader.load("data/training.json")
 ```
@@ -778,7 +778,7 @@ def load(
 
 **Example:**
 ```python
-from amzn_nova_forge_sdk.dataset import *
+from amzn_nova_customization_sdk.dataset import *
 loader = CSVDatasetLoader(question="user_query", answer="bot_response")
 loader.load("data/conversations.csv")
 ```
@@ -1185,7 +1185,7 @@ def create_bedrock_execution_role(
 **Example:**
 ```python
 import boto3
-from amzn_nova_forge_sdk.iam.iam_role_creator import create_bedrock_execution_role
+from amzn_nova_customization_sdk.iam.iam_role_creator import create_bedrock_execution_role
 
 iam_client = boto3.client("iam")
 create_bedrock_execution_role(iam_client, "role-name", "bedrock_resource", "s3_resource")
@@ -1224,7 +1224,7 @@ def create_sagemaker_execution_role(
 **Example:**
 ```python
 import boto3
-from amzn_nova_forge_sdk.iam.iam_role_creator import create_sagemaker_execution_role
+from amzn_nova_customization_sdk.iam.iam_role_creator import create_sagemaker_execution_role
 
 iam_client = boto3.client("iam")
 create_sagemaker_execution_role(
@@ -1284,8 +1284,8 @@ def verify_reward_function(
 
 **Example**
 ```python
-from amzn_nova_forge_sdk import verify_reward_function
-from amzn_nova_forge_sdk.model.model_enums import Platform
+from amzn_nova_customization_sdk import verify_reward_function
+from amzn_nova_customization_sdk.model.model_enums import Platform
 
 # Test with Lambda ARN (platform required for Lambda ARNs)
 result = verify_reward_function(
@@ -1395,7 +1395,7 @@ def __init__(
 
 **Example:**
 ```python
-from amzn_nova_forge_sdk.monitor import *
+from amzn_nova_customization_sdk.monitor import *
 
 # With explicit tracking URI
 monitor = MLflowMonitor(
@@ -1635,7 +1635,7 @@ def create_rft_execution_role(
 
 **Example:**
 ```python
-from amzn_nova_forge_sdk import create_rft_execution_role
+from amzn_nova_customization_sdk import create_rft_execution_role
 
 # Create role with default name
 role_arn = create_rft_execution_role(region="us-east-1")
@@ -1665,7 +1665,7 @@ def list_rft_stacks(
 
 **Example:**
 ```python
-from amzn_nova_forge_sdk import list_rft_stacks
+from amzn_nova_customization_sdk import list_rft_stacks
 
 # List only Nova SDK stacks
 nova_stacks = list_rft_stacks(region="us-east-1")
@@ -1711,7 +1711,7 @@ def __init__(
 
 **Example:**
 ```python
-from amzn_nova_forge_sdk import RFTMultiturnInfrastructure, CustomEnvironment, VFEnvId
+from amzn_nova_customization_sdk import RFTMultiturnInfrastructure, CustomEnvironment, VFEnvId
 
 # Option 1: LOCAL with built-in environment
 rft_infra = RFTMultiturnInfrastructure(

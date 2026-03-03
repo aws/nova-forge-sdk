@@ -9,22 +9,22 @@ from unittest.mock import MagicMock, PropertyMock, create_autospec, patch
 import boto3
 from botocore.exceptions import ClientError
 
-from amzn_nova_forge_sdk.manager.runtime_manager import (
+from amzn_nova_customization_sdk.manager.runtime_manager import (
     SMHPRuntimeManager,
     SMTJRuntimeManager,
 )
-from amzn_nova_forge_sdk.model.model_config import ModelArtifacts
-from amzn_nova_forge_sdk.model.model_enums import (
+from amzn_nova_customization_sdk.model.model_config import ModelArtifacts
+from amzn_nova_customization_sdk.model.model_enums import (
     DeploymentMode,
     DeployPlatform,
     Model,
     Platform,
     TrainingMethod,
 )
-from amzn_nova_forge_sdk.model.nova_model_customizer import (
+from amzn_nova_customization_sdk.model.nova_model_customizer import (
     NovaModelCustomizer,
 )
-from amzn_nova_forge_sdk.model.nova_model_customizer_util import (
+from amzn_nova_customization_sdk.model.nova_model_customizer_util import (
     collect_all_parameters,
     generate_job_hash,
     get_recipe_directory,
@@ -34,23 +34,23 @@ from amzn_nova_forge_sdk.model.nova_model_customizer_util import (
     persist_result,
     should_persist_results,
 )
-from amzn_nova_forge_sdk.model.result import (
+from amzn_nova_customization_sdk.model.result import (
     EvaluationResult,
     SMTJBatchInferenceResult,
     SMTJEvaluationResult,
 )
-from amzn_nova_forge_sdk.model.result.job_result import JobStatus
-from amzn_nova_forge_sdk.model.result.training_result import (
+from amzn_nova_customization_sdk.model.result.job_result import JobStatus
+from amzn_nova_customization_sdk.model.result.training_result import (
     SMTJTrainingResult,
     TrainingResult,
 )
-from amzn_nova_forge_sdk.recipe.recipe_config import EvaluationTask
-from amzn_nova_forge_sdk.util.recipe import RecipePath
-from amzn_nova_forge_sdk.util.sagemaker import (
+from amzn_nova_customization_sdk.recipe.recipe_config import EvaluationTask
+from amzn_nova_customization_sdk.util.recipe import RecipePath
+from amzn_nova_customization_sdk.util.sagemaker import (
     DEFAULT_CONTEXT_LENGTH,
     DEFAULT_MAX_CONCURRENCY,
 )
-from amzn_nova_forge_sdk.validation.validator import (
+from amzn_nova_customization_sdk.validation.validator import (
     get_rft_verification_samples,
     should_verify_rft_lambda,
     verify_rft_lambda,
@@ -82,10 +82,10 @@ class TestNovaModelCustomizer(unittest.TestCase):
             patch("boto3.client") as mock_client,
             patch("sagemaker.get_execution_role") as mock_get_execution_role,
             patch(
-                "amzn_nova_forge_sdk.util.recipe.get_hub_recipe_metadata"
+                "amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata"
             ) as mock_get_hub_metadata,
             patch(
-                "amzn_nova_forge_sdk.util.recipe.download_templates_from_s3"
+                "amzn_nova_customization_sdk.util.recipe.download_templates_from_s3"
             ) as mock_download_s3,
         ):
             mock_get_execution_role.return_value = (
@@ -165,10 +165,10 @@ class TestNovaModelCustomizer(unittest.TestCase):
             with (
                 patch("boto3.client") as mock_client,
                 patch(
-                    "amzn_nova_forge_sdk.util.recipe.get_hub_recipe_metadata"
+                    "amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata"
                 ) as mock_get_hub_metadata,
                 patch(
-                    "amzn_nova_forge_sdk.util.recipe.download_templates_from_s3"
+                    "amzn_nova_customization_sdk.util.recipe.download_templates_from_s3"
                 ) as mock_download_s3,
             ):
                 mock_get_hub_metadata.return_value = {
@@ -208,10 +208,10 @@ class TestNovaModelCustomizer(unittest.TestCase):
         with (
             patch("boto3.client") as mock_client,
             patch(
-                "amzn_nova_forge_sdk.util.recipe.get_hub_recipe_metadata"
+                "amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata"
             ) as mock_get_hub_metadata,
             patch(
-                "amzn_nova_forge_sdk.util.recipe.download_templates_from_s3"
+                "amzn_nova_customization_sdk.util.recipe.download_templates_from_s3"
             ) as mock_download_s3,
         ):
             mock_get_hub_metadata.return_value = {
@@ -271,10 +271,10 @@ class TestNovaModelCustomizer(unittest.TestCase):
             with (
                 patch("boto3.client") as mock_client,
                 patch(
-                    "amzn_nova_forge_sdk.util.recipe.get_hub_recipe_metadata"
+                    "amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata"
                 ) as mock_get_hub_metadata,
                 patch(
-                    "amzn_nova_forge_sdk.util.recipe.download_templates_from_s3"
+                    "amzn_nova_customization_sdk.util.recipe.download_templates_from_s3"
                 ) as mock_download_s3,
             ):
                 mock_get_hub_metadata.return_value = {
@@ -307,8 +307,8 @@ class TestNovaModelCustomizer(unittest.TestCase):
 
                 self.assertEqual(customizer.method, method)
 
-    @patch("amzn_nova_forge_sdk.util.recipe.download_templates_from_s3")
-    @patch("amzn_nova_forge_sdk.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
+    @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
     @patch("boto3.client")
     def test_auto_generate_output_path_bucket_exists(
         self, mock_client, mock_get_hub_metadata, mock_download_s3
@@ -348,8 +348,8 @@ class TestNovaModelCustomizer(unittest.TestCase):
         )
         mock_s3.create_bucket.assert_not_called()
 
-    @patch("amzn_nova_forge_sdk.util.recipe.download_templates_from_s3")
-    @patch("amzn_nova_forge_sdk.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
+    @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
     @patch("boto3.client")
     def test_auto_generate_output_path_bucket_creation_fails(
         self, mock_client, mock_get_hub_metadata, mock_download_s3
@@ -388,8 +388,8 @@ class TestNovaModelCustomizer(unittest.TestCase):
         self.assertIn("Failed to create output bucket", str(context.exception))
         self.assertIn("Access Denied", str(context.exception))
 
-    @patch("amzn_nova_forge_sdk.util.recipe.download_templates_from_s3")
-    @patch("amzn_nova_forge_sdk.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
+    @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
     @patch("boto3.client")
     def test_explicit_output_path_bucket_exists(
         self, mock_client, mock_get_hub_metadata, mock_download_s3
@@ -428,8 +428,8 @@ class TestNovaModelCustomizer(unittest.TestCase):
         mock_s3.head_bucket.assert_called_once()
         mock_s3.create_bucket.assert_not_called()
 
-    @patch("amzn_nova_forge_sdk.util.recipe.download_templates_from_s3")
-    @patch("amzn_nova_forge_sdk.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
+    @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
     @patch("boto3.client")
     def test_explicit_output_path_bucket_does_not_exist(
         self, mock_client, mock_get_hub_metadata, mock_download_s3
@@ -490,10 +490,10 @@ class TestNovaModelCustomizer(unittest.TestCase):
         with (
             patch("boto3.client") as mock_client,
             patch(
-                "amzn_nova_forge_sdk.util.recipe.get_hub_recipe_metadata"
+                "amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata"
             ) as mock_get_hub_metadata,
             patch(
-                "amzn_nova_forge_sdk.util.recipe.download_templates_from_s3"
+                "amzn_nova_customization_sdk.util.recipe.download_templates_from_s3"
             ) as mock_download_s3,
         ):
             mock_get_hub_metadata.return_value = {
@@ -534,10 +534,10 @@ class TestNovaModelCustomizer(unittest.TestCase):
         with (
             patch("boto3.client") as mock_client,
             patch(
-                "amzn_nova_forge_sdk.util.recipe.get_hub_recipe_metadata"
+                "amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata"
             ) as mock_get_hub_metadata,
             patch(
-                "amzn_nova_forge_sdk.util.recipe.download_templates_from_s3"
+                "amzn_nova_customization_sdk.util.recipe.download_templates_from_s3"
             ) as mock_download_s3,
         ):
             mock_get_hub_metadata.return_value = {
@@ -574,7 +574,9 @@ class TestNovaModelCustomizer(unittest.TestCase):
 
 
 class TestTrain(TestNovaModelCustomizer):
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     @patch("uuid.uuid4")
     @patch("boto3.client")
     def test_train_job_name_truncation(
@@ -605,7 +607,9 @@ class TestTrain(TestNovaModelCustomizer):
         job_config = call_args.kwargs["job_config"]
         self.assertLessEqual(len(job_config.job_name), 63)
 
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     @patch("uuid.uuid4")
     @patch("boto3.client")
     def test_train_sft_basic_success(
@@ -652,7 +656,9 @@ class TestTrain(TestNovaModelCustomizer):
         self.assertEqual(job_config.output_s3_path, self.output_s3_path)
         self.assertEqual(job_config.recipe_path, "mock_recipe.yaml")
 
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     @patch("uuid.uuid4")
     @patch("boto3.client")
     def test_train_rft_basic_success(
@@ -703,7 +709,9 @@ class TestTrain(TestNovaModelCustomizer):
         self.assertEqual(job_config.output_s3_path, self.output_s3_path)
         self.assertEqual(job_config.recipe_path, "mock_recipe.yaml")
 
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     def test_train_runtime_manager_failure(self, mock_build_and_validate):
         mock_build_and_validate.return_value = (
             "mock_recipe.yaml",
@@ -718,7 +726,9 @@ class TestTrain(TestNovaModelCustomizer):
 
         self.assertEqual(str(context.exception), "Runtime failure")
 
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     def test_train_recipe_build_failure(self, mock_build_and_validate):
         mock_build_and_validate.side_effect = Exception("Recipe build failed")
 
@@ -727,7 +737,9 @@ class TestTrain(TestNovaModelCustomizer):
 
         self.assertIn("Recipe build failed", str(context.exception))
 
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     def test_train_dry_run(self, mock_build_and_validate):
         mock_build_and_validate.return_value = (
             "mock_recipe.yaml",
@@ -741,7 +753,9 @@ class TestTrain(TestNovaModelCustomizer):
         self.assertIsNone(result)
         self.mock_runtime_manager.execute.assert_not_called()
 
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     @patch("uuid.uuid4")
     @patch("boto3.client")
     def test_train_smhp_basic_success(
@@ -769,10 +783,10 @@ class TestTrain(TestNovaModelCustomizer):
         with (
             patch("boto3.client") as mock_client,
             patch(
-                "amzn_nova_forge_sdk.util.recipe.get_hub_recipe_metadata"
+                "amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata"
             ) as mock_get_hub_metadata,
             patch(
-                "amzn_nova_forge_sdk.util.recipe.download_templates_from_s3"
+                "amzn_nova_customization_sdk.util.recipe.download_templates_from_s3"
             ) as mock_download_s3,
         ):
             mock_get_hub_metadata.return_value = {
@@ -810,7 +824,7 @@ class TestTrain(TestNovaModelCustomizer):
         self.assertEqual(result.job_id, expected_job_id)
         self.assertIsInstance(result.started_time, datetime)
 
-        from amzn_nova_forge_sdk.model.result import SMHPTrainingResult
+        from amzn_nova_customization_sdk.model.result import SMHPTrainingResult
 
         self.assertIsInstance(result, SMHPTrainingResult)
         self.assertEqual(result.cluster_name, "test-cluster")
@@ -826,7 +840,9 @@ class TestTrain(TestNovaModelCustomizer):
 
 class TestEvaluate(TestNovaModelCustomizer):
     @patch("boto3.client")
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     @patch("uuid.uuid4")
     def test_evaluate_basic_success(
         self, mock_uuid, mock_build_and_validate, mock_boto_client
@@ -865,7 +881,9 @@ class TestEvaluate(TestNovaModelCustomizer):
         self.assertEqual(job_config.input_s3_data_type, "S3Prefix")
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     def test_evaluate_runtime_manager_failure(
         self, mock_build_and_validate, mock_boto_client
     ):
@@ -890,7 +908,9 @@ class TestEvaluate(TestNovaModelCustomizer):
         self.assertEqual(str(context.exception), "Eval runtime failure")
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     def test_evaluate_dry_run_returns_none(
         self, mock_build_and_validate, mock_boto_client
     ):
@@ -913,7 +933,9 @@ class TestEvaluate(TestNovaModelCustomizer):
         self.mock_runtime_manager.execute.assert_not_called()
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     @patch("uuid.uuid4")
     def test_evaluate_with_processor_config(
         self, mock_uuid, mock_build_and_validate, mock_boto_client
@@ -950,10 +972,12 @@ class TestEvaluate(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.__init__",
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.__init__",
         return_value=None,
     )
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     @patch("uuid.uuid4")
     def test_evaluate_does_not_use_customizer_data_for_builtin_tasks(
         self, mock_uuid, mock_build_and_validate, mock_recipe_init, mock_boto_client
@@ -986,11 +1010,13 @@ class TestEvaluate(TestNovaModelCustomizer):
         self.assertIsNone(init_call_kwargs["data_s3_path"])
 
     @patch(
-        "amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.__init__",
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.__init__",
         return_value=None,
     )
     @patch("boto3.client")
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     @patch("uuid.uuid4")
     def test_evaluate_uses_customizer_data_for_byod_tasks(
         self, mock_uuid, mock_build_and_validate, mock_boto_client, mock_recipe_init
@@ -1024,7 +1050,9 @@ class TestEvaluate(TestNovaModelCustomizer):
         self.assertEqual(init_call_kwargs["data_s3_path"], training_data_path)
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     @patch("uuid.uuid4")
     def test_evaluate_smhp_basic_success(
         self, mock_uuid, mock_build_and_validate, mock_boto_client
@@ -1063,10 +1091,10 @@ class TestEvaluate(TestNovaModelCustomizer):
 
             with (
                 patch(
-                    "amzn_nova_forge_sdk.util.recipe.get_hub_recipe_metadata"
+                    "amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata"
                 ) as mock_get_hub_metadata,
                 patch(
-                    "amzn_nova_forge_sdk.util.recipe.download_templates_from_s3"
+                    "amzn_nova_customization_sdk.util.recipe.download_templates_from_s3"
                 ) as mock_download_s3,
             ):
                 mock_get_hub_metadata.return_value = {
@@ -1094,7 +1122,7 @@ class TestEvaluate(TestNovaModelCustomizer):
         self.assertEqual(result.eval_task, EvaluationTask.MMLU)
         self.assertIsInstance(result.started_time, datetime)
 
-        from amzn_nova_forge_sdk.model.result import SMHPEvaluationResult
+        from amzn_nova_customization_sdk.model.result import SMHPEvaluationResult
 
         self.assertIsInstance(result, SMHPEvaluationResult)
         self.assertEqual(result.cluster_name, "test-eval-cluster")
@@ -1111,9 +1139,11 @@ class TestEvaluate(TestNovaModelCustomizer):
 class TestDeploy(TestNovaModelCustomizer):
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.create_bedrock_execution_role"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_bedrock_execution_role"
     )
-    @patch("amzn_nova_forge_sdk.model.nova_model_customizer.monitor_model_create")
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.monitor_model_create"
+    )
     def test_use_deployment_name_if_user_provided(
         self, mock_monitor, mock_bedrock_role_creation, mock_boto_client
     ):
@@ -1138,7 +1168,7 @@ class TestDeploy(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.create_bedrock_execution_role"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_bedrock_execution_role"
     )
     def test_bedrock_role_already_created(
         self, mock_bedrock_role_creation, mock_boto_client
@@ -1165,9 +1195,11 @@ class TestDeploy(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.create_bedrock_execution_role"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_bedrock_execution_role"
     )
-    @patch("amzn_nova_forge_sdk.model.nova_model_customizer.monitor_model_create")
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.monitor_model_create"
+    )
     def test_deploy_bedrock_od_success(
         self, mock_monitor, mock_bedrock_role_creation, mock_boto_client
     ):
@@ -1194,9 +1226,11 @@ class TestDeploy(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.create_bedrock_execution_role"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_bedrock_execution_role"
     )
-    @patch("amzn_nova_forge_sdk.model.nova_model_customizer.monitor_model_create")
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.monitor_model_create"
+    )
     def test_deploy_bedrock_pt_success(
         self, mock_monitor, mock_bedrock_role_creation, mock_boto_client
     ):
@@ -1225,10 +1259,10 @@ class TestDeploy(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.create_sagemaker_execution_role"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_sagemaker_execution_role"
     )
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.create_model_and_endpoint_config"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_model_and_endpoint_config"
     )
     def test_deploy_sagemaker_success(
         self, mock_create, mock_sagemaker_role_creation, mock_boto_client
@@ -1251,13 +1285,13 @@ class TestDeploy(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.create_sagemaker_execution_role"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_sagemaker_execution_role"
     )
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.create_model_and_endpoint_config"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_model_and_endpoint_config"
     )
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
     )
     def test_deploy_sagemaker_with_job_success(
         self,
@@ -1305,9 +1339,11 @@ class TestDeploy(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.create_bedrock_execution_role"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_bedrock_execution_role"
     )
-    @patch("amzn_nova_forge_sdk.model.nova_model_customizer.monitor_model_create")
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.monitor_model_create"
+    )
     def test_create_custom_model_failure(
         self, mock_monitor, mock_bedrock_role_creation, mock_boto_client
     ):
@@ -1335,10 +1371,10 @@ class TestDeploy(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.create_sagemaker_execution_role"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_sagemaker_execution_role"
     )
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.create_model_and_endpoint_config"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_model_and_endpoint_config"
     )
     def test_deploy_sagemaker_failure(
         self, mock_create, mock_sagemaker_role_creation, mock_boto_client
@@ -1358,9 +1394,11 @@ class TestDeploy(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.create_bedrock_execution_role"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_bedrock_execution_role"
     )
-    @patch("amzn_nova_forge_sdk.model.nova_model_customizer.monitor_model_create")
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.monitor_model_create"
+    )
     def test_auto_generate_deployment_name_if_not_provided(
         self, mock_monitor, mock_bedrock_role_creation, mock_boto_client
     ):
@@ -1387,10 +1425,14 @@ class TestDeploy(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.create_bedrock_execution_role"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_bedrock_execution_role"
     )
-    @patch("amzn_nova_forge_sdk.model.nova_model_customizer.monitor_model_create")
-    @patch("amzn_nova_forge_sdk.model.nova_model_customizer.check_existing_deployment")
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.monitor_model_create"
+    )
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.check_existing_deployment"
+    )
     def test_deploy_fails_when_endpoint_exists_and_fail_if_exists_mode(
         self,
         mock_check_existing,
@@ -1425,15 +1467,19 @@ class TestDeploy(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.create_bedrock_execution_role"
-    )
-    @patch("amzn_nova_forge_sdk.model.nova_model_customizer.monitor_model_create")
-    @patch("amzn_nova_forge_sdk.model.nova_model_customizer.check_existing_deployment")
-    @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.update_provisioned_throughput_model"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_bedrock_execution_role"
     )
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.Validator._validate_calling_role_permissions"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.monitor_model_create"
+    )
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.check_existing_deployment"
+    )
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.update_provisioned_throughput_model"
+    )
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.Validator._validate_calling_role_permissions"
     )
     def test_deploy_pt_update_success_uses_existing_arn(
         self,
@@ -1459,10 +1505,10 @@ class TestDeploy(TestNovaModelCustomizer):
 
         with (
             patch(
-                "amzn_nova_forge_sdk.util.recipe.get_hub_recipe_metadata"
+                "amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata"
             ) as mock_get_hub_metadata_2,
             patch(
-                "amzn_nova_forge_sdk.util.recipe.download_templates_from_s3"
+                "amzn_nova_customization_sdk.util.recipe.download_templates_from_s3"
             ) as mock_download_s3_2,
         ):
             mock_get_hub_metadata_2.return_value = {
@@ -1499,10 +1545,14 @@ class TestDeploy(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.create_bedrock_execution_role"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_bedrock_execution_role"
     )
-    @patch("amzn_nova_forge_sdk.model.nova_model_customizer.monitor_model_create")
-    @patch("amzn_nova_forge_sdk.model.nova_model_customizer.check_existing_deployment")
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.monitor_model_create"
+    )
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.check_existing_deployment"
+    )
     def test_deploy_succeeds_when_no_existing_endpoint(
         self,
         mock_check_existing,
@@ -1544,11 +1594,13 @@ class TestDeploy(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.create_bedrock_execution_role"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_bedrock_execution_role"
     )
-    @patch("amzn_nova_forge_sdk.model.nova_model_customizer.monitor_model_create")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer_util.extract_checkpoint_path_from_job_output"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.monitor_model_create"
+    )
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer_util.extract_checkpoint_path_from_job_output"
     )
     def test_deploy_with_job_result(
         self, mock_extract, mock_monitor, mock_bedrock_role_creation, mock_boto_client
@@ -1580,11 +1632,13 @@ class TestDeploy(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.create_bedrock_execution_role"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.create_bedrock_execution_role"
     )
-    @patch("amzn_nova_forge_sdk.model.nova_model_customizer.monitor_model_create")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer_util.extract_checkpoint_path_from_job_output"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.monitor_model_create"
+    )
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer_util.extract_checkpoint_path_from_job_output"
     )
     def test_deploy_with_last_job_id(
         self, mock_extract, mock_monitor, mock_bedrock_role_creation, mock_boto_client
@@ -1620,7 +1674,7 @@ class TestDeploy(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer_util.extract_checkpoint_path_from_job_output"
+        "amzn_nova_customization_sdk.model.nova_model_customizer_util.extract_checkpoint_path_from_job_output"
     )
     def test_deploy_extraction_fails(self, mock_extract, mock_boto_client):
         """Test deploy fails when checkpoint extraction fails"""
@@ -1638,7 +1692,9 @@ class TestDeploy(TestNovaModelCustomizer):
 
 class TestBatchInference(TestNovaModelCustomizer):
     @patch("boto3.client")
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     @patch("uuid.uuid4")
     def test_batch_inference_basic_success(
         self, mock_uuid, mock_build_and_validate, mock_boto_client
@@ -1677,7 +1733,9 @@ class TestBatchInference(TestNovaModelCustomizer):
         self.assertEqual(job_config.input_s3_data_type, "S3Prefix")
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     def test_batch_inference_runtime_manager_failure(
         self, mock_build_and_validate, mock_boto_client
     ):
@@ -1702,7 +1760,9 @@ class TestBatchInference(TestNovaModelCustomizer):
         self.assertEqual(str(context.exception), "Inference runtime failure")
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     def test_batch_inference_dry_run_returns_none(
         self, mock_build_and_validate, mock_boto_client
     ):
@@ -1754,7 +1814,7 @@ class TestPlatformValidation(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
     )
     def test_evaluate_platform_mismatch_smhp_checkpoint_smtj_execution(
         self, mock_resolve, mock_boto_client
@@ -1775,7 +1835,7 @@ class TestPlatformValidation(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
     )
     def test_evaluate_platform_mismatch_smtj_checkpoint_smhp_execution(
         self, mock_resolve, mock_boto_client
@@ -1802,9 +1862,11 @@ class TestPlatformValidation(TestNovaModelCustomizer):
         self.assertIn("SMHP", error_msg)
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
     )
     @patch("uuid.uuid4")
     def test_evaluate_platform_match_smtj(
@@ -1831,9 +1893,11 @@ class TestPlatformValidation(TestNovaModelCustomizer):
         self.mock_runtime_manager.execute.assert_called_once()
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
     )
     @patch("uuid.uuid4")
     def test_evaluate_platform_match_smhp(
@@ -1866,11 +1930,13 @@ class TestPlatformValidation(TestNovaModelCustomizer):
         self.assertIsNotNone(result)
         mock_smhp_infra.execute.assert_called_once()
 
-    @patch("amzn_nova_forge_sdk.util.logging.logger")
+    @patch("amzn_nova_customization_sdk.util.logging.logger")
     @patch("boto3.client")
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
     )
     @patch("uuid.uuid4")
     def test_evaluate_unknown_checkpoint_platform_logs_warning(
@@ -1901,7 +1967,7 @@ class TestPlatformValidation(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
     )
     def test_batch_inference_platform_mismatch_smhp_to_smtj(
         self, mock_resolve, mock_boto_client
@@ -1924,7 +1990,7 @@ class TestPlatformValidation(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
+        "amzn_nova_customization_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
     )
     def test_batch_inference_platform_mismatch_smtj_to_smhp(
         self, mock_resolve, mock_boto_client
@@ -1953,9 +2019,11 @@ class TestPlatformValidation(TestNovaModelCustomizer):
         self.assertIn("SMHP", error_msg)
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
     )
     @patch("uuid.uuid4")
     def test_batch_inference_platform_match_smtj(
@@ -1984,9 +2052,11 @@ class TestPlatformValidation(TestNovaModelCustomizer):
         self.mock_runtime_manager.execute.assert_called_once()
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
     )
     @patch("uuid.uuid4")
     def test_batch_inference_platform_match_smhp(
@@ -2021,11 +2091,13 @@ class TestPlatformValidation(TestNovaModelCustomizer):
         self.assertIsNotNone(result)
         mock_smhp_infra.execute.assert_called_once()
 
-    @patch("amzn_nova_forge_sdk.util.logging.logger")
+    @patch("amzn_nova_customization_sdk.util.logging.logger")
     @patch("boto3.client")
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
     @patch(
-        "amzn_nova_forge_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.resolve_model_checkpoint_path"
     )
     @patch("uuid.uuid4")
     def test_batch_inference_unknown_checkpoint_platform_logs_warning(
@@ -2062,7 +2134,9 @@ class TestPlatformValidation(TestNovaModelCustomizer):
             self.customizer.invoke_inference({"messages": []})
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge_sdk.model.nova_model_customizer.invoke_sagemaker_inference")
+    @patch(
+        "amzn_nova_customization_sdk.model.nova_model_customizer.invoke_sagemaker_inference"
+    )
     def test_invoke_inference_sagemaker_endpoint(
         self, mock_invoke_sagemaker, mock_boto3_client
     ):
@@ -2090,7 +2164,7 @@ class TestPlatformValidation(TestNovaModelCustomizer):
         assert result == "Inference Result"
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge_sdk.model.nova_model_customizer.invoke_model")
+    @patch("amzn_nova_customization_sdk.model.nova_model_customizer.invoke_model")
     def test_invoke_inference_bedrock_endpoint(
         self, mock_invoke_model, mock_boto3_client
     ):
@@ -2136,10 +2210,10 @@ class TestLambdaVerification(unittest.TestCase):
             patch("boto3.client") as mock_client,
             patch("sagemaker.get_execution_role") as mock_get_execution_role,
             patch(
-                "amzn_nova_forge_sdk.util.recipe.get_hub_recipe_metadata"
+                "amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata"
             ) as mock_get_hub_metadata,
             patch(
-                "amzn_nova_forge_sdk.util.recipe.download_templates_from_s3"
+                "amzn_nova_customization_sdk.util.recipe.download_templates_from_s3"
             ) as mock_download_s3,
         ):
             mock_get_execution_role.return_value = (
@@ -3124,7 +3198,9 @@ class TestJobCachingAndPersistence(unittest.TestCase):
             loaded_data = json.load(f)
         self.assertIn("_job_cache_hash", loaded_data)
 
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     @patch("uuid.uuid4")
     @patch("boto3.client")
     def test_train_with_job_caching_existing_result(
@@ -3179,7 +3255,9 @@ class TestJobCachingAndPersistence(unittest.TestCase):
         self.assertEqual(result.job_id, "existing-job-123")
         self.assertEqual(result.job_id, "existing-job-123")
 
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     @patch("uuid.uuid4")
     @patch("boto3.client")
     def test_train_with_job_caching_no_existing_result(
@@ -3223,7 +3301,9 @@ class TestJobCachingAndPersistence(unittest.TestCase):
         self.assertEqual(data["job_id"], expected_job_id)
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     @patch("uuid.uuid4")
     def test_evaluate_with_job_caching_existing_result(
         self, mock_uuid, mock_build, mock_boto_client
@@ -3281,7 +3361,9 @@ class TestJobCachingAndPersistence(unittest.TestCase):
             self.assertEqual(result.job_id, "existing-eval-123")
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch(
+        "amzn_nova_customization_sdk.recipe.recipe_builder.RecipeBuilder.build_and_validate"
+    )
     @patch("uuid.uuid4")
     def test_batch_inference_with_job_caching_existing_result(
         self, mock_uuid, mock_build, mock_boto_client

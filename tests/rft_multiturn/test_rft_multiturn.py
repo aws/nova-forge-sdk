@@ -4,13 +4,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from amzn_nova_forge_sdk.rft_multiturn import (
+from amzn_nova_customization_sdk.rft_multiturn import (
     EnvType,
     RFTMultiturnInfrastructure,
     VFEnvId,
     list_rft_stacks,
 )
-from amzn_nova_forge_sdk.rft_multiturn.custom_environment import (
+from amzn_nova_customization_sdk.rft_multiturn.custom_environment import (
     CustomEnvironment,
 )
 
@@ -42,7 +42,7 @@ class TestRFTMultiturnInfrastructure:
         """Test platform detection returns 'local' for None infrastructure_arn."""
         with patch("boto3.client"):
             with patch(
-                "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+                "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
             ):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test",
@@ -55,7 +55,7 @@ class TestRFTMultiturnInfrastructure:
         """Test platform detection returns 'ec2' for instance ID."""
         with patch("boto3.client"):
             with patch(
-                "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.EC2RFTInfrastructure"
+                "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.EC2RFTInfrastructure"
             ):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test",
@@ -69,7 +69,7 @@ class TestRFTMultiturnInfrastructure:
         """Test platform detection returns 'ec2' for EC2 ARN."""
         with patch("boto3.client"):
             with patch(
-                "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.EC2RFTInfrastructure"
+                "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.EC2RFTInfrastructure"
             ):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test",
@@ -83,7 +83,7 @@ class TestRFTMultiturnInfrastructure:
         """Test platform detection returns 'ecs' for ECS ARN."""
         with patch("boto3.client"):
             with patch(
-                "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.ECSRFTInfrastructure"
+                "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.ECSRFTInfrastructure"
             ):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test",
@@ -96,7 +96,7 @@ class TestRFTMultiturnInfrastructure:
         """Test initialization with VFEnvId enum."""
         with patch("boto3.client"):
             with patch(
-                "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+                "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
             ):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test",
@@ -110,7 +110,7 @@ class TestRFTMultiturnInfrastructure:
         """Test initialization with VFEnvId as string."""
         with patch("boto3.client"):
             with patch(
-                "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+                "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
             ):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test",
@@ -124,7 +124,7 @@ class TestRFTMultiturnInfrastructure:
         custom_env = CustomEnvironment(env_id="my-env", local_path="/path/to/env")
         with patch("boto3.client"):
             with patch(
-                "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+                "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
             ):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test", custom_env=custom_env, python_venv_name="venv"
@@ -178,7 +178,7 @@ class TestRFTMultiturnInfrastructure:
         """Test ECS platform defaults python_venv_name."""
         with patch("boto3.client"):
             with patch(
-                "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.ECSRFTInfrastructure"
+                "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.ECSRFTInfrastructure"
             ):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test",
@@ -225,7 +225,7 @@ class TestRFTMultiturnInfrastructure:
         """Test that stack_name gets NovaForgeSDK suffix."""
         with patch("boto3.client"):
             with patch(
-                "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+                "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
             ) as mock_infra:
                 mock_instance = MagicMock()
                 mock_instance.stack_name = "test-NovaForgeSDK"
@@ -242,7 +242,7 @@ class TestRFTMultiturnInfrastructure:
         """Test that region defaults to us-east-1."""
         with patch("boto3.client"):
             with patch(
-                "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+                "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
             ):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test",
@@ -255,7 +255,7 @@ class TestRFTMultiturnInfrastructure:
         """Test that region can be customized."""
         with patch("boto3.client"):
             with patch(
-                "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+                "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
             ):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test",
@@ -358,7 +358,7 @@ class TestRFTMultiturnDumpLoad:
         mock_boto_client.return_value = MagicMock()
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.stack_name = "test-stack-NovaForgeSDK"
@@ -400,7 +400,7 @@ class TestRFTMultiturnDumpLoad:
         mock_boto_client.return_value = MagicMock()
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.stack_name = "test-stack-NovaForgeSDK"
@@ -427,7 +427,7 @@ class TestRFTMultiturnDumpLoad:
         mock_boto_client.return_value = MagicMock()
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.stack_name = "test-stack-NovaForgeSDK"
@@ -456,7 +456,7 @@ class TestRFTMultiturnDumpLoad:
         mock_boto_client.return_value = MagicMock()
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.stack_name = "test-stack-NovaForgeSDK"
@@ -484,7 +484,7 @@ class TestRFTMultiturnDumpLoad:
         mock_boto_client.return_value = MagicMock()
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.stack_name = "test-stack-NovaForgeSDK"
@@ -528,7 +528,7 @@ class TestRFTMultiturnDumpLoad:
         mock_boto_client.return_value = MagicMock()
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.stack_name = "test-stack-NovaForgeSDK"
@@ -592,7 +592,7 @@ class TestRFTMultiturnDumpLoad:
             json.dump(state, f)
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.stack_name = "test-stack-NovaForgeSDK"
@@ -607,12 +607,14 @@ class TestRFTMultiturnDumpLoad:
             assert rft.region == "us-east-1"
             mock_local_instance.restore_state.assert_called_once()
 
-    @patch("amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.EC2RFTInfrastructure")
+    @patch(
+        "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.EC2RFTInfrastructure"
+    )
     @patch("boto3.client")
     def test_load_ec2_platform(self, mock_boto_client, mock_ec2_class, tmp_path):
         """Test load for EC2 platform."""
         # Import the real class to use for spec
-        from amzn_nova_forge_sdk.rft_multiturn.ec2_infra import (
+        from amzn_nova_customization_sdk.rft_multiturn.ec2_infra import (
             EC2RFTInfrastructure as RealEC2RFTInfrastructure,
         )
 
@@ -701,7 +703,7 @@ class TestRFTMultiturnDumpLoad:
             json.dump(state, f)
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.ECSRFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.ECSRFTInfrastructure"
         ) as mock_ecs_class:
             mock_ecs_instance = MagicMock()
             mock_ecs_instance.stack_name = "test-stack-NovaForgeSDK"
@@ -750,7 +752,7 @@ class TestRFTMultiturnDumpLoad:
             json.dump(state, f)
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.stack_name = "test-stack-NovaForgeSDK"
@@ -840,7 +842,7 @@ class TestRFTMultiturnDumpLoad:
             json.dump(state, f)
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.stack_name = "test-stack-NovaForgeSDK"
@@ -858,7 +860,7 @@ class TestRFTMultiturnDumpLoad:
         mock_boto_client.return_value = MagicMock()
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.stack_name = "test-stack-NovaForgeSDK"
@@ -900,7 +902,7 @@ class TestRFTMultiturnStartEnvironment:
         mock_boto_client.return_value = MagicMock()
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
         ) as mock_local:
             mock_local.return_value = MagicMock()
 
@@ -920,7 +922,7 @@ class TestRFTMultiturnStartEnvironment:
         mock_boto_client.return_value = MagicMock()
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.setup_local = MagicMock()
@@ -936,7 +938,7 @@ class TestRFTMultiturnStartEnvironment:
             )
 
             # Mock stack outputs
-            from amzn_nova_forge_sdk.rft_multiturn.base_infra import (
+            from amzn_nova_customization_sdk.rft_multiturn.base_infra import (
                 StackOutputs,
             )
 
@@ -975,7 +977,7 @@ class TestRFTMultiturnStartEnvironment:
         mock_boto_client.return_value = MagicMock()
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.setup_local = MagicMock()
@@ -990,7 +992,7 @@ class TestRFTMultiturnStartEnvironment:
                 rft_role_name="TestRole",
             )
 
-            from amzn_nova_forge_sdk.rft_multiturn.base_infra import (
+            from amzn_nova_customization_sdk.rft_multiturn.base_infra import (
                 StackOutputs,
             )
 
@@ -1015,7 +1017,7 @@ class TestRFTMultiturnStartEnvironment:
         mock_boto_client.return_value = MagicMock()
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.setup_local = MagicMock()
@@ -1030,7 +1032,7 @@ class TestRFTMultiturnStartEnvironment:
                 rft_role_name="TestRole",
             )
 
-            from amzn_nova_forge_sdk.rft_multiturn.base_infra import (
+            from amzn_nova_customization_sdk.rft_multiturn.base_infra import (
                 StackOutputs,
             )
 
@@ -1060,7 +1062,7 @@ class TestRFTMultiturnStartEnvironment:
         mock_boto_client.return_value = MagicMock()
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.setup_local = MagicMock()
@@ -1075,7 +1077,7 @@ class TestRFTMultiturnStartEnvironment:
                 rft_role_name="TestRole",
             )
 
-            from amzn_nova_forge_sdk.rft_multiturn.base_infra import (
+            from amzn_nova_customization_sdk.rft_multiturn.base_infra import (
                 StackOutputs,
             )
 
@@ -1104,7 +1106,7 @@ class TestRFTMultiturnStartEnvironment:
         mock_boto_client.return_value = MagicMock()
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.setup_local = MagicMock()
@@ -1119,7 +1121,7 @@ class TestRFTMultiturnStartEnvironment:
                 rft_role_name="TestRole",
             )
 
-            from amzn_nova_forge_sdk.rft_multiturn.base_infra import (
+            from amzn_nova_customization_sdk.rft_multiturn.base_infra import (
                 StackOutputs,
             )
 
@@ -1161,7 +1163,7 @@ class TestRFTMultiturnStartEnvironment:
         mock_boto_client.return_value = mock_ec2
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.EC2RFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.EC2RFTInfrastructure"
         ) as mock_ec2_class:
             mock_ec2_instance = MagicMock()
             mock_ec2_instance.start_environment = MagicMock()
@@ -1175,7 +1177,7 @@ class TestRFTMultiturnStartEnvironment:
                 rft_role_name="TestRole",
             )
 
-            from amzn_nova_forge_sdk.rft_multiturn.base_infra import (
+            from amzn_nova_customization_sdk.rft_multiturn.base_infra import (
                 StackOutputs,
             )
 
@@ -1201,7 +1203,7 @@ class TestRFTMultiturnStartEnvironment:
         mock_boto_client.return_value = mock_ecs
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.ECSRFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.ECSRFTInfrastructure"
         ) as mock_ecs_class:
             mock_ecs_instance = MagicMock()
             mock_ecs_instance.start_environment = MagicMock()
@@ -1215,7 +1217,7 @@ class TestRFTMultiturnStartEnvironment:
                 rft_role_name="TestRole",
             )
 
-            from amzn_nova_forge_sdk.rft_multiturn.base_infra import (
+            from amzn_nova_customization_sdk.rft_multiturn.base_infra import (
                 StackOutputs,
             )
 
@@ -1240,7 +1242,7 @@ class TestRFTMultiturnStartEnvironment:
         mock_boto_client.return_value = MagicMock()
 
         with patch(
-            "amzn_nova_forge_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+            "amzn_nova_customization_sdk.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.setup_local = MagicMock()
@@ -1255,7 +1257,7 @@ class TestRFTMultiturnStartEnvironment:
                 rft_role_name="TestRole",
             )
 
-            from amzn_nova_forge_sdk.rft_multiturn.base_infra import (
+            from amzn_nova_customization_sdk.rft_multiturn.base_infra import (
                 StackOutputs,
             )
 

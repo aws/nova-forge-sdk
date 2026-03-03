@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
-from amzn_nova_forge_sdk.model.result.job_result import (
+from amzn_nova_customization_sdk.model.result.job_result import (
     JobStatus,
     SMHPStatusManager,
     SMTJStatusManager,
@@ -18,10 +18,10 @@ class TestBaseJobResultSerialization(unittest.TestCase):
 
     def test_baseresult_load_preserves_job_cache_hash(self):
         """Test that BaseJobResult.load() preserves job cache hash"""
-        from amzn_nova_forge_sdk.model.model_config import ModelArtifacts
-        from amzn_nova_forge_sdk.model.model_enums import Model, TrainingMethod
-        from amzn_nova_forge_sdk.model.result import BaseJobResult
-        from amzn_nova_forge_sdk.model.result.training_result import (
+        from amzn_nova_customization_sdk.model.model_config import ModelArtifacts
+        from amzn_nova_customization_sdk.model.model_enums import Model, TrainingMethod
+        from amzn_nova_customization_sdk.model.result import BaseJobResult
+        from amzn_nova_customization_sdk.model.result.training_result import (
             SMTJTrainingResult,
         )
 
@@ -202,7 +202,7 @@ class TestSMHPStatusManager(unittest.TestCase):
         self.assertEqual(self.manager._job_status, JobStatus.IN_PROGRESS)
 
     @patch("subprocess.run")
-    @patch("amzn_nova_forge_sdk.model.result.job_result.logger")
+    @patch("amzn_nova_customization_sdk.model.result.job_result.logger")
     def test_connect_cluster_success(self, mock_logger, mock_run):
         mock_result = Mock()
         mock_result.stderr = ""
@@ -228,7 +228,7 @@ class TestSMHPStatusManager(unittest.TestCase):
         )
 
     @patch("subprocess.run")
-    @patch("amzn_nova_forge_sdk.model.result.job_result.logger")
+    @patch("amzn_nova_customization_sdk.model.result.job_result.logger")
     def test_connect_cluster_error(self, mock_logger, mock_run):
         mock_result = Mock()
         mock_result.stderr = "Connection failed"
@@ -328,7 +328,7 @@ class TestSMHPStatusManager(unittest.TestCase):
         self.assertEqual(raw_status, "Pending")
 
     @patch("subprocess.run")
-    @patch("amzn_nova_forge_sdk.model.result.job_result.logger")
+    @patch("amzn_nova_customization_sdk.model.result.job_result.logger")
     def test_get_job_status_connect_cluster_error(self, mock_logger, mock_run):
         mock_run.side_effect = subprocess.CalledProcessError(1, "hyperpod")
 
@@ -339,7 +339,7 @@ class TestSMHPStatusManager(unittest.TestCase):
         mock_logger.error.assert_called_once()
 
     @patch("subprocess.run")
-    @patch("amzn_nova_forge_sdk.model.result.job_result.logger")
+    @patch("amzn_nova_customization_sdk.model.result.job_result.logger")
     def test_get_job_status_json_decode_error(self, mock_logger, mock_run):
         connect_result = Mock()
         connect_result.stderr = ""
