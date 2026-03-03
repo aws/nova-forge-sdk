@@ -1,0 +1,10 @@
+# Semgrep ignore patterns
+# Python 3.7+ is required, so importlib.resources is safe to use
+src/amzn_nova_forge_sdk/iam/iam_role_creator.py
+src/amzn_nova_forge_sdk/rft_multiturn/base_infra.py
+
+# Tarfile extraction from trusted S3 source with filter="data" for safety
+src/amzn_nova_forge_sdk/model/result/eval_result.py
+
+# Safe exec usage in controlled environment for reward verification
+src/amzn_nova_forge_sdk/util/reward_verifier.py
