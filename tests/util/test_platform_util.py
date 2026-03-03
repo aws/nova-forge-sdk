@@ -5,8 +5,8 @@ Tests for platform detection and validation utilities
 import unittest
 from unittest.mock import patch
 
-from amzn_nova_customization_sdk.model.model_enums import Platform
-from amzn_nova_customization_sdk.util.platform_util import (
+from amzn_nova_forge_sdk.model.model_enums import Platform
+from amzn_nova_forge_sdk.util.platform_util import (
     detect_platform_from_path,
     validate_platform_compatibility,
 )
@@ -82,7 +82,7 @@ class TestPlatformValidation(unittest.TestCase):
         self.assertIn("SMTJ", str(context.exception))
         self.assertIn("SMHP", str(context.exception))
 
-    @patch("amzn_nova_customization_sdk.util.logging.logger")
+    @patch("amzn_nova_forge_sdk.util.logging.logger")
     def test_validate_platform_compatibility_unknown_checkpoint(self, mock_logger):
         """Test validation logs warning when checkpoint platform is unknown"""
         # Should not raise, but should log warning

@@ -1,0 +1,2 @@
+{"id": "sample-001", "prompt": [{"role": "invalid_role", "content": "What is 2+2?"}], "answer": "4", "task": "math", "info": {}}
+{"id": "sample-002", "prompt": [{"role": "bad_role", "content": "What is the capital?"}], "answer": "Paris", "task": "geography", "info": {}}

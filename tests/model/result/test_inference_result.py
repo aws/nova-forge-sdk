@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from amzn_nova_customization_sdk.model.result import (
+from amzn_nova_forge_sdk.model.result import (
     JobStatus,
     SingleInferenceResult,
     SMTJBatchInferenceResult,
@@ -643,7 +643,7 @@ class TestSingleInferenceResult(unittest.TestCase):
             nonstreaming_get["inference_results"]["response"], "Non-streaming response"
         )
 
-    @patch("amzn_nova_customization_sdk.model.result.inference_result.logger")
+    @patch("amzn_nova_forge_sdk.model.result.inference_result.logger")
     def test_show(self, mock_logger):
         # Test streaming result show
         self.streaming_result.show()

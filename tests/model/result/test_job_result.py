@@ -1,13 +1,80 @@
 import json
 import subprocess
+import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from datetime import datetime
+from pathlib import Path
+from unittest.mock import MagicMock, Mock, patch
 
-from amzn_nova_customization_sdk.model.result.job_result import (
+from amzn_nova_forge_sdk.model.result.job_result import (
     JobStatus,
     SMHPStatusManager,
     SMTJStatusManager,
 )
+
+
+class TestBaseJobResultSerialization(unittest.TestCase):
+    """Test BaseJobResult dump/load functionality"""
+
+    def test_baseresult_load_preserves_job_cache_hash(self):
+        """Test that BaseJobResult.load() preserves job cache hash"""
+        from amzn_nova_forge_sdk.model.model_config import ModelArtifacts
+        from amzn_nova_forge_sdk.model.model_enums import Model, TrainingMethod
+        from amzn_nova_forge_sdk.model.result import BaseJobResult
+        from amzn_nova_forge_sdk.model.result.training_result import (
+            SMTJTrainingResult,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Mock boto3.client for the entire test
+            with patch("boto3.client") as mock_boto:
+                mock_client = MagicMock()
+                mock_client.describe_training_job.return_value = {
+                    "TrainingJobStatus": "Completed",
+                    "CheckpointConfig": {"S3Uri": "s3://test/checkpoint"},
+                    "OutputDataConfig": {"S3OutputPath": "s3://test/output"},
+                }
+                mock_boto.return_value = mock_client
+
+                # Create a real result
+                original_result = SMTJTrainingResult(
+                    job_id="load-test-123",
+                    started_time=datetime.now(),
+                    method=TrainingMethod.SFT_LORA,
+                    model_type=Model.NOVA_LITE_2,
+                    model_artifacts=ModelArtifacts(
+                        checkpoint_s3_path="s3://test/checkpoint",
+                        output_s3_path="s3://test/output",
+                    ),
+                    sagemaker_client=mock_client,
+                )
+
+                # Add job cache hash
+                test_hash = "test_hash:12345,param:abcde"
+                original_result._job_cache_hash = test_hash
+
+                # Save using dump method
+                file_path = Path(temp_dir) / "test_result.json"
+                original_result.dump(str(temp_dir), "test_result.json")
+
+                # Load it back using BaseJobResult.load()
+                loaded_result = BaseJobResult.load(str(file_path))
+
+                # Verify the hash is preserved
+                self.assertTrue(
+                    hasattr(loaded_result, "_job_cache_hash"),
+                    "Loaded result should have job cache hash",
+                )
+                self.assertEqual(
+                    loaded_result._job_cache_hash,
+                    test_hash,
+                    f"Hash mismatch: expected '{test_hash}', got '{loaded_result._job_cache_hash}'",
+                )
+                self.assertEqual(
+                    loaded_result.job_id,
+                    "load-test-123",
+                    f"Job ID mismatch: expected 'load-test-123', got '{loaded_result.job_id}'",
+                )
 
 
 class TestJobStatus(unittest.TestCase):
@@ -135,7 +202,7 @@ class TestSMHPStatusManager(unittest.TestCase):
         self.assertEqual(self.manager._job_status, JobStatus.IN_PROGRESS)
 
     @patch("subprocess.run")
-    @patch("amzn_nova_customization_sdk.model.result.job_result.logger")
+    @patch("amzn_nova_forge_sdk.model.result.job_result.logger")
     def test_connect_cluster_success(self, mock_logger, mock_run):
         mock_result = Mock()
         mock_result.stderr = ""
@@ -161,7 +228,7 @@ class TestSMHPStatusManager(unittest.TestCase):
         )
 
     @patch("subprocess.run")
-    @patch("amzn_nova_customization_sdk.model.result.job_result.logger")
+    @patch("amzn_nova_forge_sdk.model.result.job_result.logger")
     def test_connect_cluster_error(self, mock_logger, mock_run):
         mock_result = Mock()
         mock_result.stderr = "Connection failed"
@@ -261,7 +328,7 @@ class TestSMHPStatusManager(unittest.TestCase):
         self.assertEqual(raw_status, "Pending")
 
     @patch("subprocess.run")
-    @patch("amzn_nova_customization_sdk.model.result.job_result.logger")
+    @patch("amzn_nova_forge_sdk.model.result.job_result.logger")
     def test_get_job_status_connect_cluster_error(self, mock_logger, mock_run):
         mock_run.side_effect = subprocess.CalledProcessError(1, "hyperpod")
 
@@ -272,7 +339,7 @@ class TestSMHPStatusManager(unittest.TestCase):
         mock_logger.error.assert_called_once()
 
     @patch("subprocess.run")
-    @patch("amzn_nova_customization_sdk.model.result.job_result.logger")
+    @patch("amzn_nova_forge_sdk.model.result.job_result.logger")
     def test_get_job_status_json_decode_error(self, mock_logger, mock_run):
         connect_result = Mock()
         connect_result.stderr = ""

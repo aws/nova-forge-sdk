@@ -8,15 +8,13 @@ including default discovery and explicit configuration.
 import unittest
 from unittest.mock import MagicMock, patch
 
-from amzn_nova_customization_sdk.monitor.mlflow_monitor import MLflowMonitor
+from amzn_nova_forge_sdk.monitor.mlflow_monitor import MLflowMonitor
 
 
 class TestMLflowMonitor(unittest.TestCase):
     """Test suite for MLflowMonitor configuration class."""
 
-    @patch(
-        "amzn_nova_customization_sdk.monitor.mlflow_monitor.validate_mlflow_overrides"
-    )
+    @patch("amzn_nova_forge_sdk.monitor.mlflow_monitor.validate_mlflow_overrides")
     def test_mlflow_monitor_explicit_tracking_uri(self, mock_validate):
         """Test MLflowMonitor with explicit tracking URI."""
         # Setup mock
@@ -35,9 +33,7 @@ class TestMLflowMonitor(unittest.TestCase):
         self.assertIsNone(monitor.experiment_name)
         self.assertIsNone(monitor.run_name)
 
-    @patch(
-        "amzn_nova_customization_sdk.monitor.mlflow_monitor.validate_mlflow_overrides"
-    )
+    @patch("amzn_nova_forge_sdk.monitor.mlflow_monitor.validate_mlflow_overrides")
     def test_mlflow_monitor_full_configuration(self, mock_validate):
         """Test MLflowMonitor with all parameters specified."""
         # Setup mock
@@ -58,9 +54,7 @@ class TestMLflowMonitor(unittest.TestCase):
         self.assertEqual(monitor.experiment_name, "my_experiment")
         self.assertEqual(monitor.run_name, "run_2024_01_15")
 
-    @patch(
-        "amzn_nova_customization_sdk.monitor.mlflow_monitor.validate_mlflow_overrides"
-    )
+    @patch("amzn_nova_forge_sdk.monitor.mlflow_monitor.validate_mlflow_overrides")
     def test_mlflow_monitor_partial_configuration(self, mock_validate):
         """Test MLflowMonitor with partial configuration."""
         # Setup mock
@@ -80,9 +74,7 @@ class TestMLflowMonitor(unittest.TestCase):
         self.assertEqual(monitor.experiment_name, "test_experiment")
         self.assertIsNone(monitor.run_name)
 
-    @patch(
-        "amzn_nova_customization_sdk.monitor.mlflow_monitor.validate_mlflow_overrides"
-    )
+    @patch("amzn_nova_forge_sdk.monitor.mlflow_monitor.validate_mlflow_overrides")
     def test_mlflow_monitor_to_dict_full(self, mock_validate):
         """Test MLflowMonitor to_dict method with full configuration."""
         # Setup mock
@@ -106,9 +98,7 @@ class TestMLflowMonitor(unittest.TestCase):
         }
         self.assertEqual(result, expected)
 
-    @patch(
-        "amzn_nova_customization_sdk.monitor.mlflow_monitor.validate_mlflow_overrides"
-    )
+    @patch("amzn_nova_forge_sdk.monitor.mlflow_monitor.validate_mlflow_overrides")
     def test_mlflow_monitor_to_dict_partial(self, mock_validate):
         """Test MLflowMonitor to_dict method with partial configuration."""
         # Setup mock
@@ -142,12 +132,8 @@ class TestMLflowMonitor(unittest.TestCase):
         result = monitor.to_dict()
         self.assertEqual(result, {})
 
-    @patch(
-        "amzn_nova_customization_sdk.monitor.mlflow_monitor.validate_mlflow_overrides"
-    )
-    @patch(
-        "amzn_nova_customization_sdk.monitor.mlflow_monitor.get_default_mlflow_tracking_uri"
-    )
+    @patch("amzn_nova_forge_sdk.monitor.mlflow_monitor.validate_mlflow_overrides")
+    @patch("amzn_nova_forge_sdk.monitor.mlflow_monitor.get_default_mlflow_tracking_uri")
     def test_mlflow_monitor_override_default_discovery(
         self, mock_get_default, mock_validate
     ):
@@ -173,9 +159,7 @@ class TestMLflowMonitor(unittest.TestCase):
         )
 
     @patch("boto3.client")
-    @patch(
-        "amzn_nova_customization_sdk.monitor.mlflow_monitor.validate_mlflow_overrides"
-    )
+    @patch("amzn_nova_forge_sdk.monitor.mlflow_monitor.validate_mlflow_overrides")
     def test_get_presigned_url_success(self, mock_validate, mock_boto_client):
         """Test successful generation of presigned URL for MLflow app."""
         # Setup mocks
@@ -208,9 +192,7 @@ class TestMLflowMonitor(unittest.TestCase):
         )
 
     @patch("boto3.client")
-    @patch(
-        "amzn_nova_customization_sdk.monitor.mlflow_monitor.validate_mlflow_overrides"
-    )
+    @patch("amzn_nova_forge_sdk.monitor.mlflow_monitor.validate_mlflow_overrides")
     def test_get_presigned_url_custom_expiration(self, mock_validate, mock_boto_client):
         """Test presigned URL generation with custom expiration duration."""
         # Setup mocks
@@ -242,9 +224,7 @@ class TestMLflowMonitor(unittest.TestCase):
         )
 
     @patch("boto3.client")
-    @patch(
-        "amzn_nova_customization_sdk.monitor.mlflow_monitor.validate_mlflow_overrides"
-    )
+    @patch("amzn_nova_forge_sdk.monitor.mlflow_monitor.validate_mlflow_overrides")
     def test_get_presigned_url_tracking_server(self, mock_validate, mock_boto_client):
         """Test presigned URL generation for mlflow-tracking-server (legacy)."""
         # Setup mocks
@@ -287,9 +267,7 @@ class TestMLflowMonitor(unittest.TestCase):
         self.assertIn("tracking_uri is not set", str(context.exception))
 
     @patch("boto3.client")
-    @patch(
-        "amzn_nova_customization_sdk.monitor.mlflow_monitor.validate_mlflow_overrides"
-    )
+    @patch("amzn_nova_forge_sdk.monitor.mlflow_monitor.validate_mlflow_overrides")
     def test_get_presigned_url_api_failure(self, mock_validate, mock_boto_client):
         """Test that get_presigned_url handles API failures gracefully."""
         # Setup mocks
@@ -312,9 +290,7 @@ class TestMLflowMonitor(unittest.TestCase):
         self.assertIn("Failed to generate presigned URL", str(context.exception))
 
     @patch("boto3.client")
-    @patch(
-        "amzn_nova_customization_sdk.monitor.mlflow_monitor.validate_mlflow_overrides"
-    )
+    @patch("amzn_nova_forge_sdk.monitor.mlflow_monitor.validate_mlflow_overrides")
     def test_get_presigned_url_no_url_in_response(
         self, mock_validate, mock_boto_client
     ):

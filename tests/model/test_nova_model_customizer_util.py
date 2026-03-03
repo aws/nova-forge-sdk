@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 from botocore.exceptions import ClientError
 
-from amzn_nova_customization_sdk.model.result.job_result import JobStatus
-from amzn_nova_customization_sdk.util.checkpoint_util import (
+from amzn_nova_forge_sdk.model.result.job_result import JobStatus
+from amzn_nova_forge_sdk.util.checkpoint_util import (
     extract_checkpoint_path_from_job_output,
 )
 
@@ -19,7 +19,7 @@ class TestExtractCheckpointPath(unittest.TestCase):
         self.checkpoint_path = "s3://escrow-bucket/checkpoint/path"
         self.manifest_data = {"checkpoint_s3_bucket": self.checkpoint_path}
 
-    @patch("amzn_nova_customization_sdk.util.checkpoint_util.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.checkpoint_util.boto3.client")
     def test_extract_checkpoint_success(self, mock_boto_client):
         """Test successful checkpoint extraction"""
         mock_s3 = MagicMock()
@@ -61,7 +61,7 @@ class TestExtractCheckpointPath(unittest.TestCase):
             Bucket="test-bucket", Key=f"output/{self.job_id}/output/output.tar.gz"
         )
 
-    @patch("amzn_nova_customization_sdk.util.checkpoint_util.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.checkpoint_util.boto3.client")
     def test_extract_checkpoint_with_job_result_completed(self, mock_boto_client):
         """Test extraction with completed job result"""
         mock_s3 = MagicMock()
@@ -94,7 +94,7 @@ class TestExtractCheckpointPath(unittest.TestCase):
 
         self.assertEqual(result, self.checkpoint_path)
 
-    @patch("amzn_nova_customization_sdk.util.checkpoint_util.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.checkpoint_util.boto3.client")
     def test_extract_checkpoint_job_not_completed(self, mock_boto_client):
         """Test extraction fails when job is not completed"""
         mock_job_result = MagicMock()
@@ -110,7 +110,7 @@ class TestExtractCheckpointPath(unittest.TestCase):
 
         self.assertIn("not completed", str(context.exception))
 
-    @patch("amzn_nova_customization_sdk.util.checkpoint_util.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.checkpoint_util.boto3.client")
     def test_extract_checkpoint_output_not_found(self, mock_boto_client):
         """Test extraction fails when output file doesn't exist"""
         mock_s3 = MagicMock()
@@ -130,7 +130,7 @@ class TestExtractCheckpointPath(unittest.TestCase):
             str(context.exception),
         )
 
-    @patch("amzn_nova_customization_sdk.util.checkpoint_util.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.checkpoint_util.boto3.client")
     def test_extract_checkpoint_permission_denied(self, mock_boto_client):
         """Test extraction fails when access denied"""
         mock_s3 = MagicMock()
@@ -146,7 +146,7 @@ class TestExtractCheckpointPath(unittest.TestCase):
 
         self.assertIn("Failed to extract manifest", str(context.exception))
 
-    @patch("amzn_nova_customization_sdk.util.checkpoint_util.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.checkpoint_util.boto3.client")
     def test_extract_checkpoint_permission_denied_download(self, mock_boto_client):
         """Test extraction fails when access denied on download"""
         mock_s3 = MagicMock()
@@ -168,7 +168,7 @@ class TestExtractCheckpointPath(unittest.TestCase):
 
         self.assertIn("Failed to extract manifest", str(context.exception))
 
-    @patch("amzn_nova_customization_sdk.util.checkpoint_util.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.checkpoint_util.boto3.client")
     def test_extract_checkpoint_missing_manifest(self, mock_boto_client):
         """Test extraction fails when manifest.json is missing"""
         mock_s3 = MagicMock()
@@ -198,7 +198,7 @@ class TestExtractCheckpointPath(unittest.TestCase):
 
         self.assertIn("Failed to extract manifest", str(context.exception))
 
-    @patch("amzn_nova_customization_sdk.util.checkpoint_util.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.checkpoint_util.boto3.client")
     def test_extract_checkpoint_missing_checkpoint_field(self, mock_boto_client):
         """Test extraction fails when checkpoint_s3_bucket field is missing"""
         mock_s3 = MagicMock()
@@ -231,7 +231,7 @@ class TestExtractCheckpointPath(unittest.TestCase):
 
         self.assertIn("checkpoint_s3_bucket not found", str(context.exception))
 
-    @patch("amzn_nova_customization_sdk.util.checkpoint_util.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.checkpoint_util.boto3.client")
     def test_extract_checkpoint_empty_checkpoint_path(self, mock_boto_client):
         """Test extraction fails when checkpoint path is empty"""
         mock_s3 = MagicMock()

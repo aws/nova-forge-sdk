@@ -8,7 +8,7 @@ including edge cases for AWS environments and error handling.
 import unittest
 from unittest.mock import MagicMock, patch
 
-from amzn_nova_customization_sdk.util.mlflow import (
+from amzn_nova_forge_sdk.util.mlflow import (
     get_default_mlflow_tracking_uri,
     validate_mlflow_arn_exists,
 )
@@ -158,11 +158,12 @@ class TestMLflowUtilities(unittest.TestCase):
             ]
         }
 
-        # Test
-        result = get_default_mlflow_tracking_uri("us-west-2")
+        # Test - should raise ValueError
+        with self.assertRaises(ValueError) as context:
+            get_default_mlflow_tracking_uri("us-west-2")
 
-        # Verify
-        self.assertIsNone(result)
+        # Verify error message
+        self.assertIn("DefaultMLFlowApp not found", str(context.exception))
 
     @patch("boto3.client")
     def test_get_default_mlflow_tracking_uri_empty_list(self, mock_client_func):
@@ -172,11 +173,12 @@ class TestMLflowUtilities(unittest.TestCase):
         mock_client_func.return_value = mock_client
         mock_client.list_mlflow_apps.return_value = {"Summaries": []}
 
-        # Test
-        result = get_default_mlflow_tracking_uri("us-west-2")
+        # Test - should raise ValueError
+        with self.assertRaises(ValueError) as context:
+            get_default_mlflow_tracking_uri("us-west-2")
 
-        # Verify
-        self.assertIsNone(result)
+        # Verify error message
+        self.assertIn("DefaultMLFlowApp not found", str(context.exception))
 
     @patch("boto3.client")
     def test_get_default_mlflow_tracking_uri_access_denied(self, mock_client_func):
@@ -193,11 +195,12 @@ class TestMLflowUtilities(unittest.TestCase):
             error_response, "list_mlflow_apps"
         )
 
-        # Test
-        result = get_default_mlflow_tracking_uri("us-west-2")
+        # Test - should raise ValueError
+        with self.assertRaises(ValueError) as context:
+            get_default_mlflow_tracking_uri("us-west-2")
 
-        # Verify
-        self.assertIsNone(result)
+        # Verify error message
+        self.assertIn("Access denied", str(context.exception))
 
     @patch("boto3.client")
     def test_get_default_mlflow_tracking_uri_client_error(self, mock_client_func):
@@ -214,11 +217,12 @@ class TestMLflowUtilities(unittest.TestCase):
             error_response, "list_mlflow_apps"
         )
 
-        # Test
-        result = get_default_mlflow_tracking_uri("us-west-2")
+        # Test - should raise ValueError
+        with self.assertRaises(ValueError) as context:
+            get_default_mlflow_tracking_uri("us-west-2")
 
-        # Verify
-        self.assertIsNone(result)
+        # Verify error message
+        self.assertIn("Error listing MLflow apps", str(context.exception))
 
     @patch("boto3.client")
     def test_get_default_mlflow_tracking_uri_no_credentials(self, mock_client_func):
@@ -228,11 +232,12 @@ class TestMLflowUtilities(unittest.TestCase):
 
         mock_client_func.side_effect = NoCredentialsError()
 
-        # Test
-        result = get_default_mlflow_tracking_uri("us-west-2")
+        # Test - should raise ValueError
+        with self.assertRaises(ValueError) as context:
+            get_default_mlflow_tracking_uri("us-west-2")
 
-        # Verify
-        self.assertIsNone(result)
+        # Verify error message
+        self.assertIn("AWS credentials not configured", str(context.exception))
 
     @patch("boto3.client")
     def test_get_default_mlflow_tracking_uri_no_region_error(self, mock_client_func):
@@ -242,11 +247,12 @@ class TestMLflowUtilities(unittest.TestCase):
 
         mock_client_func.side_effect = NoRegionError()
 
-        # Test
-        result = get_default_mlflow_tracking_uri()
+        # Test - should raise ValueError
+        with self.assertRaises(ValueError) as context:
+            get_default_mlflow_tracking_uri()
 
-        # Verify
-        self.assertIsNone(result)
+        # Verify error message
+        self.assertIn("AWS region not configured", str(context.exception))
 
     @patch("boto3.client")
     def test_get_default_mlflow_tracking_uri_unexpected_error(self, mock_client_func):
@@ -254,11 +260,14 @@ class TestMLflowUtilities(unittest.TestCase):
         # Setup mock to raise unexpected exception
         mock_client_func.side_effect = RuntimeError("Unexpected error")
 
-        # Test
-        result = get_default_mlflow_tracking_uri("us-west-2")
+        # Test - should raise ValueError
+        with self.assertRaises(ValueError) as context:
+            get_default_mlflow_tracking_uri("us-west-2")
 
-        # Verify
-        self.assertIsNone(result)
+        # Verify error message
+        self.assertIn(
+            "Unexpected error during MLflow auto-discovery", str(context.exception)
+        )
 
 
 class TestMLflowValidation(unittest.TestCase):
@@ -266,7 +275,7 @@ class TestMLflowValidation(unittest.TestCase):
 
     def test_validate_mlflow_tracking_uri_valid_server(self):
         """Test validation of valid MLflow tracking server ARN."""
-        from amzn_nova_customization_sdk.util.mlflow import (
+        from amzn_nova_forge_sdk.util.mlflow import (
             validate_mlflow_tracking_uri_format,
         )
 
@@ -278,7 +287,7 @@ class TestMLflowValidation(unittest.TestCase):
 
     def test_validate_mlflow_tracking_uri_valid_app(self):
         """Test validation of valid MLflow app ARN."""
-        from amzn_nova_customization_sdk.util.mlflow import (
+        from amzn_nova_forge_sdk.util.mlflow import (
             validate_mlflow_tracking_uri_format,
         )
 
@@ -288,7 +297,7 @@ class TestMLflowValidation(unittest.TestCase):
 
     def test_validate_mlflow_tracking_uri_empty_string(self):
         """Test validation allows empty string."""
-        from amzn_nova_customization_sdk.util.mlflow import (
+        from amzn_nova_forge_sdk.util.mlflow import (
             validate_mlflow_tracking_uri_format,
         )
 
@@ -297,7 +306,7 @@ class TestMLflowValidation(unittest.TestCase):
 
     def test_validate_mlflow_tracking_uri_invalid_format(self):
         """Test validation rejects invalid URI format."""
-        from amzn_nova_customization_sdk.util.mlflow import (
+        from amzn_nova_forge_sdk.util.mlflow import (
             validate_mlflow_tracking_uri_format,
         )
 
@@ -316,7 +325,7 @@ class TestMLflowValidation(unittest.TestCase):
 
     def test_validate_mlflow_overrides_all_valid(self):
         """Test MLflow override validation with all valid values."""
-        from amzn_nova_customization_sdk.util.mlflow import validate_mlflow_overrides
+        from amzn_nova_forge_sdk.util.mlflow import validate_mlflow_overrides
 
         overrides = {
             "mlflow_tracking_uri": "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-ABC123",
@@ -329,7 +338,7 @@ class TestMLflowValidation(unittest.TestCase):
 
     def test_validate_mlflow_overrides_all_valid_tracking_server(self):
         """Test MLflow override validation with all valid values."""
-        from amzn_nova_customization_sdk.util.mlflow import validate_mlflow_overrides
+        from amzn_nova_forge_sdk.util.mlflow import validate_mlflow_overrides
 
         overrides = {
             "mlflow_tracking_uri": "arn:aws:sagemaker:us-west-2:123456789012:mlflow-tracking-server/tracking-server-123",
@@ -342,7 +351,7 @@ class TestMLflowValidation(unittest.TestCase):
 
     def test_validate_mlflow_overrides_invalid_uri(self):
         """Test MLflow override validation with invalid URI."""
-        from amzn_nova_customization_sdk.util.mlflow import validate_mlflow_overrides
+        from amzn_nova_forge_sdk.util.mlflow import validate_mlflow_overrides
 
         overrides = {
             "mlflow_tracking_uri": "invalid-uri",
@@ -356,7 +365,7 @@ class TestMLflowValidation(unittest.TestCase):
 
     def test_validate_mlflow_overrides_empty_experiment_name(self):
         """Test MLflow override validation with empty experiment name."""
-        from amzn_nova_customization_sdk.util.mlflow import validate_mlflow_overrides
+        from amzn_nova_forge_sdk.util.mlflow import validate_mlflow_overrides
 
         overrides = {
             "mlflow_tracking_uri": "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-ABC123",
@@ -370,7 +379,7 @@ class TestMLflowValidation(unittest.TestCase):
 
     def test_validate_mlflow_overrides_empty_run_name(self):
         """Test MLflow override validation with empty run name."""
-        from amzn_nova_customization_sdk.util.mlflow import validate_mlflow_overrides
+        from amzn_nova_forge_sdk.util.mlflow import validate_mlflow_overrides
 
         overrides = {
             "mlflow_tracking_uri": "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-ABC123",
@@ -384,7 +393,7 @@ class TestMLflowValidation(unittest.TestCase):
 
     def test_validate_mlflow_overrides_no_tracking_uri_with_names(self):
         """Test warning when experiment/run names provided without tracking URI."""
-        from amzn_nova_customization_sdk.util.mlflow import validate_mlflow_overrides
+        from amzn_nova_forge_sdk.util.mlflow import validate_mlflow_overrides
 
         overrides = {
             "mlflow_experiment_name": "my_experiment",
@@ -397,7 +406,7 @@ class TestMLflowValidation(unittest.TestCase):
 
     def test_validate_mlflow_overrides_none_values(self):
         """Test MLflow override validation with None values (Optional fields)."""
-        from amzn_nova_customization_sdk.util.mlflow import validate_mlflow_overrides
+        from amzn_nova_forge_sdk.util.mlflow import validate_mlflow_overrides
 
         overrides = {
             "mlflow_tracking_uri": None,
@@ -410,14 +419,14 @@ class TestMLflowValidation(unittest.TestCase):
 
     def test_validate_mlflow_overrides_empty_dict(self):
         """Test MLflow override validation with empty overrides."""
-        from amzn_nova_customization_sdk.util.mlflow import validate_mlflow_overrides
+        from amzn_nova_forge_sdk.util.mlflow import validate_mlflow_overrides
 
         errors = validate_mlflow_overrides({}, check_exists=False)
         self.assertEqual(errors, [])
 
     def test_validate_mlflow_overrides_none_input(self):
         """Test MLflow override validation with None input."""
-        from amzn_nova_customization_sdk.util.mlflow import validate_mlflow_overrides
+        from amzn_nova_forge_sdk.util.mlflow import validate_mlflow_overrides
 
         errors = validate_mlflow_overrides(None, check_exists=False)
         self.assertEqual(errors, [])

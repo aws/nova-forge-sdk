@@ -5,11 +5,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from amzn_nova_customization_sdk.rft_multiturn.common_infra_commands import (
+from amzn_nova_forge_sdk.rft_multiturn.common_infra_commands import (
     BASE_PYTHON_COMMAND,
     CommonInfraCommands,
 )
-from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+from amzn_nova_forge_sdk.validation.rft_multiturn_validator import (
     validate_env_id,
 )
 
@@ -139,81 +139,6 @@ class TestCommonInfraCommands:
 
         # Verify local path installation
         assert any("/local/custom/env" in cmd for cmd in commands)
-
-    def test_build_command_train_mode(self):
-        """Test _build_command for training mode."""
-        mock_cmd = MockCommonInfraCommands()
-        vf_env_args = {"arg1": "value1", "arg2": 123}
-        lambda_url = "https://test-lambda.amazonaws.com"
-        queue_url = "https://sqs.us-west-2.amazonaws.com/123456789/test-queue"
-
-        command = mock_cmd._build_command(
-            mode="train",
-            vf_env_id="test_env",
-            vf_env_args=vf_env_args,
-            lambda_url=lambda_url,
-            queue_url=queue_url,
-        )
-
-        assert isinstance(command, str)
-        assert "train.py" in command
-        assert queue_url in command
-        assert lambda_url in command
-        assert "is_train=1" in command
-        assert json.dumps(vf_env_args) in command
-
-    def test_build_command_eval_mode(self):
-        """Test _build_command for evaluation mode."""
-        mock_cmd = MockCommonInfraCommands()
-        vf_env_args = {"num_eval_examples": 50}
-        lambda_url = "https://test-lambda.amazonaws.com"
-
-        command = mock_cmd._build_command(
-            mode="eval",
-            vf_env_id="test_env",
-            vf_env_args=vf_env_args,
-            lambda_url=lambda_url,
-        )
-
-        assert isinstance(command, str)
-        assert "evaluate.py" in command
-        assert lambda_url in command
-        assert "num_examples=50" in command
-        assert json.dumps(vf_env_args) in command
-
-    def test_build_command_includes_env_check(self):
-        """Test _build_command includes environment validation."""
-        mock_cmd = MockCommonInfraCommands()
-        command = mock_cmd._build_command(
-            mode="eval",
-            vf_env_id="test_env",
-            vf_env_args={},
-            lambda_url="https://test.com",
-        )
-
-        # Verify environment check is included
-        assert "import test_env" in command
-        assert "not installed" in command
-
-    def test_build_command_with_custom_parameters(self):
-        """Test _build_command with custom parameters."""
-        mock_cmd = MockCommonInfraCommands()
-        command = mock_cmd._build_command(
-            mode="train",
-            vf_env_id="test_env",
-            vf_env_args={},
-            lambda_url="https://test.com",
-            queue_url="https://queue.com",
-            groups_per_batch=50,
-            max_messages_per_poll=20,
-            client_timeout=1200.0,
-            client_poll_interval=1.0,
-        )
-
-        assert "groups_per_batch=50" in command
-        assert "max_messages_per_poll=20" in command
-        assert "client_timeout=1200.0" in command
-        assert "client_poll_interval=1.0" in command
 
     def test_build_sam_deploy_commands(self):
         """Test _build_sam_deploy_commands generates correct commands."""

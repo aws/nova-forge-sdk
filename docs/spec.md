@@ -1,12 +1,13 @@
-# Nova Customization SDK - API Specification
+# Nova Forge SDK - API Specification
 
 ## Table of Contents
 1. [NovaModelCustomizer](#novamodelcustomizer)
 2. [Runtime Managers](#runtime-managers)
 3. [Dataset Loaders](#dataset-loaders)
 4. [Job Results](#job-results)
-5. [Monitoring](#monitoring)
-6. [Enums and Configuration](#enums-and-configuration)
+5. [Utility Functions](#utility-functions)
+6. [Monitoring](#monitoring)
+7. [Enums and Configuration](#enums-and-configuration)
 ---
 ## NovaModelCustomizer
 The main entrypoint class for customizing and training Nova models.
@@ -31,6 +32,7 @@ def __init__(
  mlflow_monitor: Optional[MLflowMonitor] = None,
  deployment_mode: DeploymentMode = DeploymentMode.FAIL_IF_EXISTS,
  data_mixing_enabled: bool = False,
+ enable_job_caching: bool = False,
 )
 ```
 **Parameters:**
@@ -40,20 +42,23 @@ def __init__(
 - `data_s3_path` (Optional[str]): S3 path to the training dataset
 - `output_s3_path` (Optional[str]): S3 path for output artifacts. If not provided, will be auto-generated
 - `model_path` (Optional[str]): S3 path for model path
-- `validation_config` (Optional[Dict[str, bool]]): Optional dict to control validation. Defaults to `{'iam': True, 'infra': True}`
+- `validation_config` (Optional[Dict[str, Union[bool, Dict]]]): Optional dict to control validation. Defaults to `{'iam': True, 'infra': True, 'rft_lambda': True}`. For RFT training, you can enable automatic Lambda verification:
+  - Simple: `{'rft_lambda': True}` (uses default 200 samples)
+  - Advanced: `{'rft_lambda': {'enabled': True, 'samples': 20}}` (custom sample count)
 - `generated_recipe_dir` (Optional[str]): Optional local path to save the generated recipe
 - `mlflow_monitor` (Optional[MLflowMonitor]): Optional MLflow monitoring configuration for experiment tracking
 - `deployment_mode` (DeploymentMode): Behavior when deploying to existing endpoint name. Options: FAIL_IF_EXISTS (default), UPDATE_IF_EXISTS
 - `data_mixing_enabled` (bool): Enable data mixing feature for CPT and SFT training on SageMaker HyperPod. Default is False
   - **Note:** The `data_mixing_enabled` parameter must be set to `True` during initialization to use data mixing features.
   - **Note:** Datamixing is only supported for CPT, SFT_LORA, and SFT_FULL methods on SageMaker HyperPod (SMHP).
+- `enable_job_caching` (bool): Whether to enable job result caching. When enabled, completed job results are cached to `job_cache_dir` (default: `.cached-nova-jobs/`) and reused for identical job configurations. Default: False
 
 **Raises:**
 - `ValueError`: If region is unsupported or model is invalid
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk import *
+from amzn_nova_forge_sdk import *
 
 infra = SMTJRuntimeManager(instance_type="ml.p5.48xlarge", instance_count=2)
 
@@ -260,7 +265,7 @@ def evaluate(
 **Example:**
 
 ```python
-from amzn_nova_customization_sdk.recipe import *
+from amzn_nova_forge_sdk.recipe import *
 
 # General eval task (with overrides)
 eval_result = customizer.evaluate(
@@ -339,7 +344,7 @@ def deploy(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk.model import *
+from amzn_nova_forge_sdk.model import *
 
 bedrock_deployment = customizer.deploy(
  model_artifact_path="s3://escrow-bucket/my-model-artifacts/",
@@ -371,7 +376,7 @@ You can also use the following method to create a Bedrock execution role with sc
  
  
 ```python
-from amzn_nova_customization_sdk.util.bedrock import create_bedrock_execution_role
+from amzn_nova_forge_sdk.util.bedrock import create_bedrock_execution_role
  
 iam_client = boto3.client("iam")
  
@@ -545,7 +550,7 @@ def __init__(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk.manager import *
+from amzn_nova_forge_sdk.manager import *
 infra = SMTJRuntimeManager(
  instance_type="ml.p5.48xlarge",
  instance_count=2
@@ -608,7 +613,7 @@ def __init__(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk.manager import *
+from amzn_nova_forge_sdk.manager import *
 infra = SMHPRuntimeManager(
  instance_type="ml.p5.48xlarge",
  instance_count=4,
@@ -715,7 +720,7 @@ def load(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk.dataset import *
+from amzn_nova_forge_sdk.dataset import *
 loader = JSONLDatasetLoader()
 loader.load("s3://my-bucket/data/training.jsonl")
 ```
@@ -744,7 +749,7 @@ def load(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk.dataset import *
+from amzn_nova_forge_sdk.dataset import *
 loader = JSONDatasetLoader()
 loader.load("data/training.json")
 ```
@@ -773,7 +778,7 @@ def load(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk.dataset import *
+from amzn_nova_forge_sdk.dataset import *
 loader = CSVDatasetLoader(question="user_query", answer="bot_response")
 loader.load("data/conversations.csv")
 ```
@@ -1180,7 +1185,7 @@ def create_bedrock_execution_role(
 **Example:**
 ```python
 import boto3
-from amzn_nova_customization_sdk.iam.iam_role_creator import create_bedrock_execution_role
+from amzn_nova_forge_sdk.iam.iam_role_creator import create_bedrock_execution_role
 
 iam_client = boto3.client("iam")
 create_bedrock_execution_role(iam_client, "role-name", "bedrock_resource", "s3_resource")
@@ -1219,7 +1224,7 @@ def create_sagemaker_execution_role(
 **Example:**
 ```python
 import boto3
-from amzn_nova_customization_sdk.iam.iam_role_creator import create_sagemaker_execution_role
+from amzn_nova_forge_sdk.iam.iam_role_creator import create_sagemaker_execution_role
 
 iam_client = boto3.client("iam")
 create_sagemaker_execution_role(
@@ -1241,6 +1246,118 @@ create_sagemaker_execution_role(
         cloudwatch_logstream_resource="example-logstream"
     )
 ```
+---
+## Utility Functions
+
+### verify_reward_function()
+
+Verifies a reward function with sample data before using it in RFT training or evaluation. This utility helps you test your reward function implementation to ensure it works correctly and returns the expected format.
+
+**Signature:**
+```python
+def verify_reward_function(
+    reward_function: str,
+    sample_data: List[Dict[str, Any]],
+    region: str = "us-east-1",
+    validate_format: bool = True,
+    platform: Optional[Platform] = None,
+) -> Dict[str, Any]
+```
+
+**Parameters:**
+- `reward_function` (str): Either a Lambda ARN (string starting with `'arn:aws:lambda:'`) or a path to a local Python file containing the reward function.
+- `sample_data` (List[Dict[str, Any]]): List of conversation samples to test. Each sample should be a dict with `'id'`, `'messages'`, and optionally `'reference_answer'` keys.
+- `region` (str): AWS region for Lambda invocation (default: "us-east-1").
+- `validate_format` (bool): If True, validates that sample_data matches RFT format and output matches expected format (default: True).
+- `platform` (Platform): Platform enum (Platform.SMHP or Platform.SMTJ). **Required when using Lambda ARN**. When set to Platform.SMHP, validates that Lambda ARN contains 'SageMaker' in the function name as required by SageMaker HyperPod. Optional for local files.
+
+**Returns:**
+- `Dict[str, Any]`: Dictionary containing:
+  - `success` (bool): Always True if no exception raised
+  - `results` (list): List of individual test results
+  - `total_samples` (int): Total number of samples tested
+  - `successful_samples` (int): Number of successful tests
+  - `warnings` (list): List of warning messages (e.g., missing reference_answer)
+
+**Raises:**
+- `ValueError`: If any validation errors are encountered, with a detailed error message listing all issues found.
+
+**Example**
+```python
+from amzn_nova_forge_sdk import verify_reward_function
+from amzn_nova_forge_sdk.model.model_enums import Platform
+
+# Test with Lambda ARN (platform required for Lambda ARNs)
+result = verify_reward_function(
+    reward_function="arn:aws:lambda:us-east-1:123456789012:function:MySageMakerReward",
+    sample_data=[
+        {
+            "id": "sample_1",
+            "reference_answer": "correct answer",
+            "messages": [
+                {"role": "user", "content": "question"},
+                {"role": "assistant", "content": "response"}
+            ]
+        }
+    ],
+    platform=Platform.SMHP  # Required for Lambda ARNs
+)
+
+print(f"Verification: {'PASSED' if result['success'] else 'FAILED'}")
+print(f"Tested {result['total_samples']} samples, {result['successful_samples']} successful")
+
+if result.get('warnings'):
+    print(f"\nWarnings:")
+    for warning in result['warnings']:
+        print(f"  - {warning}")
+
+# Test with local Python file (platform optional)
+result = verify_reward_function(
+    reward_function="./my_reward_function.py",
+    sample_data=[
+        {
+            "id": "sample_1",
+            "reference_answer": "correct answer",
+            "messages": [
+                {"role": "user", "content": "question"},
+                {"role": "assistant", "content": "response"}
+            ]
+        }
+    ]
+)
+```
+**Output Format Requirements from Lambda:**
+
+```python
+{
+    "id": "sample_1",                   # Required: string
+    "aggregate_reward_score": 0.75,     # Required: float or int
+    "metrics_list": [                   # Optional: validated if present
+        {
+            "name": "accuracy",         # Required: string
+            "value": 0.85,              # Required: float or int
+            "type": "Metric"            # Required: "Metric" or "Reward"
+        }
+    ]
+}
+```
+
+**Common Validation Errors:**
+- Missing required fields in input (`messages` field is required)
+- Missing required fields in output (`id` and `aggregate_reward_score` are required)
+- Invalid data types (e.g., `aggregate_reward_score` must be a number)
+- Missing `platform` parameter when using Lambda ARN
+- SMHP Lambda ARN doesn't contain 'SageMaker' in function name
+- Invalid `metrics_list` structure (must be list of dicts with `name`, `value`, `type`)
+- Invalid metric `type` (must be "Metric" or "Reward")
+
+**Warnings:**
+- Missing `reference_answer`: While optional in RFT datasets, reference answers are recommended for meaningful reward calculations. Without ground truth, your reward function cannot compare model outputs against expected answers.
+
+
+
+**Note:** The `metrics_list` field is optional. If provided, it will be validated for proper structure and logged during training/evaluation.
+
 ---
 ## Monitoring
 
@@ -1278,7 +1395,7 @@ def __init__(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk.monitor import *
+from amzn_nova_forge_sdk.monitor import *
 
 # With explicit tracking URI
 monitor = MLflowMonitor(
@@ -1518,7 +1635,7 @@ def create_rft_execution_role(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk import create_rft_execution_role
+from amzn_nova_forge_sdk import create_rft_execution_role
 
 # Create role with default name
 role_arn = create_rft_execution_role(region="us-east-1")
@@ -1548,7 +1665,7 @@ def list_rft_stacks(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk import list_rft_stacks
+from amzn_nova_forge_sdk import list_rft_stacks
 
 # List only Nova SDK stacks
 nova_stacks = list_rft_stacks(region="us-east-1")
@@ -1594,7 +1711,7 @@ def __init__(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk import RFTMultiturnInfrastructure, CustomEnvironment, VFEnvId
+from amzn_nova_forge_sdk import RFTMultiturnInfrastructure, CustomEnvironment, VFEnvId
 
 # Option 1: LOCAL with built-in environment
 rft_infra = RFTMultiturnInfrastructure(
@@ -1733,4 +1850,4 @@ Common exceptions:
 - SDK GitHub Repository: Check for updates and examples
 - Support: Use AWS Support for technical assistance
 ---
-_Last Updated: February 4, 2026_
+_Last Updated: February 16, 2026_

@@ -4,8 +4,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from amzn_nova_customization_sdk.rft_multiturn import EnvType, StackOutputs, VFEnvId
-from amzn_nova_customization_sdk.rft_multiturn.base_infra import (
+from amzn_nova_forge_sdk.rft_multiturn import EnvType, StackOutputs, VFEnvId
+from amzn_nova_forge_sdk.rft_multiturn.base_infra import (
     ECR_REPO_NAME,
     RFT_EXECUTION_ROLE_NAME,
     RFT_POLICY_NAME,

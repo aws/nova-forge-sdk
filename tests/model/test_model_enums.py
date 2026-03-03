@@ -1,6 +1,6 @@
 import unittest
 
-from amzn_nova_customization_sdk.model.model_enums import (
+from amzn_nova_forge_sdk.model.model_enums import (
     DeployPlatform,
     Model,
     Platform,

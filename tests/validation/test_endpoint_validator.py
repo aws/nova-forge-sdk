@@ -1,6 +1,7 @@
 import unittest
 
-from amzn_nova_customization_sdk.validation.endpoint_validator import (
+from amzn_nova_forge_sdk.model.model_enums import Model
+from amzn_nova_forge_sdk.validation.endpoint_validator import (
     validate_endpoint_arn,
     validate_s3_uri_prefix,
     validate_sagemaker_environment_variables,
@@ -92,6 +93,88 @@ class TestEndpointValidator(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             validate_unit_count(0)
+
+    # --- SMI config bounds tests ---
+
+    def test_smi_valid_within_tier(self):
+        """Valid: context_length and concurrency within a known tier."""
+        env = {"CONTEXT_LENGTH": "4000", "MAX_CONCURRENCY": "32"}
+        validate_sagemaker_environment_variables(
+            env, model=Model.NOVA_MICRO, instance_type="ml.g5.12xlarge"
+        )
+
+    def test_smi_valid_lower_context_same_concurrency(self):
+        """Valid: lower context length inherits the tier's max concurrency."""
+        env = {"CONTEXT_LENGTH": "2000", "MAX_CONCURRENCY": "32"}
+        validate_sagemaker_environment_variables(
+            env, model=Model.NOVA_MICRO, instance_type="ml.g5.12xlarge"
+        )
+
+    def test_smi_valid_lower_concurrency(self):
+        """Valid: concurrency below the tier max."""
+        env = {"CONTEXT_LENGTH": "8000", "MAX_CONCURRENCY": "4"}
+        validate_sagemaker_environment_variables(
+            env, model=Model.NOVA_MICRO, instance_type="ml.g5.12xlarge"
+        )
+
+    def test_smi_context_length_exceeds_max(self):
+        """Invalid: context length exceeds the largest supported tier."""
+        env = {"CONTEXT_LENGTH": "10000", "MAX_CONCURRENCY": "1"}
+        with self.assertRaises(ValueError) as ctx:
+            validate_sagemaker_environment_variables(
+                env, model=Model.NOVA_MICRO, instance_type="ml.g5.12xlarge"
+            )
+        self.assertIn("CONTEXT_LENGTH", str(ctx.exception))
+
+    def test_smi_concurrency_exceeds_tier_max(self):
+        """Invalid: concurrency exceeds the max for the applicable context tier."""
+        env = {"CONTEXT_LENGTH": "8000", "MAX_CONCURRENCY": "32"}
+        with self.assertRaises(ValueError) as ctx:
+            validate_sagemaker_environment_variables(
+                env, model=Model.NOVA_MICRO, instance_type="ml.g5.12xlarge"
+            )
+        self.assertIn("MAX_CONCURRENCY", str(ctx.exception))
+
+    def test_smi_p5_multi_tier(self):
+        """Valid: p5.48xlarge supports multiple tiers."""
+        # Tier 1: context<=8000, concurrency<=32
+        validate_sagemaker_environment_variables(
+            {"CONTEXT_LENGTH": "8000", "MAX_CONCURRENCY": "32"},
+            model=Model.NOVA_MICRO,
+            instance_type="ml.p5.48xlarge",
+        )
+        # Tier 2: context<=16000, concurrency<=2
+        validate_sagemaker_environment_variables(
+            {"CONTEXT_LENGTH": "16000", "MAX_CONCURRENCY": "2"},
+            model=Model.NOVA_MICRO,
+            instance_type="ml.p5.48xlarge",
+        )
+        # Tier 3: context<=24000, concurrency<=1
+        validate_sagemaker_environment_variables(
+            {"CONTEXT_LENGTH": "24000", "MAX_CONCURRENCY": "1"},
+            model=Model.NOVA_MICRO,
+            instance_type="ml.p5.48xlarge",
+        )
+
+    def test_smi_p5_concurrency_exceeds_mid_tier(self):
+        """Invalid: concurrency 10 at context 12000 falls in tier <=16000 which allows max 2."""
+        env = {"CONTEXT_LENGTH": "12000", "MAX_CONCURRENCY": "10"}
+        with self.assertRaises(ValueError):
+            validate_sagemaker_environment_variables(
+                env, model=Model.NOVA_MICRO, instance_type="ml.p5.48xlarge"
+            )
+
+    def test_smi_unknown_combo_warns_but_passes(self):
+        """Unknown model+instance combo should not raise (just warns)."""
+        env = {"CONTEXT_LENGTH": "100000", "MAX_CONCURRENCY": "999"}
+        validate_sagemaker_environment_variables(
+            env, model=Model.NOVA_PRO, instance_type="ml.g5.12xlarge"
+        )
+
+    def test_smi_no_model_skips_bounds_check(self):
+        """Without model/instance_type, no bounds check (backward compat)."""
+        env = {"CONTEXT_LENGTH": "100000", "MAX_CONCURRENCY": "999"}
+        validate_sagemaker_environment_variables(env)
 
 
 if __name__ == "__main__":
