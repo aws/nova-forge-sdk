@@ -8,7 +8,6 @@
 # - sagemaker==2.254.1
 # - boto3
 # - sagemaker==2.254.1
-# - numpy<=2.2.6
 #
 
 annotated-doc==0.0.4
@@ -97,7 +96,6 @@ mypy-extensions==1.1.0
     # via mypy
 numpy==2.2.6
     # via
-    #   hatch.envs.default
     #   pandas
     #   sagemaker
 omegaconf==2.3.0

@@ -26,6 +26,8 @@ Running list of potential default values:
     CPT: text
 """
 
+import json
+
 
 class DatasetTransformer:
     default_system_msg = "You are a helpful assistant who answers the question based on the task assigned"
@@ -322,8 +324,6 @@ class DatasetTransformer:
         Parse tool arguments from string format to dict.
         Handles both JSON strings and already parsed dicts.
         """
-        import json
-
         if isinstance(arguments_str, dict):
             return arguments_str
 
@@ -550,3 +550,101 @@ class DatasetTransformer:
         else:
             result = {"text": rec[text_col]}
             return result
+
+    @staticmethod
+    def convert_to_rft_multiturn(rec, column_mappings):
+        """
+        Convert flat format to nested RFT multiturn format.
+
+        Args:
+            rec: A single dataset record (dict) to transform. Can be in flat or nested format.
+                Flat format example: {"id": "s1", "prompt": "Q", "answer": "A", "task": "t", "info": {}}
+                Nested format example: {"id": "s1", "metadata": {"prompt": "Q", "answer": "A", ...}}
+            column_mappings: Dictionary mapping field names to column names in the dataset.
+                Example: {"id": "sample_id", "prompt": "question", "answer": "response", "task": "category", "info": "metadata"}
+                The function uses this to locate fields in the flat format record.
+                NOTE: This dictionary is mutated during processing - an internal counter (_id_counter)
+                is stored in it to track sequential ID generation across multiple records.
+
+        Returns:
+            dict: Record in nested RFT multiturn format with structure:
+                {"id": str, "metadata": {"prompt": str|list, "answer": str, "task": str, "info": dict|str}}
+
+        Notes:
+            - Supports two input formats (flat and nested)
+            - Auto-generates sequential IDs (sample_001, sample_002, etc.) if missing
+            - Info field is kept as-is (can be dict, string, or other type)
+            - Prompt can be a string or OpenAI message format (list of dicts)
+        """
+
+        # Check if already in nested format
+        if "metadata" in rec:
+            # Check if nested format has id, generate if missing
+            if "id" not in rec or not rec["id"]:
+                # Use a counter stored in column_mappings (mutable dict)
+                if "_id_counter" not in column_mappings:
+                    column_mappings["_id_counter"] = 0
+                column_mappings["_id_counter"] += 1
+                rec["id"] = f"sample_{column_mappings['_id_counter']:03d}"
+
+            return rec
+
+        # Convert flat format to nested format
+        # Only use fields that were explicitly provided in column_mappings
+        id_col = column_mappings.get("id")
+        prompt_col = column_mappings.get("prompt")
+        answer_col = column_mappings.get("answer")
+        task_col = column_mappings.get("task")
+        info_col = column_mappings.get("info")
+
+        # Check/generate ID
+        if id_col and (id_col not in rec or not rec[id_col]):
+            # Auto-generate sequential ID
+            if "_id_counter" not in column_mappings:
+                column_mappings["_id_counter"] = 0
+            column_mappings["_id_counter"] += 1
+            generated_id = f"sample_{column_mappings['_id_counter']:03d}"
+        elif id_col:
+            generated_id = rec[id_col]
+        else:
+            # No id mapping provided, auto-generate
+            if "_id_counter" not in column_mappings:
+                column_mappings["_id_counter"] = 0
+            column_mappings["_id_counter"] += 1
+            generated_id = f"sample_{column_mappings['_id_counter']:03d}"
+
+        # Check required prompt field
+        if not prompt_col:
+            raise ValueError(
+                f"'prompt' column mapping is required for RFT Multiturn.\n"
+                f"Make sure to add prompt='your_column_name' when initializing DatasetLoader."
+            )
+        if prompt_col not in rec:
+            raise ValueError(
+                f"'prompt' column '{prompt_col}' not found in record {rec}, which is required for RFT Multiturn.\n"
+                f"Make sure the column exists in your data."
+            )
+
+        # Build metadata dict
+        metadata = {"prompt": rec[prompt_col]}
+
+        # Add optional answer field with type conversion (only if mapping provided)
+        if answer_col and answer_col in rec and rec[answer_col]:
+            answer_value = rec[answer_col]
+            if not isinstance(answer_value, str):
+                answer_value = str(answer_value)
+            metadata["answer"] = answer_value
+
+        # Add optional task field with type conversion (only if mapping provided)
+        if task_col and task_col in rec and rec[task_col]:
+            task_value = rec[task_col]
+            if not isinstance(task_value, str):
+                task_value = str(task_value)
+            metadata["task"] = task_value
+
+        # Add optional info field (only if mapping provided)
+        if info_col and info_col in rec and rec[info_col]:
+            # Keep info as-is, whether it's a dict, string, or other type
+            metadata["info"] = rec[info_col]
+
+        return {"id": generated_id, "metadata": metadata}

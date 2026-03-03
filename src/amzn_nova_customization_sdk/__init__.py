@@ -44,6 +44,9 @@ from .rft_multiturn import (
     create_rft_execution_role,
     list_rft_stacks,
 )
+from .util import (
+    verify_reward_function,
+)
 
 __all__ = [
     "CSVDatasetLoader",
@@ -68,4 +71,5 @@ __all__ = [
     "CustomEnvironment",
     "list_rft_stacks",
     "create_rft_execution_role",
+    "verify_reward_function",
 ]

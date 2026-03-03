@@ -14,12 +14,12 @@
 """RFT Multiturn Infrastructure Module - Modular platform-specific implementations."""
 
 from .base_infra import (
-    RFT_EXECUTION_ROLE_NAME,
     EnvType,
     StackOutputs,
     VFEnvId,
     create_rft_execution_role,
 )
+from .constants import RFT_EXECUTION_ROLE_NAME
 from .custom_environment import CustomEnvironment
 from .rft_multiturn import RFTMultiturnInfrastructure, list_rft_stacks
 

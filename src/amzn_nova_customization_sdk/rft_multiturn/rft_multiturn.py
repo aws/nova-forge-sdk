@@ -16,23 +16,30 @@ Main user-facing RFT Multiturn Infrastructure API.
 Delegates to platform-specific implementations while preserving UX.
 """
 
+import glob
+import json
 import os
 import time
+import uuid
+from dataclasses import asdict
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import boto3
 
+from amzn_nova_customization_sdk.model.model_enums import TrainingMethod
+from amzn_nova_customization_sdk.recipe.recipe_config import EvaluationTask
 from amzn_nova_customization_sdk.util.logging import logger
 
 from .base_infra import (
-    RFT_EXECUTION_ROLE_NAME,
-    STACK_NAME_SUFFIX,
     BaseRFTInfrastructure,
     EnvType,
     StackOutputs,
     VFEnvId,
     create_rft_execution_role,
 )
+from .constants import RFT_EXECUTION_ROLE_NAME, STACK_NAME_SUFFIX
 from .custom_environment import CustomEnvironment
 from .ec2_infra import EC2RFTInfrastructure
 from .ecs_infra import ECSRFTInfrastructure
@@ -103,6 +110,7 @@ class RFTMultiturnInfrastructure:
         custom_env: Optional[CustomEnvironment] = None,
         infrastructure_arn: Optional[str] = None,
         python_venv_name: Optional[str] = None,
+        starter_kit_path: Optional[str] = None,
         vpc_config: Optional[Dict[str, Any]] = None,
         cpu: Optional[str] = None,
         memory: Optional[str] = None,
@@ -122,6 +130,10 @@ class RFTMultiturnInfrastructure:
                 - "i-xxx" or "arn:aws:ec2:...": Uses EC2 instance
                 - "arn:aws:ecs:...": Uses ECS cluster
             python_venv_name: Name for Python virtual environment (required for LOCAL/EC2, optional for ECS)
+            starter_kit_path: Optional custom starter kit path
+                - For LOCAL: Local file path (e.g., "~/my-starter-kit" or "/path/to/v1")
+                - For EC2/ECS: Local path (auto-uploaded to S3) or S3 URI (e.g., "s3://bucket/path/v1.tar.gz")
+                - If None: Uses default starter kit from AWS
             vpc_config: VPC configuration for ECS (ignored for LOCAL/EC2). Dict with keys:
                 - subnets: List[str] - Subnet IDs
                 - security_groups: List[str] - Security group IDs
@@ -242,6 +254,13 @@ class RFTMultiturnInfrastructure:
         self.rft_role_name = rft_role_name or RFT_EXECUTION_ROLE_NAME
         self.custom_policy_path = custom_policy_path
 
+        # Generate timestamp-based session ID for this instance
+        # Format: {stack_name}_{YYYY-MM-DD-HHMMSS}
+        # Must be set before creating infrastructure objects (EC2 needs it)
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        self._session_id = f"{stack_name}_{timestamp}"
+        self._state_file_path: Optional[Path] = None
+
         if self.platform == "local":
             self.infra = LocalRFTInfrastructure(
                 region,
@@ -250,6 +269,8 @@ class RFTMultiturnInfrastructure:
                 python_venv_name,
                 self.rft_role_name,
                 self.custom_policy_path,
+                starter_kit_path,
+                self._session_id,
             )
         elif self.platform == "ec2":
             if not infrastructure_arn:
@@ -261,6 +282,8 @@ class RFTMultiturnInfrastructure:
                 python_venv_name,
                 self.rft_role_name,
                 self.custom_policy_path,
+                starter_kit_path,
+                self.session_id,
             )  # type: ignore[assignment]
         else:  # ecs
             if not infrastructure_arn:
@@ -273,6 +296,7 @@ class RFTMultiturnInfrastructure:
                 python_venv_name,
                 self.rft_role_name,
                 self.custom_policy_path,
+                starter_kit_path,
                 vpc_config=vpc_config,
                 cpu=cpu,
                 memory=memory,
@@ -293,6 +317,8 @@ class RFTMultiturnInfrastructure:
             logger.info(
                 f"CloudFormation stack with name '{self.stack_name}' will be created"
             )
+
+        logger.info(f"RFT Infrastructure session ID: {self._session_id}")
 
     def _ensure_rft_role_exists(self):
         """Ensure RFT execution role exists, create if it doesn't"""
@@ -324,9 +350,13 @@ class RFTMultiturnInfrastructure:
         else:
             raise ValueError(f"Unknown infrastructure ARN format: {infrastructure_arn}")
 
-    def setup(self) -> Dict[str, Any]:
+    def setup(self, s3_bucket: Optional[str] = None) -> Dict[str, Any]:
         """
         Setup RFT multiturn infrastructure and deploy CloudFormation stack.
+
+        Args:
+            s3_bucket: Optional S3 bucket for starter kit upload (EC2/ECS only).
+                If not provided, uses SageMaker default bucket or bucket from custom_env.
 
         This method performs the following actions in your AWS environment:
 
@@ -405,6 +435,11 @@ class RFTMultiturnInfrastructure:
             self._load_existing_stack(self.stack_name)
             self._configure_lambda_url(self.stack_name)
 
+            # Ensure starter kit is available even for existing stacks (in case starter_kit_path was added/changed)
+            if self.platform != "local":
+                # Just ensure S3 upload - setup commands run in start_environment()
+                self.infra._ensure_starter_kit_available(s3_bucket)
+
             # Check if queues have messages
             queue_status = self.check_all_queues()
             non_empty_queues = []
@@ -449,7 +484,7 @@ class RFTMultiturnInfrastructure:
         else:
             self.infra.validate_platform()
 
-        self.infra.deploy_sam_stack()
+        self.infra.deploy_sam_stack(s3_bucket)
 
         self._load_existing_stack(self.stack_name)
         self._configure_lambda_url(self.stack_name)
@@ -458,85 +493,206 @@ class RFTMultiturnInfrastructure:
         logger.info(f"Stack '{self.stack_name}' deployed successfully")
         return self.get_configuration()
 
-    def start_training_environment(
+    def start_environment(
         self,
+        env_type: EnvType,
         vf_env_args: Optional[Dict] = None,
-        groups_per_batch: int = 20,
-        max_messages_per_poll: int = 10,
-        client_timeout: float = 600.0,
-        client_poll_interval: float = 0.5,
+        max_concurrent_rollouts: int = 40,
+        max_rollout_timeout: float = 300.0,
+        completion_poll_timeout: float = 600.0,
+        completion_poll_interval: float = 0.5,
+        rollout_poll_interval: float = 1.0,
+        log_output_directory: Optional[str] = None,
+        config_name: Optional[str] = None,
+        config_path: Optional[str] = None,
+        queue_url: Optional[str] = None,
     ):
-        """Start training environment on selected platform
+        """Start environment using unified environment client.
+
+        This method uses the unified client (environment_client.py) which provides:
+        - Simplified concurrency control (single max_concurrent_rollouts parameter)
+        - Per-rollout timeout handling (prevents stuck rollouts from blocking others)
+        - Built-in logging and metrics (automatic config snapshots and runtime stats)
+        - Duplicate rollout prevention (automatic deduplication by sample_id)
+        - YAML configuration support (version-controlled configs with env var interpolation)
 
         Args:
-            vf_env_args: Environment-specific arguments
-            groups_per_batch: Number of groups per batch for training (default: 20)
-            max_messages_per_poll: Max messages to poll from queue (default: 10)
-            client_timeout: Client timeout in seconds (default: 600.0)
-            client_poll_interval: Client poll interval in seconds (default: 0.5)
+            env_type: Environment type (EnvType.TRAIN or EnvType.EVAL)
+            vf_env_args: Environment-specific arguments (optional, defaults to {"use_think": False})
+            max_concurrent_rollouts: Max concurrent rollouts (default: 40)
+            max_rollout_timeout: Per-rollout timeout in seconds (default: 300)
+            completion_poll_timeout: Completion polling timeout in seconds (default: 600)
+            completion_poll_interval: Completion poll interval in seconds (default: 0.5)
+            rollout_poll_interval: SQS polling interval in seconds (default: 1.0)
+            log_output_directory: Directory for logs and metrics (optional)
+                - Recommended: "/opt/ml/output/logs" for SageMaker, "./logs" for local
+            config_name: Use YAML config instead of CLI flags (optional)
+                - If provided, loads config from configs/{config_name}.yaml
+            config_path: Custom config directory path (optional, use with config_name)
+            queue_url: SQS queue URL (optional, defaults to training queue from stack)
+
+        Example (CLI mode):
+            rft_infra.start_environment(
+                env_type=EnvType.TRAIN,
+                vf_env_args={"max_examples": 1, "max_turns": 4},
+                max_concurrent_rollouts=40,
+                log_output_directory="/opt/ml/output/logs"
+            )
+
+        Example (YAML mode):
+            rft_infra.start_environment(
+                env_type=EnvType.TRAIN,
+                config_name="wordle_training"
+            )
+
+        Example (custom config path):
+            rft_infra.start_environment(
+                env_type=EnvType.TRAIN,
+                config_name="wordle_training",
+                config_path="/custom/configs"
+            )
         """
         if not self.stack_outputs:
             raise RuntimeError("Stack not deployed. Run setup() first.")
+
+        # Default to training queue if not provided
+        if not queue_url:
+            queue_url = self.stack_outputs.rollout_request_queue_url
+            logger.info(f"Using queue: {queue_url}")
 
         vf_env_args = vf_env_args or {"use_think": False}
 
         if self.platform == "local":
             # Ensure starter kit is set up for local platform
-            if not self.infra.starter_kit_path:
-                self.infra.setup_local(self.workspace_dir)
+            self.infra.setup_local(self.workspace_dir)
             self.infra.install_local_environment(self.env_id)
+        elif self.platform == "ec2":
+            # EC2 setup happens automatically in _execute_training_or_eval via _build_setup_commands
+            pass
+        elif self.platform == "ecs":
+            # ECS doesn't need setup - environment is in the container image
+            pass
 
-        self.infra.start_training_env(
-            self.env_id,
-            vf_env_args,
-            self.stack_outputs,
-            groups_per_batch=groups_per_batch,
-            max_messages_per_poll=max_messages_per_poll,
-            client_timeout=client_timeout,
-            client_poll_interval=client_poll_interval,
+        self.infra.start_environment(
+            env_type=env_type,
+            vf_env_id=self.env_id,
+            vf_env_args=vf_env_args,
+            stack_outputs=self.stack_outputs,
+            max_concurrent_rollouts=max_concurrent_rollouts,
+            max_rollout_timeout=max_rollout_timeout,
+            completion_poll_timeout=completion_poll_timeout,
+            completion_poll_interval=completion_poll_interval,
+            rollout_poll_interval=rollout_poll_interval,
+            log_output_directory=log_output_directory,
+            config_name=config_name,
+            config_path=config_path,
         )
 
-        logger.info(f"Training environment started on {self.platform}")
+        logger.info(f"Environment started on {self.platform}")
+
+    def start_training_environment(
+        self,
+        vf_env_args: Optional[Dict] = None,
+        max_concurrent_rollouts: int = 40,
+        max_rollout_timeout: float = 300.0,
+        completion_poll_timeout: float = 600.0,
+        completion_poll_interval: float = 0.5,
+        rollout_poll_interval: float = 1.0,
+        log_output_directory: Optional[str] = None,
+        config_name: Optional[str] = None,
+        config_path: Optional[str] = None,
+        queue_url: Optional[str] = None,
+    ):
+        """DEPRECATED: Use start_environment(env_type=EnvType.TRAIN, ...) instead.
+
+        This method is deprecated and will be removed in a future version.
+        Please use start_environment(env_type=EnvType.TRAIN, ...) instead.
+
+        This is now a simple wrapper that calls start_environment with env_type=EnvType.TRAIN.
+        All parameters are passed through directly.
+
+        Args:
+            vf_env_args: Environment-specific arguments (optional, defaults to {"use_think": False})
+            max_concurrent_rollouts: Max concurrent rollouts (default: 40)
+            max_rollout_timeout: Per-rollout timeout in seconds (default: 300)
+            completion_poll_timeout: Completion polling timeout in seconds (default: 600)
+            completion_poll_interval: Completion poll interval in seconds (default: 0.5)
+            rollout_poll_interval: SQS polling interval in seconds (default: 1.0)
+            log_output_directory: Directory for logs and metrics (optional)
+            config_name: Use YAML config instead of CLI flags (optional)
+            config_path: Custom config directory path (optional, use with config_name)
+            queue_url: SQS queue URL (optional, defaults to training queue from stack)
+        """
+        logger.warning(
+            "start_training_environment() is deprecated and will be removed in a future version. "
+            "Please use start_environment(env_type=EnvType.TRAIN, ...) instead.",
+        )
+
+        return self.start_environment(
+            env_type=EnvType.TRAIN,
+            vf_env_args=vf_env_args,
+            max_concurrent_rollouts=max_concurrent_rollouts,
+            max_rollout_timeout=max_rollout_timeout,
+            completion_poll_timeout=completion_poll_timeout,
+            completion_poll_interval=completion_poll_interval,
+            rollout_poll_interval=rollout_poll_interval,
+            log_output_directory=log_output_directory,
+            config_name=config_name,
+            config_path=config_path,
+            queue_url=queue_url,
+        )
 
     def start_evaluation_environment(
         self,
         vf_env_args: Optional[Dict] = None,
-        rollouts_per_example: int = 1,
-        max_concurrent: int = 60,
-        client_timeout: float = 600.0,
-        client_poll_interval: float = 0.5,
+        max_concurrent_rollouts: int = 40,
+        max_rollout_timeout: float = 300.0,
+        completion_poll_timeout: float = 600.0,
+        completion_poll_interval: float = 0.5,
+        rollout_poll_interval: float = 1.0,
+        log_output_directory: Optional[str] = None,
+        config_name: Optional[str] = None,
+        config_path: Optional[str] = None,
+        queue_url: Optional[str] = None,
     ):
-        """
-        Start evaluation environment on selected platform
+        """DEPRECATED: Use start_environment(env_type=EnvType.EVAL, ...) instead.
+
+        This method is deprecated and will be removed in a future version.
+        Please use start_environment(env_type=EnvType.EVAL, ...) instead.
+
+        This is now a simple wrapper that calls start_environment with env_type=EnvType.EVAL.
+        All parameters are passed through directly.
 
         Args:
-            vf_env_args: Environment-specific arguments
-            rollouts_per_example: Number of rollouts per example (default: 1)
-            max_concurrent: Max concurrent evaluations (default: 60)
-            client_timeout: Client timeout in seconds (default: 600.0)
-            client_poll_interval: Client poll interval in seconds (default: 0.5)
+            vf_env_args: Environment-specific arguments (optional, defaults to {"use_think": False})
+            max_concurrent_rollouts: Max concurrent rollouts (default: 40)
+            max_rollout_timeout: Per-rollout timeout in seconds (default: 300)
+            completion_poll_timeout: Completion polling timeout in seconds (default: 600)
+            completion_poll_interval: Completion poll interval in seconds (default: 0.5)
+            rollout_poll_interval: SQS polling interval in seconds (default: 1.0)
+            log_output_directory: Directory for logs and metrics (optional)
+            config_name: Use YAML config instead of CLI flags (optional)
+            config_path: Custom config directory path (optional, use with config_name)
+            queue_url: SQS queue URL (optional, defaults to training queue from stack)
         """
-        if not self.stack_outputs:
-            raise RuntimeError("Stack not deployed. Run setup() first.")
-
-        vf_env_args = vf_env_args or {}
-
-        if self.platform == "local":
-            # Ensure starter kit is set up for local platform
-            if not self.infra.starter_kit_path:
-                self.infra.setup_local(self.workspace_dir)
-            self.infra.install_local_environment(self.env_id)
-
-        self.infra.start_evaluation_env(
-            self.env_id,
-            vf_env_args,
-            self.stack_outputs,
-            rollouts_per_example=rollouts_per_example,
-            max_concurrent=max_concurrent,
-            client_timeout=client_timeout,
-            client_poll_interval=client_poll_interval,
+        logger.warning(
+            "start_evaluation_environment() is deprecated and will be removed in a future version. "
+            "Please use start_environment(env_type=EnvType.EVAL, ...) instead."
         )
-        logger.info(f"Evaluation environment started on {self.platform}")
+
+        return self.start_environment(
+            env_type=EnvType.EVAL,
+            vf_env_args=vf_env_args,
+            max_concurrent_rollouts=max_concurrent_rollouts,
+            max_rollout_timeout=max_rollout_timeout,
+            completion_poll_timeout=completion_poll_timeout,
+            completion_poll_interval=completion_poll_interval,
+            rollout_poll_interval=rollout_poll_interval,
+            log_output_directory=log_output_directory,
+            config_name=config_name,
+            config_path=config_path,
+            queue_url=queue_url,
+        )
 
     def get_logs(
         self,
@@ -565,12 +721,22 @@ class RFTMultiturnInfrastructure:
             env_type, limit, start_from_head, log_stream_name, tail
         )
 
-    def kill_task(self, env_type: Optional[EnvType] = None):
-        """Kill training or evaluation task"""
+    def kill_task(self, env_type: Optional[EnvType] = None, **kwargs):
+        """
+        Kill training or evaluation task.
+
+        Args:
+            env_type: Type of environment (TRAIN or EVAL). Defaults to TRAIN if not specified.
+            **kwargs: Additional platform-specific parameters:
+                - kill_all_for_stack (bool): If True, kills ALL jobs of this type for the stack (cross-session).
+                                            If False, only kills jobs from current session. (All platforms)
+                - task_id (str): Optional task ID for ECS (ECS only)
+                - deregister_task_def (bool): If True, deregister task definition (ECS only)
+        """
         if env_type is None:
             env_type = EnvType.TRAIN
 
-        self.infra.kill_task(env_type)
+        self.infra.kill_task(env_type, **kwargs)
         logger.info(f"Killed {env_type.value} task on {self.platform}")
 
     def cleanup(self, delete_stack: bool = False, cleanup_environment: bool = False):
@@ -628,9 +794,6 @@ class RFTMultiturnInfrastructure:
 
     def get_recipe_path(self, method) -> str:
         """Download and cache specific recipe file from S3"""
-        from amzn_nova_customization_sdk.model.model_enums import TrainingMethod
-        from amzn_nova_customization_sdk.recipe.recipe_config import EvaluationTask
-
         recipe_map = {
             TrainingMethod.RFT_MULTITURN_LORA: "fine-tuning/nova/forge/nova_2_0/nova_lite/RFT/nova_lite_2_0_p5_gpu_lora_rft_byoo.yaml",
             TrainingMethod.RFT_MULTITURN_FULL: "fine-tuning/nova/forge/nova_2_0/nova_lite/RFT/nova_lite_2_0_p5_gpu_rft_byoo.yaml",
@@ -739,3 +902,171 @@ class RFTMultiturnInfrastructure:
             if output["OutputKey"] == key:
                 return output["OutputValue"]
         raise ValueError(f"Output {key} not found in stack")
+
+    @property
+    def session_id(self) -> str:
+        """Get the unique session identifier for this infrastructure instance"""
+        return self._session_id
+
+    def dump(
+        self,
+        file_path: Optional[str] = None,
+        file_name: Optional[str] = None,
+        include_session_id: bool = True,
+    ) -> Path:
+        """
+        Save infrastructure state to file for session recovery.
+
+        Args:
+            file_path: Directory path to save the result. Saves to current directory if not provided
+            file_name: File name (if None, auto-generates with session_id)
+            include_session_id: If True, includes session_id in filename
+
+        Returns:
+            Path to saved state file
+
+        Examples:
+            >>> rft_infra.dump()
+            # Saves to current directory: rft_state_my-stack_a1b2c3d4.json
+
+            >>> rft_infra.dump(file_path="/home/user/workspace")
+            # Saves to: /home/user/workspace/rft_state_my-stack_a1b2c3d4.json
+
+            >>> rft_infra.dump(file_name="my_state.json", include_session_id=False)
+            # Saves to current directory: my_state.json
+        """
+        if file_name is None:
+            if include_session_id:
+                file_name = f"rft_state_{self.stack_name}_{self._session_id}.json"
+            else:
+                file_name = f"rft_state_{self.stack_name}.json"
+
+        if file_path is None:
+            full_path = Path(file_name)
+        else:
+            full_path = Path(file_path) / file_name
+
+        state = {
+            "__class_name__": self.__class__.__name__,
+            "session_id": self._session_id,
+            "platform": self.platform,
+            "region": self.region,
+            "stack_name": self.stack_name,
+            "env_id": self.env_id,
+            "workspace_dir": self.workspace_dir,
+            "rft_role_name": self.rft_role_name,
+            "infrastructure_arn": self.infrastructure_arn,
+            "is_custom_env": self.is_custom_env,
+            "custom_env": (
+                {
+                    "env_id": self.custom_env.env_id,
+                    "local_path": self.custom_env.local_path,
+                    "s3_uri": self.custom_env.s3_uri,
+                    "output_dir": self.custom_env.output_dir,
+                    "env_type": self.custom_env.env_type,
+                }
+                if self.custom_env
+                else None
+            ),
+            "stack_outputs": (
+                asdict(self.stack_outputs) if self.stack_outputs else None
+            ),
+            "infra_state": self.infra.get_state(),
+            "dumped_at": datetime.now().isoformat(),
+        }
+
+        with open(full_path, "w") as f:
+            json.dump(state, f, indent=2, default=str)
+
+        self._state_file_path = full_path
+        logger.info(f"Infrastructure state saved to {full_path}")
+        return full_path
+
+    @classmethod
+    def load(
+        cls, file_path: str, auto_reconnect: bool = True
+    ) -> "RFTMultiturnInfrastructure":
+        """
+        Load infrastructure state from file and reconnect to running processes.
+
+        Args:
+            file_path: Path to state file
+            auto_reconnect: If True, verify and reconnect to running processes
+
+        Returns:
+            Reconstructed RFTMultiturnInfrastructure instance
+
+        Example:
+            >>> # After notebook restart
+            >>> rft_infra = RFTMultiturnInfrastructure.load(
+            ...     ".rft_state_my-stack_a1b2.json"
+            ... )
+            >>> print(f"Reconnected to session: {rft_infra.session_id}")
+        """
+        with open(file_path, "r") as f:
+            state = json.load(f)
+
+        platform = state["platform"]
+        infra_state = state["infra_state"]
+
+        custom_env = None
+        if state.get("is_custom_env") and state.get("custom_env"):
+            custom_env_data = state["custom_env"]
+            custom_env = CustomEnvironment(
+                env_id=custom_env_data["env_id"],
+                local_path=custom_env_data.get("local_path"),
+                s3_uri=custom_env_data.get("s3_uri"),
+                output_dir=custom_env_data.get("output_dir", "~/custom_envs"),
+                env_type=custom_env_data.get("env_type", "single_turn"),
+            )
+
+        if platform == "local":
+            infra = cls(
+                stack_name=state["stack_name"],
+                region=state["region"],
+                vf_env_id=state["env_id"] if not state["is_custom_env"] else None,
+                custom_env=custom_env,
+                infrastructure_arn=None,
+                python_venv_name=infra_state["python_venv_name"],
+                rft_role_name=state["rft_role_name"],
+            )
+        elif platform == "ec2":
+            instance_id = infra_state["instance_id"]
+            infra = cls(
+                stack_name=state["stack_name"],
+                region=state["region"],
+                vf_env_id=state["env_id"] if not state["is_custom_env"] else None,
+                custom_env=custom_env,
+                infrastructure_arn=instance_id,
+                python_venv_name=infra_state["python_venv_name"],
+                rft_role_name=state["rft_role_name"],
+            )
+
+            if isinstance(infra.infra, EC2RFTInfrastructure):
+                infra.infra.session_id = state.get("session_id", str(uuid.uuid4())[:8])
+        elif platform == "ecs":
+            infra = cls(
+                stack_name=state["stack_name"],
+                region=state["region"],
+                vf_env_id=state["env_id"] if not state["is_custom_env"] else None,
+                custom_env=custom_env,
+                infrastructure_arn=infra_state["cluster_arn"],
+                python_venv_name=infra_state["python_venv_name"],
+                rft_role_name=state["rft_role_name"],
+            )
+        else:
+            raise ValueError(f"Unknown platform: {platform}")
+
+        infra._session_id = state.get("session_id", str(uuid.uuid4())[:8])
+        infra._state_file_path = Path(file_path)
+
+        if state["stack_outputs"]:
+            infra.stack_outputs = StackOutputs(**state["stack_outputs"])
+            infra._stack_exists = True
+
+        if auto_reconnect:
+            infra.infra.restore_state(infra_state)
+
+        logger.info(f"Infrastructure state loaded from {file_path}")
+        logger.info(f"Session ID: {infra._session_id}")
+        return infra

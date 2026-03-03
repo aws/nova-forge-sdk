@@ -64,34 +64,43 @@ def get_default_mlflow_tracking_uri(region_name: Optional[str] = None) -> Option
                     logger.info(f"Using DefaultMLFlowApp: {app_arn} (status: {status})")
                     return app_arn
 
-            logger.error(
-                "DefaultMLFlowApp not found, you must specify a Mlflow app/server ARN to use Mlflow monitor"
+            raise ValueError(
+                "DefaultMLFlowApp not found. You must specify a MLflow app/server ARN "
+                "to use MLflow monitor. Create one using SageMaker console or provide "
+                "an explicit tracking_uri to MLflowMonitor."
             )
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
             if error_code == "AccessDeniedException":
-                logger.error(
-                    "Access denied to list MLflow apps while trying to find DefaultMLFlowApp, check a valid Mlflow app/server exists"
+                raise ValueError(
+                    "Access denied to list MLflow apps. Check that you have permissions "
+                    "to list SageMaker MLflow apps, or provide an explicit tracking_uri "
+                    "to MLflowMonitor."
                 )
             else:
-                logger.error(f"Error listing MLflow apps: {e}")
-
-        # No DefaultMLFlowApp found
-        return None
+                raise ValueError(
+                    f"Error listing MLflow apps: {e}. Provide an explicit tracking_uri "
+                    "to MLflowMonitor to bypass auto-discovery."
+                )
 
     except NoCredentialsError:
-        logger.error(
-            "AWS credentials not configured during MLflow DefaultMLFlowApp discovery"
+        raise ValueError(
+            "AWS credentials not configured. Configure AWS credentials or provide "
+            "an explicit tracking_uri to MLflowMonitor."
         )
-        return None
     except NoRegionError:
-        logger.error(
-            "AWS region not configured during skipping DefaultMLFlowApp discovery"
+        raise ValueError(
+            "AWS region not configured. Configure AWS region or provide "
+            "an explicit tracking_uri to MLflowMonitor."
         )
-        return None
+    except ValueError:
+        # Re-raise ValueError exceptions (from DefaultMLFlowApp not found, etc.)
+        raise
     except Exception as e:
-        logger.error(f"Unexpected error during MLflow auto-discovery: {e}")
-        return None
+        raise ValueError(
+            f"Unexpected error during MLflow auto-discovery: {e}. "
+            "Provide an explicit tracking_uri to MLflowMonitor."
+        )
 
 
 def validate_mlflow_tracking_uri_format(tracking_uri: str) -> bool:
@@ -241,13 +250,13 @@ def validate_mlflow_arn_exists(
                 return False, f"Error checking MLflow resource: {e}"
 
     except NoCredentialsError:
-        logger.error("AWS credentials not configured, cannot validate MLflow ARN")
+        logger.warning("AWS credentials not configured, cannot validate MLflow ARN")
         return True, "AWS credentials not configured - cannot validate MLflow ARN"
     except NoRegionError:
-        logger.error("AWS region not configured, cannot validate MLflow ARN")
+        logger.warning("AWS region not configured, cannot validate MLflow ARN")
         return True, "AWS region not configured - cannot validate MLflow ARN"
     except Exception as e:
-        logger.error(f"Unexpected error validating MLflow ARN: {e}")
+        logger.warning(f"Unexpected error validating MLflow ARN: {e}")
         return True, f"Unexpected error - assuming ARN is valid: {e}"
 
 

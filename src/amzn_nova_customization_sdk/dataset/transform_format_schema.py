@@ -15,6 +15,7 @@ from amzn_nova_customization_sdk.dataset.dataset_format_schema import (
     CPT_FORMAT,
     EVALUATION_FORMAT,
     OPENAI_FORMAT,
+    RFT_MULTITURN_FORMAT,
     RFT_OPENAI_FORMAT,
     SFT_NOVA_ONE_CONVERSE_2024,
     SFT_NOVA_TWO_CONVERSE_2024,
@@ -87,6 +88,20 @@ TRANSFORM_CONFIG = {
                 "source_schema": None,  # Generic/fallback
                 "method": "convert_to_cpt",
                 "msg": "Dataset is not in proper JSONL format for CPT. Attempting to transform to the correct format.",
+            },
+        ],
+    },
+    (
+        (TrainingMethod.RFT_MULTITURN_LORA, TrainingMethod.RFT_MULTITURN_FULL),
+        None,
+    ): {
+        "schema": RFT_MULTITURN_FORMAT,
+        "success_msg": "Dataset is already in RFT Multiturn format, no transformation needed.",
+        "transformers": [
+            {
+                "source_schema": None,  # Generic/fallback - handles both flat and nested formats
+                "method": "convert_to_rft_multiturn",
+                "msg": "Dataset is not in RFT Multiturn format. Attempting to transform to the correct format.",
             },
         ],
     },

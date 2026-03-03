@@ -15,6 +15,7 @@ from .cpt_dataset_validator import CPTDatasetValidator
 from .dataset_validator import BaseDatasetValidator
 from .eval_dataset_validator import EvalDatasetValidator
 from .rft_dataset_validator import RFTDatasetValidator
+from .rft_multiturn_dataset_validator import RFTMultiturnDatasetValidator
 from .sft_dataset_validator import SFTDatasetValidator
 
 __all__ = [
@@ -22,5 +23,6 @@ __all__ = [
     "BaseDatasetValidator",
     "EvalDatasetValidator",
     "RFTDatasetValidator",
+    "RFTMultiturnDatasetValidator",
     "SFTDatasetValidator",
 ]

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import builtins
+import json
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -33,6 +34,8 @@ from amzn_nova_customization_sdk.recipe.recipe_config import (
     get_available_subtasks,
 )
 from amzn_nova_customization_sdk.util.logging import logger
+from amzn_nova_customization_sdk.util.recipe import _parse_s3_uri
+from amzn_nova_customization_sdk.util.reward_verifier import verify_reward_function
 from amzn_nova_customization_sdk.util.sagemaker import get_cluster_instance_info
 
 LAMBDA_ARN_REGEX = re.compile(
@@ -894,7 +897,7 @@ class Validator:
                         f"rl_env_config is only supported for rft_eval and rft_multiturn_eval tasks, but you provided {eval_task.value}"
                     )
                 if not rl_env_config.get("reward_lambda_arn"):
-                    errors.append(f"rl_env must contain a reward_lambda_arn")
+                    errors.append("rl_env must contain a reward_lambda_arn")
                 else:
                     reward_lambda_arn = rl_env_config.get("reward_lambda_arn")
                     if not isinstance(
@@ -962,6 +965,26 @@ class Validator:
                         f"'{key}' is required, but was not found in your recipe"
                     )
                 continue
+
+            # Special validation for save_steps in RFT multiturn training
+            if key == "save_steps" and method in [
+                TrainingMethod.RFT_MULTITURN_LORA,
+                TrainingMethod.RFT_MULTITURN_FULL,
+            ]:
+                # Allow OmegaConf interpolation strings (e.g., "${oc.select:...}")
+                if isinstance(recipe_value, str) and recipe_value.startswith("${"):
+                    pass  # OmegaConf interpolation is valid
+                # Allow int values
+                elif isinstance(recipe_value, int):
+                    override_metadata["type"] = "int"
+                    pass  # Int is valid for RFT multiturn training
+                # Reject numeric strings like "10" - they should be integers
+                else:
+                    errors.append(
+                        f"'{key}' must be an integer, not a string. "
+                        f"Use {recipe_value} instead of '{recipe_value}'."
+                    )
+                    continue
 
             # Validate proper types are used
             if "type" in override_metadata:
@@ -1143,3 +1166,157 @@ class Validator:
 
         if errors:
             raise ValueError("\n".join(errors))
+
+
+def should_verify_rft_lambda(validation_config: Optional[dict]) -> bool:
+    """
+    Check if RFT lambda verification is enabled in validation config.
+
+    Args:
+        validation_config: Optional validation configuration dictionary
+
+    Returns:
+        True if RFT lambda verification is enabled, False otherwise
+    """
+    if not validation_config:
+        return False
+
+    rft_lambda_config = validation_config.get("rft_lambda", False)
+
+    # Support both boolean and dict configuration
+    if isinstance(rft_lambda_config, bool):
+        return rft_lambda_config
+    elif isinstance(rft_lambda_config, dict):
+        return rft_lambda_config.get("enabled", False)
+
+    return False
+
+
+def get_rft_verification_samples(validation_config: Optional[dict]) -> int:
+    """
+    Get number of samples for RFT lambda verification from validation config.
+
+    Args:
+        validation_config: Optional validation configuration dictionary
+
+    Returns:
+        Number of samples to use for verification (default: 10)
+    """
+    if not validation_config:
+        return 10
+
+    rft_lambda_config = validation_config.get("rft_lambda", False)
+
+    # If boolean, use default
+    if isinstance(rft_lambda_config, bool):
+        return 10
+
+    # If dict, get samples or use default
+    if isinstance(rft_lambda_config, dict):
+        return rft_lambda_config.get("samples", 10)
+
+    return 10
+
+
+def verify_rft_lambda(
+    lambda_arn: str,
+    sample_count: int,
+    data_s3_path: Optional[str],
+    region: str,
+    platform,
+) -> None:
+    """
+    Verify RFT lambda by invoking with sample data from S3.
+
+    Args:
+        lambda_arn: AWS Lambda ARN for reward computation
+        sample_count: Number of samples to use for verification
+        data_s3_path: S3 path to the training dataset (can be None)
+        region: AWS region
+        platform: Platform enum (Platform.SMHP or Platform.SMTJ)
+
+    Raises:
+        ValueError: If verification fails with detailed error message
+    """
+
+    if not data_s3_path:
+        raise ValueError(
+            "Cannot verify RFT lambda: data_s3_path is not set. "
+            "Please provide data_s3_path when initializing NovaModelCustomizer."
+        )
+
+    # Parse S3 path
+    s3_parts = _parse_s3_uri(data_s3_path)
+    if not s3_parts:
+        raise ValueError(
+            f"Invalid S3 path for data: {data_s3_path}. "
+            "Expected format: s3://bucket-name/path/to/data.jsonl"
+        )
+
+    bucket, key = s3_parts
+
+    try:
+        # Read sample data from S3
+        import boto3
+
+        s3_client = boto3.client("s3", region_name=region)
+        response = s3_client.get_object(Bucket=bucket, Key=key)
+
+        samples = []
+        for i, line in enumerate(response["Body"].iter_lines()):
+            if i >= sample_count:
+                break
+            try:
+                sample = json.loads(line.decode("utf-8"))
+                samples.append(sample)
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"Failed to parse JSON from line {i + 1} in {data_s3_path}: {str(e)}"
+                )
+
+        if not samples:
+            raise ValueError(
+                f"No samples found in {data_s3_path}. "
+                "Please ensure the data file contains valid JSONL data."
+            )
+
+        from amzn_nova_customization_sdk.util.logging import logger
+
+        logger.info(f"Verifying RFT lambda with {len(samples)} sample(s)...")
+
+    except Exception as e:
+        if isinstance(e, ValueError):
+            raise
+        raise ValueError(
+            f"Failed to read samples from {data_s3_path}: {str(e)}\n"
+            "Please verify the S3 path is correct and you have read permissions."
+        )
+
+    # Use the centralized verify_reward_function utility
+    try:
+        result = verify_reward_function(
+            reward_function=lambda_arn,
+            sample_data=samples,
+            region=region,
+            validate_format=True,
+            platform=platform,
+        )
+
+        from amzn_nova_customization_sdk.util.logging import logger
+
+        logger.info(
+            f"RFT lambda verification successful: {result['successful_samples']}/{result['total_samples']} sample(s) passed"
+        )
+
+    except ValueError as e:
+        # Add additional context to the error message
+        error_message = str(e)
+        additional_context = (
+            f"\n\nLambda ARN: {lambda_arn}\n"
+            f"Samples tested: {len(samples)}\n"
+            "Please verify your lambda function is correctly configured."
+        )
+        # Raise from None to avoid showing the double traceback
+        raise ValueError(
+            f"RFT lambda verification failed:\n\n{error_message}{additional_context}"
+        ) from None

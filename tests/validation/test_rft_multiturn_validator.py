@@ -324,7 +324,7 @@ class TestValidateStackName:
             "MyApp-Production",
             "Stack",
             "a",
-            "MyVeryLongStackNameWithManyCharacters123",
+            "ValidStackNameUnder32Chars",
         ]
         for name in valid_names:
             validate_stack_name(name)  # Should not raise
@@ -431,6 +431,35 @@ class TestValidateStackName:
         for name in invalid_names:
             with pytest.raises(ValueError, match="Invalid stack name"):
                 validate_stack_name(name)
+
+    def test_rejects_stack_names_exceeding_32_characters(self):
+        """Test that stack names longer than 32 characters are rejected for AGIModelLens compatibility."""
+        # Stack names > 32 characters should be rejected
+        invalid_names = [
+            "a" * 33,  # 33 characters
+            "rft-integration-test-NovaForgeSDK",  # 33 characters
+            "my-very-long-stack-name-that-exceeds-limit",  # 42 characters
+            "stack-name-with-exactly-33-charsx",  # 33 characters
+        ]
+        for name in invalid_names:
+            with pytest.raises(
+                ValueError,
+                match="is too long.*Maximum length is 32 characters",
+            ):
+                validate_stack_name(name)
+
+    def test_accepts_stack_names_at_or_under_32_characters(self):
+        """Test that stack names with 32 or fewer characters are accepted."""
+        # Stack names <= 32 characters should be accepted
+        valid_names = [
+            "a" * 32,  # Exactly 32 characters
+            "a" * 31,  # 31 characters
+            "short-stack",  # 11 characters
+            "rft-integration-test",  # 21 characters
+            "stack-name-exactly-32-chars-ok",  # 31 characters
+        ]
+        for name in valid_names:
+            validate_stack_name(name)  # Should not raise
 
 
 class TestValidateRegion:

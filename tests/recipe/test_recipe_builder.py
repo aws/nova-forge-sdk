@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, Mock, patch
 
+import pytest
 import yaml
 
 from amzn_nova_customization_sdk.manager.runtime_manager import RuntimeManager
@@ -3263,6 +3264,381 @@ class TestRecipeBuilder(unittest.TestCase):
             # Override values should be used since no data_mixing_instance was provided
             self.assertEqual(config["data_mixing"]["customer_data_percent"], 80)
             self.assertEqual(config["data_mixing"]["nova_code_percent"], 100)
+
+    @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.Validator")
+    def test_save_steps_override_with_integer(
+        self, mock_validator, mock_download, mock_metadata
+    ):
+        """Test that save_steps can be overridden with an integer value"""
+        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+
+        recipe_template = {
+            "run": {"name": "{{name}}"},
+            "training_config": {
+                "trainer": {
+                    "max_steps": "{{max_steps}}",
+                    "save_steps": "{{save_steps}}",
+                }
+            },
+        }
+
+        overrides_template = {
+            "name": {"default": "test-job", "type": "string"},
+            "max_steps": {"default": 1000, "type": "integer"},
+            "save_steps": {
+                "default": "${oc.select:training_config.trainer.max_steps}",
+                "type": "string",
+            },
+        }
+
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=self.platform,
+            model=self.mock_model,
+            method=self.method,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "recipe.yaml")
+
+            # Override save_steps with an integer
+            overrides = {"save_steps": 100}
+            recipe_path, *_ = builder.build_and_validate(
+                overrides=overrides,
+                output_recipe_path=output_path,
+            )
+
+            with open(recipe_path, "r") as f:
+                config = yaml.safe_load(f)
+
+            # save_steps should be an integer, not a string
+            self.assertEqual(config["training_config"]["trainer"]["save_steps"], 100)
+            self.assertIsInstance(
+                config["training_config"]["trainer"]["save_steps"], int
+            )
+
+    @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
+    def test_save_steps_override_with_numeric_string(
+        self, mock_download, mock_metadata
+    ):
+        """Test that save_steps numeric string raises validation error"""
+        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+
+        recipe_template = {
+            "run": {"name": "{{name}}"},
+            "training_config": {
+                "trainer": {
+                    "max_steps": "{{max_steps}}",
+                    "save_steps": "{{save_steps}}",
+                }
+            },
+        }
+
+        overrides_template = {
+            "name": {"default": "test-job", "type": "string"},
+            "max_steps": {"default": 1000, "type": "integer"},
+            "save_steps": {
+                "default": "${oc.select:training_config.trainer.max_steps}",
+                "type": "string",
+            },
+        }
+
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        # Create a temporary recipe file for RFT multiturn infra
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_recipe_path = os.path.join(tmpdir, "temp_recipe.yaml")
+            with open(temp_recipe_path, "w") as f:
+                yaml.dump(recipe_template, f)
+
+            # Mock RFT multiturn infra with required methods
+            mock_rft_infra = Mock()
+            mock_rft_infra.get_recipe_path.return_value = temp_recipe_path
+            mock_rft_infra.get_recipe_overrides.return_value = {}
+
+            # Mock infra with cluster_name for SMHP
+            mock_infra = Mock(spec=RuntimeManager)
+            mock_infra.instance_type = self.instance_type
+            mock_infra.instance_count = self.instance_count
+            mock_infra.cluster_name = "test-cluster"
+            mock_infra.region = self.region
+
+            builder = RecipeBuilder(
+                region=self.region,
+                job_name=self.job_name,
+                platform=Platform.SMHP,  # RFT multiturn requires HyperPod
+                model=Model.NOVA_LITE_2,  # Use actual Model enum for RFT multiturn
+                method=TrainingMethod.RFT_MULTITURN_LORA,  # Use RFT multiturn method
+                instance_type=self.instance_type,
+                instance_count=self.instance_count,
+                infra=mock_infra,
+                output_s3_path=self.output_s3,
+                data_s3_path=self.data_s3,
+                rft_multiturn_infra=mock_rft_infra,  # Required for RFT multiturn
+            )
+
+            output_path = os.path.join(tmpdir, "recipe.yaml")
+
+            # Override save_steps with a numeric string - should raise error
+            overrides = {"save_steps": "50"}
+
+            # Should raise error - numeric strings are not valid, must be integers
+            with self.assertRaises(ValueError) as context:
+                builder.build_and_validate(
+                    overrides=overrides,
+                    output_recipe_path=output_path,
+                    validation_config={
+                        "infra": False,
+                        "iam": False,
+                    },  # Skip AWS validation
+                )
+
+            self.assertIn("must be an integer, not a string", str(context.exception))
+            self.assertIn("Use 50 instead of", str(context.exception))
+
+    @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.Validator")
+    def test_save_steps_omegaconf_interpolation_preserved(
+        self, mock_validator, mock_download, mock_metadata
+    ):
+        """Test that OmegaConf interpolation strings are preserved for save_steps"""
+        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+
+        recipe_template = {
+            "run": {"name": "{{name}}"},
+            "training_config": {
+                "trainer": {
+                    "max_steps": "{{max_steps}}",
+                    "save_steps": "{{save_steps}}",
+                }
+            },
+        }
+
+        overrides_template = {
+            "name": {"default": "test-job", "type": "string"},
+            "max_steps": {"default": 1000, "type": "integer"},
+            "save_steps": {
+                "default": "${oc.select:training_config.trainer.max_steps}",
+                "type": "string",
+            },
+        }
+
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=self.platform,
+            model=self.mock_model,
+            method=self.method,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "recipe.yaml")
+
+            # Don't override save_steps, use default OmegaConf interpolation
+            overrides = {}
+            recipe_path, *_ = builder.build_and_validate(
+                overrides=overrides,
+                output_recipe_path=output_path,
+            )
+
+            with open(recipe_path, "r") as f:
+                config = yaml.safe_load(f)
+
+            # save_steps should preserve the OmegaConf interpolation string
+            self.assertEqual(
+                config["training_config"]["trainer"]["save_steps"],
+                "${oc.select:training_config.trainer.max_steps}",
+            )
+            self.assertIsInstance(
+                config["training_config"]["trainer"]["save_steps"], str
+            )
+
+    @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_customization_sdk.recipe.recipe_builder.load_file_as_string")
+    @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
+    def test_save_steps_input_recipe_with_numeric_string(
+        self, mock_download, mock_load_file, mock_metadata
+    ):
+        """Test that save_steps numeric string from input recipe raises validation error"""
+        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+
+        recipe_template = {
+            "run": {"name": "{{name}}"},
+            "training_config": {
+                "trainer": {
+                    "max_steps": "{{max_steps}}",
+                    "save_steps": "{{save_steps}}",
+                }
+            },
+        }
+
+        overrides_template = {
+            "name": {"default": "test-job", "type": "string"},
+            "max_steps": {"default": 1000, "type": "integer"},
+            "save_steps": {
+                "default": "${oc.select:training_config.trainer.max_steps}",
+                "type": "string",
+            },
+        }
+
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        # Input recipe with save_steps as numeric string
+        input_recipe_content = """
+        run:
+          name: my-job
+        training_config:
+          trainer:
+            max_steps: 200
+            save_steps: "75"
+        """
+        mock_load_file.return_value = input_recipe_content
+
+        # Create a temporary recipe file for RFT multiturn infra
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_recipe_path = os.path.join(tmpdir, "temp_recipe.yaml")
+            with open(temp_recipe_path, "w") as f:
+                yaml.dump(recipe_template, f)
+
+            # Mock RFT multiturn infra with required methods
+            mock_rft_infra = Mock()
+            mock_rft_infra.get_recipe_path.return_value = temp_recipe_path
+            mock_rft_infra.get_recipe_overrides.return_value = {}
+
+            # Mock infra with cluster_name for SMHP
+            mock_infra = Mock(spec=RuntimeManager)
+            mock_infra.instance_type = self.instance_type
+            mock_infra.instance_count = self.instance_count
+            mock_infra.cluster_name = "test-cluster"
+            mock_infra.region = self.region
+
+            builder = RecipeBuilder(
+                region=self.region,
+                job_name=self.job_name,
+                platform=Platform.SMHP,  # RFT multiturn requires HyperPod
+                model=Model.NOVA_LITE_2,  # Use actual Model enum for RFT multiturn
+                method=TrainingMethod.RFT_MULTITURN_FULL,  # Use RFT multiturn method
+                instance_type=self.instance_type,
+                instance_count=self.instance_count,
+                infra=mock_infra,
+                output_s3_path=self.output_s3,
+                data_s3_path=self.data_s3,
+                rft_multiturn_infra=mock_rft_infra,  # Required for RFT multiturn
+            )
+
+            output_path = os.path.join(tmpdir, "recipe.yaml")
+            input_recipe_path = os.path.join(tmpdir, "input_recipe.yaml")
+
+            # Should raise error - numeric strings are not valid, must be integers
+            with self.assertRaises(ValueError) as context:
+                builder.build_and_validate(
+                    input_recipe_path=input_recipe_path,
+                    output_recipe_path=output_path,
+                    validation_config={
+                        "infra": False,
+                        "iam": False,
+                    },  # Skip AWS validation
+                )
+
+            self.assertIn("must be an integer, not a string", str(context.exception))
+
+    @patch("amzn_nova_customization_sdk.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_customization_sdk.util.recipe.download_templates_from_s3")
+    def test_save_steps_override_does_not_affect_other_params(
+        self, mock_download, mock_metadata
+    ):
+        """Test that save_steps validation doesn't affect other string parameters"""
+        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+
+        recipe_template = {
+            "run": {"name": "{{name}}"},
+            "training_config": {
+                "trainer": {
+                    "max_steps": "{{max_steps}}",
+                    "save_steps": "{{save_steps}}",
+                },
+                "custom_param": "{{custom_param}}",
+            },
+        }
+
+        overrides_template = {
+            "name": {"default": "test-job", "type": "string"},
+            "max_steps": {"default": 1000, "type": "integer"},
+            "save_steps": {
+                "default": "${oc.select:training_config.trainer.max_steps}",
+                "type": "string",
+            },
+            "custom_param": {"default": "default_value", "type": "string"},
+        }
+
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        # Create a temporary recipe file for RFT multiturn infra
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_recipe_path = os.path.join(tmpdir, "temp_recipe.yaml")
+            with open(temp_recipe_path, "w") as f:
+                yaml.dump(recipe_template, f)
+
+            # Mock RFT multiturn infra with required methods
+            mock_rft_infra = Mock()
+            mock_rft_infra.get_recipe_path.return_value = temp_recipe_path
+            mock_rft_infra.get_recipe_overrides.return_value = {}
+
+            # Mock infra with cluster_name for SMHP
+            mock_infra = Mock(spec=RuntimeManager)
+            mock_infra.instance_type = self.instance_type
+            mock_infra.instance_count = self.instance_count
+            mock_infra.cluster_name = "test-cluster"
+            mock_infra.region = self.region
+
+            builder = RecipeBuilder(
+                region=self.region,
+                job_name=self.job_name,
+                platform=Platform.SMHP,  # RFT multiturn requires HyperPod
+                model=Model.NOVA_LITE_2,  # Use actual Model enum for RFT multiturn
+                method=TrainingMethod.RFT_MULTITURN_LORA,  # Use RFT multiturn method
+                instance_type=self.instance_type,
+                instance_count=self.instance_count,
+                infra=mock_infra,
+                output_s3_path=self.output_s3,
+                data_s3_path=self.data_s3,
+                rft_multiturn_infra=mock_rft_infra,  # Required for RFT multiturn
+            )
+
+            output_path = os.path.join(tmpdir, "recipe.yaml")
+
+            # Override save_steps with integer and custom_param with numeric string
+            # save_steps must be integer, but custom_param can be a numeric string
+            overrides = {"save_steps": 30, "custom_param": "100"}
+
+            # Should NOT raise error - save_steps is integer, custom_param can be string
+            recipe_path, *_ = builder.build_and_validate(
+                overrides=overrides,
+                output_recipe_path=output_path,
+                validation_config={"infra": False, "iam": False},  # Skip AWS validation
+            )
+
+            # Verify the recipe was created successfully
+            self.assertTrue(os.path.exists(recipe_path))
 
 
 if __name__ == "__main__":

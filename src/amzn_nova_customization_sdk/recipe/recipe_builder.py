@@ -763,12 +763,15 @@ class RecipeBuilder:
         Generate a path to save a recipe YAML file at
 
         Args:
-            provided_recipe_path: The path specified by callers of `build`, if it is present
+            provided_recipe_path: The generated_recipes_dir specified by the caller, if present
 
         Returns:
             The path where the file will be saved at
         """
-        if provided_recipe_path is not None:
+        if provided_recipe_path is not None and (
+            os.path.isfile(provided_recipe_path)
+            or provided_recipe_path.endswith(".yaml")
+        ):
             return RecipePath(provided_recipe_path)
         elif self.platform == Platform.SMTJ:
             try:

@@ -11,6 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# NOTE: If the structure of any format schema (e.g., RFT_MULTITURN_FORMAT, SFT_NOVA_ONE_CONVERSE_2024, etc.)
+# is modified, ensure that the corresponding pydantic validation models in dataset_validator/ are updated
+# to match the new schema structure.
+
 SFT_NOVA_ONE_CONVERSE_2024 = {
     "type": "object",
     "properties": {
@@ -527,5 +531,61 @@ CPT_FORMAT = {
         "text": {"type": "string"},
     },
     "required": ["text"],
+    "additionalProperties": False,
+}
+
+RFT_MULTITURN_FORMAT = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "metadata": {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "oneOf": [
+                        {"type": "string", "minLength": 1},
+                        {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "role": {"type": "string"},
+                                    "content": {"type": ["string", "null"]},
+                                    "tool_calls": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "id": {"type": "string"},
+                                                "type": {"type": "string"},
+                                                "function": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "name": {"type": "string"},
+                                                        "arguments": {"type": "string"},
+                                                    },
+                                                    "required": ["name", "arguments"],
+                                                },
+                                            },
+                                            "required": ["id", "type", "function"],
+                                        },
+                                    },
+                                    "tool_call_id": {"type": "string"},
+                                },
+                                "required": ["role"],
+                            },
+                        },
+                    ]
+                },
+                "answer": {"type": "string"},
+                "task": {"type": "string"},
+                "info": {"oneOf": [{"type": "object"}, {"type": "string"}]},
+            },
+            "required": ["prompt"],
+            "additionalProperties": False,
+        },
+    },
+    "required": ["id", "metadata"],
     "additionalProperties": False,
 }

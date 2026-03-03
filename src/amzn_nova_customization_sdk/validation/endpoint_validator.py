@@ -11,8 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import logging
 import re
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
+
+from amzn_nova_customization_sdk.model.model_config import SUPPORTED_SMI_CONFIGS
+from amzn_nova_customization_sdk.model.model_enums import Model
+from amzn_nova_customization_sdk.util.logging import logger
 
 S3_URI_PREFIX_REGEX = re.compile(r"^s3://[a-zA-Z0-9.-]+(?:/[a-zA-Z0-9_.-]+)*/$")
 
@@ -59,12 +64,18 @@ def validate_endpoint_arn(endpoint_arn: str) -> None:
         )
 
 
-def validate_sagemaker_environment_variables(env_vars: Dict[str, str]) -> None:
+def validate_sagemaker_environment_variables(
+    env_vars: Dict[str, str],
+    model: Optional[Model] = None,
+    instance_type: Optional[str] = None,
+) -> None:
     """
     Validation method that checks string is a SageMaker endpoint that is a prefix
 
     Args:
         env_vars: User provided environment variables
+        model: Nova model being deployed (for SMI config validation)
+        instance_type: SageMaker instance type (for SMI config validation)
 
     Raises:
         ValueError: If validation fails
@@ -124,6 +135,47 @@ def validate_sagemaker_environment_variables(env_vars: Dict[str, str]) -> None:
 
         except ValueError as e:
             raise ValueError(f"Invalid value for {key}: {e}")
+
+    # Validate CONTEXT_LENGTH and MAX_CONCURRENCY against supported SMI configs
+    if model is not None and instance_type is not None:
+        _validate_smi_config_bounds(env_vars, model, instance_type)
+
+
+def _validate_smi_config_bounds(
+    env_vars: Dict[str, str], model: Model, instance_type: str
+) -> None:
+    """Validate CONTEXT_LENGTH and MAX_CONCURRENCY against the supported SMI config table."""
+    config_key = (model, instance_type)
+    tiers = SUPPORTED_SMI_CONFIGS.get(config_key)
+
+    if tiers is None:
+        logger.warning(
+            f"No SMI configuration found for ({model.name}, {instance_type}). "
+            f"Skipping CONTEXT_LENGTH/MAX_CONCURRENCY bounds validation."
+        )
+        return
+
+    sorted_tiers = sorted(tiers, key=lambda t: t[0])
+    context_length = float(env_vars["CONTEXT_LENGTH"])
+    max_concurrency = float(env_vars["MAX_CONCURRENCY"])
+
+    # Find the applicable tier: smallest max_context_length >= user's context_length
+    max_supported_context = sorted_tiers[-1][0]
+    if context_length > max_supported_context:
+        raise ValueError(
+            f"CONTEXT_LENGTH={env_vars['CONTEXT_LENGTH']} exceeds maximum supported value "
+            f"of {max_supported_context} for {model.name} on {instance_type}."
+        )
+
+    for tier_context, tier_concurrency in sorted_tiers:
+        if context_length <= tier_context:
+            if max_concurrency > tier_concurrency:
+                raise ValueError(
+                    f"MAX_CONCURRENCY={env_vars['MAX_CONCURRENCY']} exceeds maximum supported value "
+                    f"of {tier_concurrency} for {model.name} on {instance_type} "
+                    f"at CONTEXT_LENGTH={env_vars['CONTEXT_LENGTH']} (tier <={tier_context})."
+                )
+            return
 
 
 def validate_unit_count(unit_count: Optional[int]) -> None:

@@ -47,6 +47,7 @@ from amzn_nova_customization_sdk.dataset.dataset_validator import (
     CPTDatasetValidator,
     EvalDatasetValidator,
     RFTDatasetValidator,
+    RFTMultiturnDatasetValidator,
     SFTDatasetValidator,
 )
 from amzn_nova_customization_sdk.model.model_enums import Model, TrainingMethod
@@ -252,6 +253,7 @@ class DatasetLoader(ABC):
             "convert_to_openai_rft": DatasetTransformer.convert_to_openai_rft,
             "convert_to_evaluation": DatasetTransformer.convert_to_evaluation,
             "convert_to_cpt": DatasetTransformer.convert_to_cpt,
+            "convert_to_rft_multiturn": DatasetTransformer.convert_to_rft_multiturn,
         }
 
         if method_name not in transformer_map:
@@ -276,13 +278,19 @@ class DatasetLoader(ABC):
         except jsonschema.exceptions.ValidationError:
             return False
 
-    def transform(self, method: TrainingMethod, model: Model) -> "DatasetLoader":
+    def transform(
+        self,
+        method: TrainingMethod,
+        model: Model,
+        eval_task: Optional[EvaluationTask] = None,
+    ) -> "DatasetLoader":
         """
         Transform the dataset to the required format for the training method and model.
 
         Args:
             method: The Training Method that the user wants to run (e.g. SFT_LORA)
             model: The Model (and version) that the user is planning to use (e.g. NOVA_PRO, NOVA_LITE_2)
+            eval_task: Optional evaluation task (required when method is EVALUATION)
 
         Returns:
             self: Updates the value of the transformed_dataset if a change is made.
@@ -294,6 +302,23 @@ class DatasetLoader(ABC):
         if peeked_value is None:
             logger.info("Dataset is empty. Call load() method to load data first")
             return self
+
+        # Warn if eval_task is not provided for EVALUATION method
+        if method == TrainingMethod.EVALUATION and eval_task is None:
+            logger.warning(
+                "`eval_task` not provided for EVALUATION method. "
+                "Using default evaluation transformation. "
+                "For RFT Multiturn evaluation, pass eval_task=EvaluationTask.RFT_MULTITURN_EVAL"
+            )
+
+        # For RFT_MULTITURN_EVAL, use the same transformation as RFT_MULTITURN training
+        if (
+            method == TrainingMethod.EVALUATION
+            and eval_task == EvaluationTask.RFT_MULTITURN_EVAL
+        ):
+            method = (
+                TrainingMethod.RFT_MULTITURN_LORA
+            )  # Use RFT_MULTITURN transformation
 
         # Find the right schema for the training method and model combination.
         transform_config: Optional[Dict[str, Any]] = None
@@ -392,18 +417,37 @@ class DatasetLoader(ABC):
             logger.info("Dataset is empty. Call load() method to load data first")
             return self
 
+        # Warn if eval_task is not provided for EVALUATION method
+        if method == TrainingMethod.EVALUATION and eval_task is None:
+            logger.warning(
+                "`eval_task` not provided for EVALUATION method. "
+                "Using default evaluation validation. "
+                "For RFT Multiturn evaluation, pass eval_task=EvaluationTask.RFT_MULTITURN_EVAL"
+            )
+
         # Select the right validator for the provided method and validate.
         if method in (TrainingMethod.SFT_LORA, TrainingMethod.SFT_FULL):
             # Handles SFT 1.0 and 2.0
             sft_validator = SFTDatasetValidator()
             sft_validator.validate(dataset, model)
         elif method == TrainingMethod.EVALUATION:
-            # Handles BYOD Eval datasets, NOT LLM-as-judge.
-            eval_validator = EvalDatasetValidator(eval_task)
-            eval_validator.validate(dataset, model)
+            if eval_task == EvaluationTask.RFT_MULTITURN_EVAL:
+                # RFT Multiturn Eval uses the same validation as RFT Multiturn training
+                rft_multiturn_validator = RFTMultiturnDatasetValidator(model)
+                rft_multiturn_validator.validate(dataset, model)
+            else:
+                # Handles BYOD Eval datasets, NOT LLM-as-judge
+                eval_validator = EvalDatasetValidator(eval_task)
+                eval_validator.validate(dataset, model)
         elif method in (TrainingMethod.RFT_FULL, TrainingMethod.RFT_LORA):
             rft_validator = RFTDatasetValidator(model)
             rft_validator.validate(dataset, model)
+        elif method in (
+            TrainingMethod.RFT_MULTITURN_FULL,
+            TrainingMethod.RFT_MULTITURN_LORA,
+        ):
+            rft_multiturn_validator = RFTMultiturnDatasetValidator(model)
+            rft_multiturn_validator.validate(dataset, model)
         elif method == TrainingMethod.CPT:
             cpt_validator = CPTDatasetValidator()
             cpt_validator.validate(dataset, model)

@@ -158,11 +158,12 @@ class TestMLflowUtilities(unittest.TestCase):
             ]
         }
 
-        # Test
-        result = get_default_mlflow_tracking_uri("us-west-2")
+        # Test - should raise ValueError
+        with self.assertRaises(ValueError) as context:
+            get_default_mlflow_tracking_uri("us-west-2")
 
-        # Verify
-        self.assertIsNone(result)
+        # Verify error message
+        self.assertIn("DefaultMLFlowApp not found", str(context.exception))
 
     @patch("boto3.client")
     def test_get_default_mlflow_tracking_uri_empty_list(self, mock_client_func):
@@ -172,11 +173,12 @@ class TestMLflowUtilities(unittest.TestCase):
         mock_client_func.return_value = mock_client
         mock_client.list_mlflow_apps.return_value = {"Summaries": []}
 
-        # Test
-        result = get_default_mlflow_tracking_uri("us-west-2")
+        # Test - should raise ValueError
+        with self.assertRaises(ValueError) as context:
+            get_default_mlflow_tracking_uri("us-west-2")
 
-        # Verify
-        self.assertIsNone(result)
+        # Verify error message
+        self.assertIn("DefaultMLFlowApp not found", str(context.exception))
 
     @patch("boto3.client")
     def test_get_default_mlflow_tracking_uri_access_denied(self, mock_client_func):
@@ -193,11 +195,12 @@ class TestMLflowUtilities(unittest.TestCase):
             error_response, "list_mlflow_apps"
         )
 
-        # Test
-        result = get_default_mlflow_tracking_uri("us-west-2")
+        # Test - should raise ValueError
+        with self.assertRaises(ValueError) as context:
+            get_default_mlflow_tracking_uri("us-west-2")
 
-        # Verify
-        self.assertIsNone(result)
+        # Verify error message
+        self.assertIn("Access denied", str(context.exception))
 
     @patch("boto3.client")
     def test_get_default_mlflow_tracking_uri_client_error(self, mock_client_func):
@@ -214,11 +217,12 @@ class TestMLflowUtilities(unittest.TestCase):
             error_response, "list_mlflow_apps"
         )
 
-        # Test
-        result = get_default_mlflow_tracking_uri("us-west-2")
+        # Test - should raise ValueError
+        with self.assertRaises(ValueError) as context:
+            get_default_mlflow_tracking_uri("us-west-2")
 
-        # Verify
-        self.assertIsNone(result)
+        # Verify error message
+        self.assertIn("Error listing MLflow apps", str(context.exception))
 
     @patch("boto3.client")
     def test_get_default_mlflow_tracking_uri_no_credentials(self, mock_client_func):
@@ -228,11 +232,12 @@ class TestMLflowUtilities(unittest.TestCase):
 
         mock_client_func.side_effect = NoCredentialsError()
 
-        # Test
-        result = get_default_mlflow_tracking_uri("us-west-2")
+        # Test - should raise ValueError
+        with self.assertRaises(ValueError) as context:
+            get_default_mlflow_tracking_uri("us-west-2")
 
-        # Verify
-        self.assertIsNone(result)
+        # Verify error message
+        self.assertIn("AWS credentials not configured", str(context.exception))
 
     @patch("boto3.client")
     def test_get_default_mlflow_tracking_uri_no_region_error(self, mock_client_func):
@@ -242,11 +247,12 @@ class TestMLflowUtilities(unittest.TestCase):
 
         mock_client_func.side_effect = NoRegionError()
 
-        # Test
-        result = get_default_mlflow_tracking_uri()
+        # Test - should raise ValueError
+        with self.assertRaises(ValueError) as context:
+            get_default_mlflow_tracking_uri()
 
-        # Verify
-        self.assertIsNone(result)
+        # Verify error message
+        self.assertIn("AWS region not configured", str(context.exception))
 
     @patch("boto3.client")
     def test_get_default_mlflow_tracking_uri_unexpected_error(self, mock_client_func):
@@ -254,11 +260,14 @@ class TestMLflowUtilities(unittest.TestCase):
         # Setup mock to raise unexpected exception
         mock_client_func.side_effect = RuntimeError("Unexpected error")
 
-        # Test
-        result = get_default_mlflow_tracking_uri("us-west-2")
+        # Test - should raise ValueError
+        with self.assertRaises(ValueError) as context:
+            get_default_mlflow_tracking_uri("us-west-2")
 
-        # Verify
-        self.assertIsNone(result)
+        # Verify error message
+        self.assertIn(
+            "Unexpected error during MLflow auto-discovery", str(context.exception)
+        )
 
 
 class TestMLflowValidation(unittest.TestCase):

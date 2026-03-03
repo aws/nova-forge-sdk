@@ -17,6 +17,7 @@ Main entrypoint for customizing and training Nova models.
 This module provides the NovaModelCustomizer class which orchestrates the training process.
 """
 
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, cast
@@ -47,11 +48,14 @@ from amzn_nova_customization_sdk.model.model_enums import (
     TrainingMethod,
 )
 from amzn_nova_customization_sdk.model.nova_model_customizer_util import (
+    load_existing_result,
+    persist_result,
     requires_custom_eval_data,
     resolve_model_checkpoint_path,
     set_output_s3_path,
 )
 from amzn_nova_customization_sdk.model.result import (
+    BaseJobResult,
     EvaluationResult,
     SMHPEvaluationResult,
     SMHPTrainingResult,
@@ -61,6 +65,7 @@ from amzn_nova_customization_sdk.model.result import (
     TrainingResult,
 )
 from amzn_nova_customization_sdk.model.result.inference_result import InferenceResult
+from amzn_nova_customization_sdk.model.result.job_result import JobStatus
 from amzn_nova_customization_sdk.monitor.log_monitor import CloudWatchLogMonitor
 from amzn_nova_customization_sdk.monitor.mlflow_monitor import MLflowMonitor
 from amzn_nova_customization_sdk.recipe.recipe_builder import RecipeBuilder
@@ -100,14 +105,13 @@ from amzn_nova_customization_sdk.validation.endpoint_validator import (
 )
 from amzn_nova_customization_sdk.validation.validator import (
     Validator,
+    get_rft_verification_samples,
+    should_verify_rft_lambda,
+    verify_rft_lambda,
 )
 
 
 class NovaModelCustomizer:
-    # Configs not documented in __init__
-    validation_config = None
-    generated_recipe_dir = None
-
     def __init__(
         self,
         model: Model,
@@ -122,6 +126,7 @@ class NovaModelCustomizer:
         deployment_mode: DeploymentMode = DeploymentMode.FAIL_IF_EXISTS,
         data_mixing_enabled: bool = False,
         image_uri: Optional[str] = None,
+        enable_job_caching: bool = False,
     ):
         """
         Initializes a NovaModelCustomizer instance.
@@ -135,13 +140,17 @@ class NovaModelCustomizer:
             model_path: Optional S3 path for model path
             validation_config: Optional dict to control validation. Keys: 'iam' (bool), 'infra' (bool).
                              Defaults to {'iam': True, 'infra': True}
-            generated_recipe_dir: Optional path to save generated recipe YAMLs
+            generated_recipe_dir: Optional path to save generated recipe YAMLs and persist job results.
+                                If None, no result persistence occurs.
             mlflow_monitor: Optional MLflowMonitor instance for experiment tracking
             deployment_mode: Behavior when deploying to existing endpoint name. Options:
                            FAIL_IF_EXISTS (default), UPDATE_IF_EXISTS
             data_mixing: Enable data mixing. Default is False.
             image_uri: Optional custom ECR image URI to override the default training image.
                       Must be in format: <account>.dkr.ecr.<region>.amazonaws.com/<repository>:<tag>
+            enable_job_caching: Whether to enable job result caching. When enabled, completed
+                              job results are cached to job_cache_dir (default: .cached-nova-jobs/)
+                              and reused for identical job configurations.
 
         Raises:
             ValueError: If region is unsupported or model is invalid
@@ -197,6 +206,21 @@ class NovaModelCustomizer:
             self._init_data_mixing(self.model, self.method, self.platform)
 
         self.endpoint_info: Optional[EndpointInfo] = None
+
+        # Job caching configuration
+        self.enable_job_caching = enable_job_caching
+        self.job_cache_dir = ".cached-nova-jobs"
+        self._job_caching_config = {
+            "include_core": True,  # model, method, data_s3_path, job_type
+            "include_recipe": True,  # recipe_path, override parameters
+            "include_infra": False,  # instance_type, instance_count
+            "include_params": [],  # Additional params to include in hash
+            "exclude_params": [],  # Specific params to exclude ("*" = exclude all defaults)
+            "allowed_statuses": [
+                JobStatus.COMPLETED,
+                JobStatus.IN_PROGRESS,
+            ],  # JobStatus values allowed for reuse
+        }
 
     @property
     def model(self) -> Model:
@@ -352,6 +376,30 @@ class NovaModelCustomizer:
         Raises:
             Exception: If job execution fails
         """
+        existing_result = load_existing_result(
+            self,
+            job_name,
+            "training",
+            recipe_path=recipe_path,
+            overrides=overrides or {},
+            rft_lambda_arn=rft_lambda_arn,
+            rft_multiturn_infra=rft_multiturn_infra,
+            validation_data_s3_path=validation_data_s3_path,
+        )
+        if existing_result:
+            return cast(TrainingResult, existing_result)
+
+        # Verify RFT lambda if verification is enabled (single-turn only)
+        if should_verify_rft_lambda(self.validation_config) and rft_lambda_arn:
+            sample_count = get_rft_verification_samples(self.validation_config)
+            verify_rft_lambda(
+                lambda_arn=rft_lambda_arn,
+                sample_count=sample_count,
+                data_s3_path=self.data_s3_path,
+                region=self.region,
+                platform=self.platform,
+            )
+
         # Create RecipeBuilder and let it handle all data mixing logic
         recipe_builder = RecipeBuilder(
             region=self.region,
@@ -447,6 +495,19 @@ class NovaModelCustomizer:
                 f"Output S3 path is: {training_result.model_artifacts.output_s3_path}."
             )
 
+        # Persist result if enabled
+        persist_result(
+            self,
+            training_result,
+            job_name,
+            "training",
+            recipe_path=recipe_path,
+            overrides=overrides or {},
+            rft_lambda_arn=rft_lambda_arn,
+            rft_multiturn_infra=rft_multiturn_infra,
+            validation_data_s3_path=validation_data_s3_path,
+        )
+
         return training_result
 
     def evaluate(
@@ -506,6 +567,23 @@ class NovaModelCustomizer:
         :return: EvaluationResult: Metadata object containing job ID, start time, and evaluation output path
                  or None if dry_run is enabled
         """
+        # Check for existing result before starting new evaluation
+        existing_result = load_existing_result(
+            self,
+            job_name,
+            "evaluation",
+            eval_task=eval_task,
+            model_path=model_path,
+            subtask=subtask,
+            data_s3_path=data_s3_path,
+            recipe_path=recipe_path,
+            overrides=overrides or {},
+            processor=processor,
+            rl_env=rl_env,
+            job_result=job_result,
+        )
+        if existing_result:
+            return cast(EvaluationResult, existing_result)
 
         # Resolve model checkpoint path
         resolved_model_path = resolve_model_checkpoint_path(
@@ -628,6 +706,23 @@ class NovaModelCustomizer:
             )
         logger.info(
             f"Started eval job '{self.job_id}'. Artifacts will be published to {eval_output_s3_path}"
+        )
+
+        # Persist result if enabled
+        persist_result(
+            self,
+            evaluation_result,
+            job_name,
+            "evaluation",
+            eval_task=eval_task,
+            model_path=model_path,
+            subtask=subtask,
+            data_s3_path=data_s3_path,
+            recipe_path=recipe_path,
+            overrides=overrides or {},
+            processor=processor,
+            rl_env=rl_env,
+            job_result=job_result,
         )
 
         return evaluation_result
@@ -755,7 +850,9 @@ class NovaModelCustomizer:
         """
 
         if environment_variables:
-            validate_sagemaker_environment_variables(environment_variables)
+            validate_sagemaker_environment_variables(
+                environment_variables, model=self.model, instance_type=instance_type
+            )
             env_vars = environment_variables
         else:
             # Use default environment variables if not provided
@@ -927,7 +1024,7 @@ class NovaModelCustomizer:
                     else:
                         # UPDATE_OR_REPLACE: fall back to delete
                         logger.warning(
-                            f"Missing update permissions, will fall back to delete/recreate"
+                            "Missing update permissions, will fall back to delete/recreate"
                         )
                         attempt_pt_update = False
                         should_delete_existing = True
@@ -1138,6 +1235,20 @@ class NovaModelCustomizer:
                           the checkpoint path from the training job's output.
         :return: InferenceResult or None if dry_run is enabled
         """
+        # Check for existing result before starting new batch inference
+        existing_result = load_existing_result(
+            self,
+            job_name,
+            "inference",
+            input_path=input_path,
+            output_s3_path=output_s3_path,
+            model_path=model_path,
+            recipe_path=recipe_path,
+            overrides=overrides or {},
+            job_result=job_result,
+        )
+        if existing_result:
+            return cast(InferenceResult, existing_result)
 
         # Resolve model checkpoint path
         resolved_model_path = resolve_model_checkpoint_path(
@@ -1238,6 +1349,21 @@ class NovaModelCustomizer:
             f"Started batch inference job '{self.job_id}'. \nArtifacts will be published to {inference_output_s3_path}.\n"
             f"After opening the tar file, look for {recipe_builder.job_name}/eval_results/inference_output.jsonl."
         )
+
+        # Persist result if enabled
+        persist_result(
+            self,
+            batch_inference_result,
+            job_name,
+            "inference",
+            input_path=input_path,
+            output_s3_path=output_s3_path,
+            model_path=model_path,
+            recipe_path=recipe_path,
+            overrides=overrides or {},
+            job_result=job_result,
+        )
+
         return batch_inference_result
 
     def get_logs(

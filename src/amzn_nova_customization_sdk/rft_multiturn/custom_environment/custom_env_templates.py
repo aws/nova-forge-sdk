@@ -105,8 +105,8 @@ dependencies = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.hatch.build.targets.wheel]
-packages = ["{module_name}"]
+[tool.hatch.build]
+include = ["{module_name}.py"]
 """
 
 README_TEMPLATE = """# {env_name}

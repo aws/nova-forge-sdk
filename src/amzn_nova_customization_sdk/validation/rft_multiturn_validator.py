@@ -33,7 +33,7 @@ def validate_env_id(vf_env_id: str) -> None:
     """
     if not re.match(r"^[a-zA-Z0-9_-]+$", vf_env_id):
         raise ValueError(
-            f"Invalid environment ID: {vf_env_id}. "
+            "Invalid environment ID: {vf_env_id}. "
             "Only alphanumeric characters, hyphens, and underscores are allowed."
         )
 
@@ -110,6 +110,17 @@ def validate_stack_name(stack_name: str) -> None:
         raise ValueError(
             f"Invalid stack name: {stack_name}. "
             "Must start with a letter and contain only alphanumeric characters and hyphens."
+        )
+
+    # Validate AGIModelLens Lambda ARN compatibility
+    # Lambda function name will be: {stack_name}-SageMaker-rollout
+    # AGIModelLens requires: [a-zA-Z0-9._-]{0,32}[Ss]age[Mm]aker[a-zA-Z0-9._-]{0,32}
+    # This means the part before "-SageMaker" must be <= 32 characters
+    if len(stack_name) > 32:
+        raise ValueError(
+            f"Stack name '{stack_name}' is too long ({len(stack_name)} characters). "
+            f"Maximum length is 32 characters to ensure compatibility with AGIModelLens Lambda ARN validation. "
+            f"The Lambda function name will be '{stack_name}-SageMaker-rollout'."
         )
 
 
@@ -285,4 +296,81 @@ def validate_ecs_cluster_arn(cluster_arn: str) -> None:
         raise ValueError(
             f"Invalid ECS cluster ARN: {cluster_arn}. "
             f"Expected format: 'arn:aws:ecs:region:account:cluster/cluster-name'"
+        )
+
+
+def validate_amazon_linux_ami(ec2_client, instance_id: str) -> None:
+    """
+    Validate that an EC2 instance is using an Amazon Linux AMI.
+
+    This validation ensures compatibility with RFT workloads which require
+    Amazon Linux 2 (AL2) or Amazon Linux 2023 (AL2023).
+
+    Args:
+        ec2_client: Boto3 EC2 client
+        instance_id: EC2 instance ID to validate
+
+    Raises:
+        ValueError: If the instance is not using an Amazon Linux AMI
+
+    Note:
+        This function logs warnings for non-critical errors (e.g., API issues,
+        permissions) but raises ValueError for actual AMI validation failures.
+    """
+    from amzn_nova_customization_sdk.util.logging import logger
+
+    try:
+        # Get instance details
+        response = ec2_client.describe_instances(InstanceIds=[instance_id])
+        if not response["Reservations"]:
+            logger.warning(f"Instance {instance_id} not found during AMI validation")
+            return
+
+        instance = response["Reservations"][0]["Instances"][0]
+        image_id = instance.get("ImageId")
+        if not image_id:
+            logger.warning("Could not determine AMI ID for instance")
+            return
+
+        # Get AMI details
+        images = ec2_client.describe_images(ImageIds=[image_id])
+        if not images["Images"]:
+            logger.warning(f"Could not find AMI details for {image_id}")
+            return
+
+        image = images["Images"][0]
+        image_name = image.get("Name", "").lower()
+        image_description = image.get("Description", "").lower()
+
+        # Check if it's Amazon Linux (AL2, AL2023, or older AL1)
+        is_amazon_linux = (
+            "amzn" in image_name
+            or "amazon linux" in image_name
+            or "amazon linux" in image_description
+            or "al2023" in image_name
+            or "al2" in image_name
+        )
+
+        if not is_amazon_linux:
+            raise ValueError(
+                f"Instance {instance_id} is not using an Amazon Linux AMI. "
+                f"Found AMI: {image_id} ({image.get('Name', 'Unknown')}). "
+                f"Please use Amazon Linux 2 (AL2) or Amazon Linux 2023 (AL2023) for RFT workloads."
+            )
+
+        logger.info(f"Validated Amazon Linux AMI: {image.get('Name', image_id)}")
+
+    except ValueError:
+        # Re-raise ValueError from AMI validation - this is a critical error
+        raise
+    except ec2_client.exceptions.ClientError as e:
+        # If we can't describe the image (e.g., permissions issue), log warning but don't fail
+        logger.warning(
+            f"Could not validate AMI type: {e}. "
+            f"Proceeding with assumption of Amazon Linux."
+        )
+    except Exception as e:
+        # Only catch non-critical errors (e.g., API issues, permissions)
+        logger.warning(
+            f"Could not validate Amazon Linux AMI during initialization: {e}"
         )

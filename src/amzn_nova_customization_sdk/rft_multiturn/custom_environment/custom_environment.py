@@ -39,7 +39,7 @@ class CustomEnvironment:
     env_id: str
     local_path: Optional[str] = None
     s3_uri: Optional[str] = None
-    output_dir: str = "~/custom_envs"
+    output_dir: Optional[str] = None
     env_type: Literal["single_turn", "multi_turn"] = "single_turn"
 
     def create(self, overwrite: bool = False) -> "CustomEnvironment":
@@ -51,51 +51,52 @@ class CustomEnvironment:
 
         Returns:
             self for chaining
+
+        Raises:
+            ValueError: If output_dir is not set
         """
+        if not self.output_dir:
+            raise ValueError(
+                "output_dir is required when creating a new custom environment. "
+                "Example: CustomEnvironment(env_id='my_env', output_dir='~/custom_envs').create()"
+            )
+
         if self.env_type not in ["single_turn", "multi_turn"]:
             raise ValueError(
                 f"env_type must be 'single_turn' or 'multi_turn', got '{self.env_type}'"
             )
 
-        env_name_safe = self.env_id.replace("_", "-").lower()
+        env_name_safe = self.env_id
         module_name = env_name_safe.replace("-", "_")
         env_file = f"{module_name}.py"
 
         output_dir = os.path.expanduser(self.output_dir)
         env_dir = os.path.join(output_dir, env_name_safe)
-        module_dir = os.path.join(env_dir, module_name)
 
         if os.path.exists(env_dir) and not overwrite:
             raise FileExistsError(
                 f"Environment directory already exists: {env_dir}\nUse overwrite=True to replace it"
             )
 
-        os.makedirs(module_dir, exist_ok=True)
+        os.makedirs(env_dir, exist_ok=True)
         logger.info(f"Creating custom environment at: {env_dir}")
 
-        # Write __init__.py to make it a package
-        with open(os.path.join(module_dir, "__init__.py"), "w") as f:
-            f.write(
-                f"from .{module_name} import load_environment\n\n__all__ = ['load_environment']\n"
-            )
-        logger.info(f"Created __init__.py")
-
-        # Write environment file in the package directory
+        # Write environment file directly at root (like built-in environments)
         template = (
             SINGLE_TURN_TEMPLATE
             if self.env_type == "single_turn"
             else MULTI_TURN_TEMPLATE
         )
-        with open(os.path.join(module_dir, env_file), "w") as f:
+        with open(os.path.join(env_dir, env_file), "w") as f:
             f.write(template)
-        logger.info(f"Created {module_name}/{env_file}")
+        logger.info(f"Created {env_file}")
         logger.warning(
             f"IMPORTANT: Please customize the generated {env_file} file with your own environment logic:"
         )
         logger.warning("   - Replace dataset loading with your own data source")
         logger.warning("   - Implement your custom reward function")
         logger.warning("   - Configure parser and rubric for your specific task")
-        logger.warning(f"   See TODO comments in {os.path.join(module_dir, env_file)}")
+        logger.warning(f"   See TODO comments in {env_file}")
 
         # Write pyproject.toml
         with open(os.path.join(env_dir, "pyproject.toml"), "w") as f:
@@ -122,6 +123,9 @@ class CustomEnvironment:
         """
         Load existing custom environment from local_path.
 
+        If local_path points to a parent directory (no pyproject.toml),
+        will look for a subdirectory matching env_id.
+
         Returns:
             self for chaining
 
@@ -131,21 +135,33 @@ class CustomEnvironment:
         if not self.local_path:
             raise ValueError("local_path required to load environment")
 
-        # Construct full path to environment directory
-        base_path = os.path.expanduser(self.local_path)
-        env_name_safe = self.env_id.replace("_", "-").lower()
-        env_path = os.path.join(base_path, env_name_safe)
+        # Use the path exactly as provided by the user
+        env_path = os.path.expanduser(self.local_path)
 
         if not os.path.exists(env_path):
             raise ValueError(
-                f"Environment does not exist: {env_path}\n"
-                f"Create it first with CustomEnvironment(...).create()"
+                f"Environment path does not exist: {env_path}\n"
+                f"Provide the correct path to the environment directory"
             )
 
         if not os.path.isdir(env_path):
-            raise ValueError(f"Environment path is not a directory: {env_path}")
+            raise ValueError(f"Path is not a directory: {env_path}")
 
-        # Update local_path to point to the actual environment directory
+        # Check if this is an environment directory (has pyproject.toml)
+        # or a parent directory containing environments
+        if not os.path.exists(os.path.join(env_path, "pyproject.toml")):
+            # This is a parent directory, look for env_id subdirectory
+            env_subdir = os.path.join(env_path, self.env_id)
+            if os.path.exists(env_subdir) and os.path.isdir(env_subdir):
+                env_path = env_subdir
+            else:
+                raise ValueError(
+                    f"Not an environment directory (no pyproject.toml): {env_path}\n"
+                    f"Also tried: {env_subdir}\n"
+                    f"Provide the full path to the environment directory"
+                )
+
+        # Update local_path to the actual environment directory
         self.local_path = env_path
 
         logger.info(f"Loaded custom environment from: {env_path}")
@@ -168,35 +184,66 @@ class CustomEnvironment:
         if not os.path.exists(os.path.join(env_path, "pyproject.toml")):
             raise ValueError(f"Missing pyproject.toml in {env_path}")
 
-        # Check for Python module directory with load_environment
-        # Look for subdirectories that could be the module
-        subdirs = [
-            d
-            for d in os.listdir(env_path)
-            if os.path.isdir(os.path.join(env_path, d))
-            and not d.startswith(".")
-            and not d.startswith("__")
+        # Check for load_environment function in Python files
+        # First check root level (new structure), then src/ directory (old structure)
+        found_load_env = False
+
+        # Check new structure: Python files at root level
+        py_files_root = [
+            f
+            for f in os.listdir(env_path)
+            if f.endswith(".py") and not f.startswith("__")
         ]
 
-        found_load_env = False
-        for subdir in subdirs:
-            subdir_path = os.path.join(env_path, subdir)
-            py_files = [
-                f
-                for f in os.listdir(subdir_path)
-                if f.endswith(".py") and not f.startswith("__")
-            ]
+        for py_file in py_files_root:
+            with open(os.path.join(env_path, py_file), "r") as f:
+                if "def load_environment" in f.read():
+                    found_load_env = True
+                    break
 
-            for py_file in py_files:
-                with open(os.path.join(subdir_path, py_file), "r") as f:
-                    if "def load_environment" in f.read():
-                        found_load_env = True
-                        break
-            if found_load_env:
-                break
+        # Get the base folder name for later use
+        base_name = os.path.basename(env_path.rstrip("/"))
+        sanitized_name = base_name.replace("-", "_")
+
+        # If not found, check alternative structures
+        if not found_load_env:
+            # Check src/ directory (old structure)
+            src_path = os.path.join(env_path, "src")
+            if os.path.exists(src_path) and os.path.isdir(src_path):
+                py_files_src = [
+                    f
+                    for f in os.listdir(src_path)
+                    if f.endswith(".py") and not f.startswith("__")
+                ]
+
+                for py_file in py_files_src:
+                    with open(os.path.join(src_path, py_file), "r") as f:
+                        if "def load_environment" in f.read():
+                            found_load_env = True
+                            break
+
+        # If still not found, check subfolder with sanitized name (replace - with _)
+        if not found_load_env:
+            subfolder_path = os.path.join(env_path, sanitized_name)
+
+            if os.path.exists(subfolder_path) and os.path.isdir(subfolder_path):
+                py_files_subfolder = [
+                    f
+                    for f in os.listdir(subfolder_path)
+                    if f.endswith(".py") and not f.startswith("__")
+                ]
+
+                for py_file in py_files_subfolder:
+                    with open(os.path.join(subfolder_path, py_file), "r") as f:
+                        if "def load_environment" in f.read():
+                            found_load_env = True
+                            break
 
         if not found_load_env:
-            raise ValueError(f"No load_environment() function found in {env_path}")
+            raise ValueError(
+                f"No load_environment() function found in {env_path}\n"
+                f"Checked root level, src/ directory, and {sanitized_name}/ subfolder"
+            )
 
         logger.info(f"Environment validation passed: {env_path}")
         return True

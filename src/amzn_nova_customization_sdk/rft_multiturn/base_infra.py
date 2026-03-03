@@ -14,36 +14,36 @@
 """Base infrastructure classes and utilities for RFT Multiturn."""
 
 import json
+import os
+import signal
+import tarfile
+import tempfile
 import time
 from dataclasses import dataclass
 from enum import Enum
 from importlib import resources
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import boto3
+import sagemaker
 
 from amzn_nova_customization_sdk.util.logging import logger
-
-# Shared role and policy names
-RFT_EXECUTION_ROLE_NAME = "RFTExecutionRoleNovaSDK"
-RFT_POLICY_NAME = (
-    "RFTPolicyNovaSDK"  # Used for both task role name and inline policy name
+from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+    validate_stack_name,
 )
 
-# Stack name suffix
-STACK_NAME_SUFFIX = "NovaForgeSDK"
-
-# ECR repository name
-ECR_REPO_NAME = "nova-rft-base"
-
-# Log file names
-RFT_TRAIN_LOG = "rft_train.log"
-RFT_EVAL_LOG = "rft_eval.log"
-RFT_SAM_LOG = "rft_sam.log"
-
-# IAM propagation wait time in seconds
-IAM_PROPAGATION_WAIT_TIME = 15
-SAM_WAIT_TIME = 600
+from .constants import (
+    ECR_REPO_NAME,
+    IAM_PROPAGATION_WAIT_TIME,
+    RFT_EVAL_LOG,
+    RFT_EXECUTION_ROLE_NAME,
+    RFT_POLICY_NAME,
+    RFT_SAM_LOG,
+    RFT_TRAIN_LOG,
+    STACK_NAME_SUFFIX,
+    STARTER_KIT_S3,
+)
+from .utils import build_duplicate_job_error_message, validate_starter_kit_path
 
 
 def _wait_for_iam_propagation(
@@ -104,9 +104,6 @@ class VFEnvId(str, Enum):
 
     WORDLE = "wordle"
     TERMINAL_BENCH = "terminalbench_env"
-
-
-STARTER_KIT_S3 = "s3://nova-rft-starter-kit-c7363-206080352451-us-east-1/v1"
 
 
 def _load_rft_policies() -> dict:
@@ -349,10 +346,16 @@ class BaseRFTInfrastructure:
         stack_name: str,
         rft_role_name: str,
         custom_policy_path: Optional[str] = None,
+        starter_kit_path: Optional[str] = None,
     ):
+        # Validate stack name early (before any AWS operations)
+        validate_stack_name(stack_name)
+
         self.region = region
         self.rft_role_name = rft_role_name
         self.custom_policy_path = custom_policy_path
+        self.starter_kit_path = starter_kit_path
+        self._starter_kit_s3_uri: Optional[str] = None
         self.cfn_client = boto3.client("cloudformation", region_name=region)
 
         # Check if stack name has the required suffix
@@ -564,25 +567,80 @@ class BaseRFTInfrastructure:
         """
         raise NotImplementedError
 
-    def deploy_sam_stack(self):
+    def deploy_sam_stack(self, s3_bucket: Optional[str] = None):
         """
         Deploy SAM stack for Lambda/SQS/DynamoDB
+
+        Args:
+            s3_bucket: Optional S3 bucket for starter kit upload
         """
         raise NotImplementedError
 
-    def start_training_env(
-        self, vf_env_id: str, vf_env_args: Dict, stack_outputs: StackOutputs, **kwargs
+    def start_environment(
+        self,
+        env_type: EnvType,
+        vf_env_id: str,
+        vf_env_args: Dict,
+        stack_outputs: StackOutputs,
+        max_concurrent_rollouts: int = 40,
+        max_rollout_timeout: float = 300.0,
+        completion_poll_timeout: float = 600.0,
+        completion_poll_interval: float = 0.5,
+        rollout_poll_interval: float = 1.0,
+        log_output_directory: Optional[str] = None,
+        config_name: Optional[str] = None,
+        config_path: Optional[str] = None,
     ):
         """
-        Start training environment
-        """
-        raise NotImplementedError
+        Start environment using unified environment client.
 
-    def start_evaluation_env(
-        self, vf_env_id: str, vf_env_args: Dict, stack_outputs: StackOutputs, **kwargs
-    ):
-        """
-        Start evaluation environment
+        This method uses environment_client.py which provides:
+        - Simplified concurrency control (single max_concurrent_rollouts parameter)
+        - Per-rollout timeout handling (prevents stuck rollouts from blocking others)
+        - Built-in logging and metrics (automatic config snapshots and runtime stats)
+        - Duplicate rollout prevention (automatic deduplication by sample_id)
+        - YAML configuration support (version-controlled configs with env var interpolation)
+
+        Args:
+            env_type: Environment type (EnvType.TRAIN or EnvType.EVAL) for log file naming
+            vf_env_id: Verifier environment identifier
+            vf_env_args: Environment arguments dictionary
+            stack_outputs: Stack outputs containing URLs and queue information
+            max_concurrent_rollouts: Max concurrent rollouts (default: 40)
+                - Replaces old groups_per_batch × max_concurrent_batches × max_workers
+                - For migration: use your old max_workers value
+            max_rollout_timeout: Per-rollout timeout in seconds (default: 300)
+                - Prevents a single stuck rollout from blocking others
+            completion_poll_timeout: Completion polling timeout in seconds (default: 600)
+            completion_poll_interval: Completion poll interval in seconds (default: 0.5)
+            rollout_poll_interval: SQS polling interval in seconds (default: 1.0)
+                - Controls SQS message polling rate
+            log_output_directory: Directory for logs and metrics (optional)
+                - Writes config snapshots and runtime metrics to JSON files
+            config_name: Use YAML config instead of CLI flags (optional)
+                - If provided, loads config from configs/{config_name}.yaml
+                - When using config_name, other CLI parameters are ignored
+            config_path: Custom config directory path (optional)
+                - Overrides default "configs/" directory
+                - Use with config_name to load from custom location
+
+        Example (passing overrides):
+            rft_infra.start_environment(
+                env_type=EnvType.TRAIN,
+                vf_env_id="wordle",
+                vf_env_args={"max_examples": 1, "max_turns": 4},
+                max_concurrent_rollouts=40,
+                log_output_directory="/opt/ml/output/logs"
+            )
+
+        Example (passing config file):
+            rft_infra.start_environment(
+                env_type=EnvType.TRAIN,
+                vf_env_id="wordle",
+                vf_env_args={},
+                config_name="wordle_training",
+                config_path="/path/to/my/configs"
+            )
         """
         raise NotImplementedError
 
@@ -610,3 +668,285 @@ class BaseRFTInfrastructure:
         Clean up platform resources
         """
         raise NotImplementedError
+
+    def get_state(self) -> Dict:
+        """
+        Get platform-specific state for serialization.
+
+        Returns:
+            Dict containing platform-specific state that can be JSON serialized
+        """
+        raise NotImplementedError
+
+    def restore_state(self, state: Dict):
+        """
+        Restore platform-specific state after deserialization.
+
+        Args:
+            state: Platform-specific state dict from get_state()
+        """
+        raise NotImplementedError
+
+    def _upload_starter_kit_to_s3(
+        self, local_path: str, s3_bucket: str, region: str
+    ) -> str:
+        """
+        Package and upload local starter kit to S3.
+
+        Args:
+            local_path: Local path to starter kit directory
+            s3_bucket: S3 bucket name
+            region: AWS region
+
+        Returns:
+            S3 URI of uploaded starter kit
+
+        Raises:
+            ValueError: If path is invalid or not a valid starter kit
+        """
+        expanded_path = os.path.abspath(os.path.expanduser(local_path))
+
+        # Validate it's a starter kit directory
+        validate_starter_kit_path(expanded_path)
+
+        # Create tarball
+        tar_name = "v1.tar.gz"
+        tar_path = os.path.join(tempfile.gettempdir(), tar_name)
+
+        logger.info(f"Packaging starter kit from {expanded_path}")
+        with tarfile.open(tar_path, "w:gz") as tar:
+            tar.add(expanded_path, arcname="v1")
+
+        # Upload to S3
+        s3_key = f"rft-starter-kits/{self.stack_name}/{tar_name}"
+        s3_uri = f"s3://{s3_bucket}/{s3_key}"
+
+        logger.info(f"Uploading starter kit to {s3_uri}")
+        s3_client = boto3.client("s3", region_name=region)
+        s3_client.upload_file(tar_path, s3_bucket, s3_key)
+
+        os.remove(tar_path)
+        logger.info("Starter kit uploaded successfully")
+
+        return s3_uri
+
+    def _ensure_starter_kit_available(self, s3_bucket: Optional[str] = None):
+        """
+        Ensure starter kit is available for remote deployment.
+        Auto-uploads if local path is provided.
+
+        Args:
+            s3_bucket: S3 bucket for upload (optional, uses SageMaker default if not provided)
+
+        Note:
+            This is the base implementation. EC2 overrides this to also run setup commands.
+        """
+        if not self.starter_kit_path:
+            # No custom path - use default starter kit from AWS S3
+            return
+
+        # If it's an S3 URI, use it directly
+        if self.starter_kit_path.startswith("s3://"):
+            self._starter_kit_s3_uri = self.starter_kit_path
+            self.starter_kit_s3 = (
+                self.starter_kit_path
+            )  # Update the attribute used by _build_setup_commands
+            logger.info(f"Using starter kit from S3: {self._starter_kit_s3_uri}")
+            return
+
+        # It's a local path - validate and upload
+        expanded_path = os.path.abspath(os.path.expanduser(self.starter_kit_path))
+
+        # Validate the path exists
+        if not os.path.exists(expanded_path):
+            raise ValueError(
+                f"Starter kit path does not exist: {expanded_path}\n"
+                f"Please provide a valid path to an existing starter kit directory."
+            )
+
+        # Validate it's a valid starter kit
+        validate_starter_kit_path(expanded_path)
+
+        logger.info(f"Auto-uploading starter kit from: {expanded_path}")
+
+        # Determine S3 bucket
+        if not s3_bucket:
+            # Try to get from custom_env if available
+            if (
+                hasattr(self, "custom_env")
+                and self.custom_env
+                and self.custom_env.s3_uri
+            ):
+                s3_bucket = self.custom_env.s3_uri.split("/")[2]
+                logger.info(f"Using bucket from custom_env: {s3_bucket}")
+            else:
+                # Use SageMaker default bucket
+                try:
+                    if sagemaker is None:
+                        raise ImportError("sagemaker package not installed")
+                    session = sagemaker.Session(
+                        boto_session=boto3.Session(region_name=self.region)
+                    )
+                    s3_bucket = session.default_bucket()
+                    logger.info(f"Using SageMaker default bucket: {s3_bucket}")
+                except ImportError:
+                    raise ValueError(
+                        "Cannot auto-upload starter kit: s3_bucket parameter required in setup() "
+                        "when sagemaker package is not installed"
+                    )
+
+        # Upload
+        self._starter_kit_s3_uri = self._upload_starter_kit_to_s3(
+            expanded_path, s3_bucket, self.region
+        )
+        self.starter_kit_s3 = (
+            self._starter_kit_s3_uri
+        )  # Update the attribute used by _build_setup_commands
+        logger.info(f"Starter kit will be downloaded from: {self.starter_kit_s3}")
+
+    def _get_base_logs_dir(self) -> str:
+        """
+        Get base logs directory path for the platform.
+        Must be implemented by subclasses to return platform-specific path.
+
+        Returns:
+            Base directory path where logs, PID files, and status files are stored
+        """
+        raise NotImplementedError
+
+    def _get_log_file_path(self, session_id: str, env_type: EnvType) -> str:
+        """
+        Get log file path for a session and environment type.
+
+        Args:
+            session_id: Session identifier
+            env_type: Environment type (TRAIN, EVAL, SAM)
+
+        Returns:
+            Full path to log file
+        """
+        return f"{self._get_base_logs_dir()}/{session_id}_{env_type.value}.log"
+
+    def _get_pid_file_path(self, session_id: str, env_type: EnvType) -> str:
+        """
+        Get PID file path for a session and environment type.
+
+        Args:
+            session_id: Session identifier
+            env_type: Environment type (TRAIN, EVAL, SAM)
+
+        Returns:
+            Full path to PID file
+        """
+        return f"{self._get_base_logs_dir()}/{session_id}_{env_type.value}.pid"
+
+    def _get_status_file_path(self, session_id: str, env_type: EnvType) -> str:
+        """
+        Get status file path for a session and environment type.
+
+        Args:
+            session_id: Session identifier
+            env_type: Environment type (TRAIN, EVAL, SAM)
+
+        Returns:
+            Full path to status file
+        """
+        return f"{self._get_base_logs_dir()}/{session_id}_{env_type.value}.status"
+
+    def _create_pid_file(self, session_id: str, env_type: EnvType, pid: int):
+        """
+        Create PID file for tracking process.
+        Platform-specific implementation required for file creation.
+
+        Args:
+            session_id: Session identifier
+            env_type: Environment type (TRAIN, EVAL, SAM)
+            pid: Process ID to store
+        """
+        raise NotImplementedError
+
+    def _read_pid_file(self, session_id: str, env_type: EnvType) -> Optional[int]:
+        """
+        Read PID from PID file.
+        Platform-specific implementation required for file reading.
+
+        Args:
+            session_id: Session identifier
+            env_type: Environment type (TRAIN, EVAL, SAM)
+
+        Returns:
+            Process ID if file exists and is valid, None otherwise
+        """
+        raise NotImplementedError
+
+    def _create_status_file(self, session_id: str, env_type: EnvType, status: str):
+        """
+        Create or update status file.
+        Platform-specific implementation required for file creation.
+
+        Args:
+            session_id: Session identifier
+            env_type: Environment type (TRAIN, EVAL, SAM)
+            status: Status string to store
+        """
+        raise NotImplementedError
+
+    def _read_status_file(self, session_id: str, env_type: EnvType) -> Optional[str]:
+        """
+        Read status from status file.
+        Platform-specific implementation required for file reading.
+
+        Args:
+            session_id: Session identifier
+            env_type: Environment type (TRAIN, EVAL, SAM)
+
+        Returns:
+            Status string if file exists, None otherwise
+        """
+        raise NotImplementedError
+
+    def _is_process_running(self, pid: int) -> bool:
+        """
+        Check if process with given PID is running.
+
+        Args:
+            pid: Process ID to check
+
+        Returns:
+            True if process is running, False otherwise
+        """
+        try:
+            # Send signal 0 to check if process exists
+            # This doesn't actually send a signal, just checks permissions
+            os.kill(pid, 0)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+
+    def _check_for_running_jobs_on_stack(self, stack_name: str) -> Optional[str]:
+        """
+        Check if any jobs are running for this stack (across all sessions).
+
+        Args:
+            stack_name: Stack name to check
+
+        Returns:
+            Error message if running jobs found, None otherwise
+
+        Note:
+            Must be implemented by subclasses for platform-specific checking.
+        """
+        raise NotImplementedError
+
+    @staticmethod
+    def _extract_base_stack_name(stack_name: str) -> str:
+        """
+        Extract base stack name by removing NovaForgeSDK suffix.
+
+        Args:
+            stack_name: Full stack name
+
+        Returns:
+            Base stack name without suffix
+        """
+        return stack_name.replace("-NovaForgeSDK", "").replace("NovaForgeSDK", "")

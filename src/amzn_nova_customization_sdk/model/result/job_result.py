@@ -262,6 +262,11 @@ class BaseJobResult(ABC):
 
         data = self._to_dict()
         data["__class_name__"] = self.__class__.__name__
+
+        # Include job cache hash if it exists
+        if hasattr(self, "_job_cache_hash"):
+            data["_job_cache_hash"] = self._job_cache_hash
+
         with open(full_path, "w") as f:
             json.dump(data, f, default=str)
         logger.info(f"Job result saved to {full_path}")
@@ -279,6 +284,9 @@ class BaseJobResult(ABC):
             data = json.load(f)
 
         class_name = data.pop("__class_name__", None)
+        # Extract job cache hash before creating the object
+        job_cache_hash = data.pop("_job_cache_hash", None)
+
         if class_name:
             try:
                 module = importlib.import_module(
@@ -286,7 +294,11 @@ class BaseJobResult(ABC):
                 )
                 target_class = getattr(module, class_name, None)
                 if target_class and issubclass(target_class, BaseJobResult):
-                    return target_class._from_dict(data)
+                    result = target_class._from_dict(data)
+                    # Restore the job cache hash if it existed
+                    if job_cache_hash:
+                        result._job_cache_hash = job_cache_hash
+                    return result
                 else:
                     raise ValueError(
                         f"Class {class_name} not found or not a subclass of BaseJobResult"
