@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from amzn_nova_forge_sdk.util.reward_verifier import verify_reward_function
+from amzn_nova_customization_sdk.util.reward_verifier import verify_reward_function
 
 
 def test_verify_with_valid_rft_format():
@@ -539,7 +539,7 @@ def lambda_handler(event, context):
 
 def test_verify_smhp_platform_valid_lambda_arn():
     """Test that SMHP platform accepts Lambda ARN with 'SageMaker' in name."""
-    from amzn_nova_forge_sdk.model.model_enums import Platform
+    from amzn_nova_customization_sdk.model.model_enums import Platform
 
     reward_code = """
 def lambda_handler(event, context):
@@ -578,7 +578,7 @@ def lambda_handler(event, context):
 
 def test_verify_smhp_platform_invalid_lambda_arn():
     """Test that SMHP platform rejects Lambda ARN without 'SageMaker' in name."""
-    from amzn_nova_forge_sdk.model.model_enums import Platform
+    from amzn_nova_customization_sdk.model.model_enums import Platform
 
     sample_data = [
         {
@@ -602,7 +602,7 @@ def test_verify_smhp_platform_invalid_lambda_arn():
 
 def test_verify_smhp_platform_valid_lambda_arn_case_insensitive():
     """Test that SMHP platform accepts Lambda ARN with 'sagemaker' (lowercase)."""
-    from amzn_nova_forge_sdk.model.model_enums import Platform
+    from amzn_nova_customization_sdk.model.model_enums import Platform
 
     sample_data = [
         {
@@ -637,7 +637,7 @@ def test_verify_smhp_platform_valid_lambda_arn_case_insensitive():
 
 def test_verify_smtj_platform_no_lambda_arn_validation():
     """Test that SMTJ platform doesn't validate Lambda ARN format."""
-    from amzn_nova_forge_sdk.model.model_enums import Platform
+    from amzn_nova_customization_sdk.model.model_enums import Platform
 
     sample_data = [
         {
@@ -889,7 +889,7 @@ def lambda_handler(event, context):
 
 def test_verify_smhp_platform_malformed_lambda_arn():
     """Test that malformed Lambda ARN raises appropriate error."""
-    from amzn_nova_forge_sdk.model.model_enums import Platform
+    from amzn_nova_customization_sdk.model.model_enums import Platform
 
     sample_data = [
         {
@@ -912,7 +912,7 @@ def test_verify_smhp_platform_malformed_lambda_arn():
 
 def test_verify_smhp_platform_with_local_file():
     """Test that SMHP platform validation doesn't affect local files."""
-    from amzn_nova_forge_sdk.model.model_enums import Platform
+    from amzn_nova_customization_sdk.model.model_enums import Platform
 
     reward_code = """
 def lambda_handler(event, context):
@@ -951,7 +951,7 @@ def lambda_handler(event, context):
 
 def test_verify_combined_evaluation_mode_and_smhp_platform():
     """Test using both evaluation mode and SMHP platform together."""
-    from amzn_nova_forge_sdk.model.model_enums import Platform
+    from amzn_nova_customization_sdk.model.model_enums import Platform
 
     reward_code = """
 def lambda_handler(event, context):
@@ -1109,7 +1109,7 @@ def lambda_handler(event, context):
 
 def test_verify_smhp_arn_with_version_qualifier():
     """Test SMHP validation with Lambda ARN that includes version/alias."""
-    from amzn_nova_forge_sdk.model.model_enums import Platform
+    from amzn_nova_customization_sdk.model.model_enums import Platform
 
     sample_data = [
         {

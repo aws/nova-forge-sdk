@@ -14,7 +14,7 @@ A comprehensive Python SDK for fine-tuning and customizing Amazon Nova models. T
 ## Installation
 
 ```bash
-pip install amzn-nova-forge-sdk
+pip install amzn-nova-customization-sdk
 ```
 * The SDK requires [sagemaker 2.254.1](https://pypi.org/project/sagemaker/2.254.1/), which is automatically set by pip.
 

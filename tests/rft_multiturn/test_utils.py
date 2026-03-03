@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from amzn_nova_forge_sdk.rft_multiturn.utils import (
+from amzn_nova_customization_sdk.rft_multiturn.utils import (
     build_duplicate_job_error_message,
     validate_starter_kit_path,
 )
