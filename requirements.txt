@@ -120,7 +120,7 @@ pox==0.3.7
     # via pathos
 ppft==1.7.8
     # via pathos
-protobuf==6.31.1
+protobuf==6.33.5
     # via sagemaker
 psutil==7.2.2
     # via sagemaker
