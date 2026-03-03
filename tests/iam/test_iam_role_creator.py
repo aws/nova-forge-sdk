@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-from amzn_nova_customization_sdk.iam.iam_role_creator import (
+from amzn_nova_forge_sdk.iam.iam_role_creator import (
     create_bedrock_execution_role,
     create_sagemaker_execution_role,
 )

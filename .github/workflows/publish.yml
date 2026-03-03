@@ -39,11 +39,11 @@ jobs:
 
       - name: Verify version
         run: |
-          VERSION=$(grep '^VERSION' src/amzn_nova_customization_sdk/__version__.py | cut -d '"' -f2)
+          VERSION=$(grep '^VERSION' src/amzn_nova_forge_sdk/__version__.py | cut -d '"' -f2)
           echo "Package version: $VERSION"
 
           # Check if this version already exists on PyPI
-          if pip index versions amzn-nova-customization-sdk 2>/dev/null | grep -q "^ *$VERSION$"; then
+          if pip index versions amzn-nova-forge-sdk 2>/dev/null | grep -q "^ *$VERSION$"; then
             echo "Error: Version $VERSION already exists on PyPI"
             exit 1
           fi

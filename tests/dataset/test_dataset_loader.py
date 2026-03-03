@@ -6,13 +6,13 @@ from unittest.mock import MagicMock, patch
 
 from botocore.exceptions import ClientError
 
-from amzn_nova_customization_sdk.dataset.dataset_loader import (
+from amzn_nova_forge_sdk.dataset.dataset_loader import (
     CSVDatasetLoader,
     DataPrepError,
     JSONDatasetLoader,
     JSONLDatasetLoader,
 )
-from amzn_nova_customization_sdk.model.model_enums import Model, TrainingMethod
+from amzn_nova_forge_sdk.model.model_enums import Model, TrainingMethod
 
 
 class TestDatasetLoader(unittest.TestCase):
@@ -109,7 +109,7 @@ class TestDatasetLoader(unittest.TestCase):
             "metadata": "some additional info",
         }
 
-    @patch("amzn_nova_customization_sdk.dataset.dataset_loader.load_file_content")
+    @patch("amzn_nova_forge_sdk.dataset.dataset_loader.load_file_content")
     def test_load_json_dataset_from_s3(self, mock_load_file):
         with open("tests/test_data/sft_train_samples_converse.jsonl", "r") as f:
             lines = f.read().splitlines()
@@ -129,7 +129,7 @@ class TestDatasetLoader(unittest.TestCase):
         )
         self.assertEqual(list(dataset_loader.raw_dataset())[0], self.converse_first_row)
 
-    @patch("amzn_nova_customization_sdk.dataset.dataset_loader.load_file_content")
+    @patch("amzn_nova_forge_sdk.dataset.dataset_loader.load_file_content")
     def test_load_jsonl_with_empty_lines(self, mock_load_file):
         jsonl_content = """{"id": "1", "name": "Alice"}
 
@@ -157,8 +157,8 @@ class TestDatasetLoader(unittest.TestCase):
             list(dataset_loader.raw_dataset())[2], {"id": "3", "name": "Charlie"}
         )
 
-    @patch("amzn_nova_customization_sdk.dataset.dataset_loader.load_file_content")
-    @patch("amzn_nova_customization_sdk.dataset.dataset_loader.logger")
+    @patch("amzn_nova_forge_sdk.dataset.dataset_loader.load_file_content")
+    @patch("amzn_nova_forge_sdk.dataset.dataset_loader.logger")
     def test_load_jsonl_with_malformed_json(self, mock_logger, mock_load_file):
         jsonl_content = """{"id": "1", "name": "Alice"}
     {"id": "2", "name": "Bob", invalid json here}
@@ -630,7 +630,7 @@ class TestDatasetLoader(unittest.TestCase):
             save_path = Path(tmpdir) / "test_output.json"
 
             with patch(
-                "amzn_nova_customization_sdk.dataset.dataset_loader.logger"
+                "amzn_nova_forge_sdk.dataset.dataset_loader.logger"
             ) as mock_logger:
                 dataset_loader.save_data(str(save_path))
 

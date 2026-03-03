@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
-from amzn_nova_customization_sdk.dataset.dataset_loader import (
+from amzn_nova_forge_sdk.dataset.dataset_loader import (
     CSVDatasetLoader,
     JSONLDatasetLoader,
 )
@@ -30,7 +30,7 @@ class TestLazyLoading(unittest.TestCase):
                 yield f'{{"id": {i}, "value": "line_{i}"}}'
 
         with patch(
-            "amzn_nova_customization_sdk.dataset.dataset_loader.load_file_content",
+            "amzn_nova_forge_sdk.dataset.dataset_loader.load_file_content",
             side_effect=lambda *args, **kwargs: mock_line_generator(),
         ):
             loader = JSONLDatasetLoader()
@@ -81,7 +81,7 @@ class TestLazyLoading(unittest.TestCase):
                 yield f"{i},name_{i},value_{i}"
 
         with patch(
-            "amzn_nova_customization_sdk.dataset.dataset_loader.load_file_content",
+            "amzn_nova_forge_sdk.dataset.dataset_loader.load_file_content",
             side_effect=lambda *args, **kwargs: mock_line_generator(),
         ):
             loader = CSVDatasetLoader()
@@ -123,13 +123,13 @@ class TestLazyLoading(unittest.TestCase):
                 yield f'{{"my_text": "line_{i}"}}'
 
         with patch(
-            "amzn_nova_customization_sdk.dataset.dataset_loader.load_file_content",
+            "amzn_nova_forge_sdk.dataset.dataset_loader.load_file_content",
             side_effect=lambda *args, **kwargs: mock_line_generator(),
         ):
             loader = JSONLDatasetLoader(text="my_text")
             loader.load("test.jsonl")
 
-            from amzn_nova_customization_sdk.model.model_enums import (
+            from amzn_nova_forge_sdk.model.model_enums import (
                 Model,
                 TrainingMethod,
             )
@@ -177,7 +177,7 @@ class TestLazyLoading(unittest.TestCase):
 
     def test_s3_streaming_uses_iter_lines(self):
         """Verify S3 downloads use streaming iter_lines, not read()."""
-        with patch("amzn_nova_customization_sdk.util.recipe.boto3.client") as mock_boto:
+        with patch("amzn_nova_forge_sdk.util.recipe.boto3.client") as mock_boto:
             mock_s3 = MagicMock()
             mock_boto.return_value = mock_s3
 
@@ -189,7 +189,7 @@ class TestLazyLoading(unittest.TestCase):
             mock_s3.get_object.return_value = {"Body": mock_body}
 
             with patch(
-                "amzn_nova_customization_sdk.util.recipe._parse_s3_uri",
+                "amzn_nova_forge_sdk.util.recipe._parse_s3_uri",
                 return_value=("bucket", "key.jsonl"),
             ):
                 loader = JSONLDatasetLoader()

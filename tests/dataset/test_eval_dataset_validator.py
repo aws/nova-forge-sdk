@@ -2,10 +2,10 @@ import json
 import tempfile
 import unittest
 
-from amzn_nova_customization_sdk.dataset.dataset_loader import (
+from amzn_nova_forge_sdk.dataset.dataset_loader import (
     JSONLDatasetLoader,
 )
-from amzn_nova_customization_sdk.model.model_enums import Model, TrainingMethod
+from amzn_nova_forge_sdk.model.model_enums import Model, TrainingMethod
 
 
 class TestEvalDatasetValidator(unittest.TestCase):

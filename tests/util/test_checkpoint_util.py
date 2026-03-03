@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from botocore.exceptions import ClientError
 
-from amzn_nova_customization_sdk.util.checkpoint_util import (
+from amzn_nova_forge_sdk.util.checkpoint_util import (
     extract_checkpoint_path_from_job_output,
     validate_checkpoint_uri,
 )

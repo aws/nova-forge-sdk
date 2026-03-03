@@ -1,4 +1,4 @@
-# Amazon Nova Customization SDK
+# Amazon Nova Forge SDK
 
 A comprehensive Python SDK for fine-tuning and customizing Amazon Nova models. This SDK provides a unified interface for training, evaluation, deployment, and monitoring of Nova models across both SageMaker Training Jobs and SageMaker HyperPod.
 
@@ -14,7 +14,7 @@ A comprehensive Python SDK for fine-tuning and customizing Amazon Nova models. T
 ## Installation
 
 ```bash
-pip install amzn-nova-customization-sdk
+pip install amzn-nova-forge-sdk
 ```
 * The SDK requires [sagemaker 2.254.1](https://pypi.org/project/sagemaker/2.254.1/), which is automatically set by pip.
 
@@ -183,7 +183,9 @@ The SDK requires certain IAM permissions to perform tasks successfully. You can 
 				"sagemaker-mlflow:UpdateRegister
             ],
 			"Resource": "arn:aws:sagemaker:us-east-1:<account_id>:mlflow-tracking-server/*"
-    }
+        }
+    ]
+}
 ```
 - _Note that you might not require all permissions depending on your use case._
 - [HyperPod only] If your cluster uses namespace access control, you must have access to the Kubernetes namespace
@@ -292,7 +294,7 @@ aws eks associate-access-policy \
 Replace the following placeholders:
 - `<your-cluster-name>`: Your HyperPod cluster's EKS cluster name (e.g., `sagemaker-my-cluster-eks`)
 - `<account_id>`: Your AWS account ID
-- `<your-execution-role-name>`: The name of your execution role (e.g., `NovaCustomizationSdkExecutionRole`)
+- `<your-execution-role-name>`: The name of your execution role (e.g., `NovaForgeSdkExecutionRole`)
 
 
 ### Instances
@@ -312,7 +314,7 @@ For HyperPod-based customization jobs, the SDK uses the [SageMaker HyperPod CLI]
 ```
 git clone -b release_v2 https://github.com/aws/sagemaker-hyperpod-cli.git
 ```
-2. If you are using a Python virtual environment to use the Nova Customization SDK, activate that environment with `source <path to venv>/bin/activate`
+2. If you are using a Python virtual environment to use the Nova Forge SDK, activate that environment with `source <path to venv>/bin/activate`
 
 
 #### For Forge Customers
@@ -371,7 +373,7 @@ pip install -e .
 
 ## Core Modules Overview
 
-The Nova Customization SDK is organized into the following modules:
+The Nova Forge SDK is organized into the following modules:
 
 | Module             | Purpose                                       | Key Components                             |
 | ------------------ | --------------------------------------------- | ------------------------------------------ |
@@ -383,6 +385,7 @@ The Nova Customization SDK is organized into the following modules:
 
 * For detailed API documentation: See [`docs/spec.md`](docs/spec.md)  
 * For usage examples: See [`samples/nova_quickstart.ipynb`](samples/nova_quickstart.ipynb)
+* For RFT Singleturn examples: See [`samples/rft_singleturn_quickstart.ipynb`](samples/rft_singleturn_quickstart.ipynb)
 * For RFT Multiturn documentation: See [`docs/rft_multiturn.md`](docs/rft_multiturn.md)
 * For RFT Multiturn examples: See [`samples/rft_multiturn_quickstart.ipynb`](samples/rft_multiturn_quickstart.ipynb)
 
@@ -472,7 +475,7 @@ Manages infrastructure for reinforcement fine-tuning with multi-turn conversatio
 ---
 ### Iterative Training
 
-The Nova Customization SDK supports iterative fine-tuning of Nova models.
+The Nova Forge SDK supports iterative fine-tuning of Nova models.
 
 This is done by progressively running fine-tuning jobs on the output checkpoint from the previous job:
 
@@ -507,7 +510,7 @@ stage2_result = stage2_customizer.train(job_name="stage2-training")
 
 ### Dry Run
 
-The Nova Customization SDK supports `dry_run` mode for the following functions: `train()`, `evaluate()`, and `batch_inference()`.
+The Nova Forge SDK supports `dry_run` mode for the following functions: `train()`, `evaluate()`, and `batch_inference()`.
 
 When calling any of the above functions, you can set the `dry_run` parameter to `True`.
 The SDK will still generate your recipe and validate your input, but it won't begin a job.

@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-from amzn_nova_customization_sdk.util.bedrock import invoke_model
+from amzn_nova_forge_sdk.util.bedrock import invoke_model
 
 
 class TestBedrock(unittest.TestCase):

@@ -8,7 +8,7 @@ class TestRFTMultiturnModuleStructure:
 
     def test_custom_environment_submodule_imports(self):
         """Test that custom_environment submodule imports work correctly."""
-        from amzn_nova_customization_sdk.rft_multiturn.custom_environment import (
+        from amzn_nova_forge_sdk.rft_multiturn.custom_environment import (
             MULTI_TURN_TEMPLATE,
             PYPROJECT_TEMPLATE,
             README_TEMPLATE,
@@ -24,7 +24,7 @@ class TestRFTMultiturnModuleStructure:
 
     def test_rft_multiturn_main_exports(self):
         """Test that main RFT multiturn module exports are accessible."""
-        from amzn_nova_customization_sdk.rft_multiturn import (
+        from amzn_nova_forge_sdk.rft_multiturn import (
             CustomEnvironment,
             EnvType,
             RFTMultiturnInfrastructure,
@@ -40,7 +40,7 @@ class TestRFTMultiturnModuleStructure:
 
     def test_backward_compatibility_top_level_import(self):
         """Test backward compatibility for top-level SDK imports."""
-        from amzn_nova_customization_sdk import (
+        from amzn_nova_forge_sdk import (
             EnvType,
             RFTMultiturnInfrastructure,
             VFEnvId,
@@ -56,7 +56,7 @@ class TestCustomEnvironmentTemplates:
 
     def test_templates_contain_required_content(self):
         """Test that templates contain expected content."""
-        from amzn_nova_customization_sdk.rft_multiturn.custom_environment import (
+        from amzn_nova_forge_sdk.rft_multiturn.custom_environment import (
             MULTI_TURN_TEMPLATE,
             PYPROJECT_TEMPLATE,
             README_TEMPLATE,
@@ -79,7 +79,7 @@ class TestCustomEnvironmentTemplates:
 
     def test_custom_environment_class_exists(self):
         """Test that CustomEnvironment class is accessible."""
-        from amzn_nova_customization_sdk.rft_multiturn.custom_environment import (
+        from amzn_nova_forge_sdk.rft_multiturn.custom_environment import (
             CustomEnvironment,
         )
 

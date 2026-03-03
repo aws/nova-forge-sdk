@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from amzn_nova_customization_sdk.rft_multiturn.custom_environment import (
+from amzn_nova_forge_sdk.rft_multiturn.custom_environment import (
     MULTI_TURN_TEMPLATE,
     PYPROJECT_TEMPLATE,
     README_TEMPLATE,
@@ -63,8 +63,14 @@ class TestCustomEnvironmentClass:
         env = CustomEnvironment(env_id="test_env")
         assert env.local_path is None
         assert env.s3_uri is None
-        assert env.output_dir == "~/custom_envs"
+        assert env.output_dir is None
         assert env.env_type == "single_turn"
+
+    def test_create_fails_without_output_dir(self):
+        """Test create fails when output_dir is not provided."""
+        env = CustomEnvironment(env_id="test_env")
+        with pytest.raises(ValueError, match="output_dir is required"):
+            env.create()
 
     @patch("os.makedirs")
     @patch("os.path.exists")
@@ -77,7 +83,9 @@ class TestCustomEnvironmentClass:
         mock_file = MagicMock()
         mock_open.return_value.__enter__.return_value = mock_file
 
-        env = CustomEnvironment(env_id="test_env", env_type="single_turn")
+        env = CustomEnvironment(
+            env_id="test_env", env_type="single_turn", output_dir="~/custom_envs"
+        )
         result = env.create()
 
         assert result == env
@@ -95,7 +103,9 @@ class TestCustomEnvironmentClass:
         mock_file = MagicMock()
         mock_open.return_value.__enter__.return_value = mock_file
 
-        env = CustomEnvironment(env_id="test_env", env_type="multi_turn")
+        env = CustomEnvironment(
+            env_id="test_env", env_type="multi_turn", output_dir="~/custom_envs"
+        )
         result = env.create()
 
         assert result == env
@@ -106,7 +116,7 @@ class TestCustomEnvironmentClass:
         """Test create fails if directory exists and overwrite=False."""
         mock_exists.return_value = True
 
-        env = CustomEnvironment(env_id="test_env")
+        env = CustomEnvironment(env_id="test_env", output_dir="~/custom_envs")
         with pytest.raises(FileExistsError, match="already exists"):
             env.create(overwrite=False)
 
@@ -121,7 +131,7 @@ class TestCustomEnvironmentClass:
         mock_file = MagicMock()
         mock_open.return_value.__enter__.return_value = mock_file
 
-        env = CustomEnvironment(env_id="test_env")
+        env = CustomEnvironment(env_id="test_env", output_dir="~/custom_envs")
         result = env.create(overwrite=True)
 
         assert result == env
@@ -129,7 +139,9 @@ class TestCustomEnvironmentClass:
 
     def test_create_fails_with_invalid_env_type(self):
         """Test create fails with invalid env_type."""
-        env = CustomEnvironment(env_id="test_env", env_type="invalid")
+        env = CustomEnvironment(
+            env_id="test_env", env_type="invalid", output_dir="~/custom_envs"
+        )
         with pytest.raises(ValueError, match="env_type must be"):
             env.create()
 
@@ -229,7 +241,8 @@ class TestCustomEnvironmentClass:
         """Test validate fails without load_environment function."""
         mock_exists.side_effect = lambda p: "pyproject.toml" in p or "/path" in p
         mock_isdir.return_value = True
-        mock_listdir.side_effect = [["subdir"], ["test.py"]]
+        # Return empty list for all listdir calls to simulate no Python files found
+        mock_listdir.return_value = []
 
         mock_file = MagicMock()
         mock_file.read.return_value = "# No load_environment here"

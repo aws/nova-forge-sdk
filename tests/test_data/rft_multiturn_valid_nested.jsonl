@@ -1,0 +1,5 @@
+{"id": "sample-001", "metadata": {"prompt": "What is 2+2?", "answer": "4", "task": "math", "info": {"difficulty": "easy"}}}
+{"id": "sample-002", "metadata": {"prompt": "What is the capital of France?", "answer": "Paris", "task": "geography", "info": {"difficulty": "easy"}}}
+{"id": "sample-003", "metadata": {"prompt": "Explain photosynthesis", "answer": "Process by which plants convert light to energy", "task": "biology", "info": {"difficulty": "medium"}}}
+{"id": "sample-004", "metadata": {"prompt": "What is the speed of light?", "answer": "299,792,458 m/s", "task": "physics", "info": {"difficulty": "easy"}}}
+{"id": "sample-005", "metadata": {"prompt": "Who wrote Romeo and Juliet?", "answer": "William Shakespeare", "task": "literature", "info": {"difficulty": "easy"}}}

@@ -2,13 +2,13 @@ import unittest
 from datetime import datetime
 from unittest.mock import Mock, patch
 
-from amzn_nova_customization_sdk.model.model_enums import Platform
-from amzn_nova_customization_sdk.model.result.job_result import (
+from amzn_nova_forge_sdk.model.model_enums import Platform
+from amzn_nova_forge_sdk.model.result.job_result import (
     BaseJobResult,
     SMHPStatusManager,
     SMTJStatusManager,
 )
-from amzn_nova_customization_sdk.monitor.log_monitor import CloudWatchLogMonitor
+from amzn_nova_forge_sdk.monitor.log_monitor import CloudWatchLogMonitor
 
 
 class TestCloudWatchLogMonitor(unittest.TestCase):

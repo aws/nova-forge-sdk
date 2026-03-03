@@ -2,7 +2,7 @@
 
 import pytest
 
-from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+from amzn_nova_forge_sdk.validation.rft_multiturn_validator import (
     validate_dict_values,
     validate_env_id,
     validate_path,
@@ -324,7 +324,7 @@ class TestValidateStackName:
             "MyApp-Production",
             "Stack",
             "a",
-            "MyVeryLongStackNameWithManyCharacters123",
+            "ValidStackNameUnder32Chars",
         ]
         for name in valid_names:
             validate_stack_name(name)  # Should not raise
@@ -431,6 +431,35 @@ class TestValidateStackName:
         for name in invalid_names:
             with pytest.raises(ValueError, match="Invalid stack name"):
                 validate_stack_name(name)
+
+    def test_rejects_stack_names_exceeding_32_characters(self):
+        """Test that stack names longer than 32 characters are rejected for AGIModelLens compatibility."""
+        # Stack names > 32 characters should be rejected
+        invalid_names = [
+            "a" * 33,  # 33 characters
+            "rft-integration-test-NovaForgeSDK",  # 33 characters
+            "my-very-long-stack-name-that-exceeds-limit",  # 42 characters
+            "stack-name-with-exactly-33-charsx",  # 33 characters
+        ]
+        for name in invalid_names:
+            with pytest.raises(
+                ValueError,
+                match="is too long.*Maximum length is 32 characters",
+            ):
+                validate_stack_name(name)
+
+    def test_accepts_stack_names_at_or_under_32_characters(self):
+        """Test that stack names with 32 or fewer characters are accepted."""
+        # Stack names <= 32 characters should be accepted
+        valid_names = [
+            "a" * 32,  # Exactly 32 characters
+            "a" * 31,  # 31 characters
+            "short-stack",  # 11 characters
+            "rft-integration-test",  # 21 characters
+            "stack-name-exactly-32-chars-ok",  # 31 characters
+        ]
+        for name in valid_names:
+            validate_stack_name(name)  # Should not raise
 
 
 class TestValidateRegion:
@@ -705,7 +734,7 @@ class TestValidatePlatform:
 
     def test_accepts_valid_platforms(self):
         """Test that valid platform values are accepted."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge_sdk.validation.rft_multiturn_validator import (
             validate_platform,
         )
 
@@ -715,7 +744,7 @@ class TestValidatePlatform:
 
     def test_rejects_invalid_platforms(self):
         """Test that invalid platform values are rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge_sdk.validation.rft_multiturn_validator import (
             validate_platform,
         )
 
@@ -737,7 +766,7 @@ class TestValidatePlatform:
 
     def test_rejects_empty_string(self):
         """Test that empty string is rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge_sdk.validation.rft_multiturn_validator import (
             validate_platform,
         )
 
@@ -746,7 +775,7 @@ class TestValidatePlatform:
 
     def test_rejects_non_string(self):
         """Test that non-string types are rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge_sdk.validation.rft_multiturn_validator import (
             validate_platform,
         )
 
@@ -761,7 +790,7 @@ class TestValidateEc2InstanceIdentifier:
 
     def test_accepts_valid_instance_ids(self):
         """Test that valid EC2 instance IDs are accepted."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge_sdk.validation.rft_multiturn_validator import (
             validate_ec2_instance_identifier,
         )
 
@@ -778,7 +807,7 @@ class TestValidateEc2InstanceIdentifier:
 
     def test_accepts_valid_instance_arns(self):
         """Test that valid EC2 instance ARNs are accepted and extracted."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge_sdk.validation.rft_multiturn_validator import (
             validate_ec2_instance_identifier,
         )
 
@@ -802,7 +831,7 @@ class TestValidateEc2InstanceIdentifier:
 
     def test_rejects_invalid_instance_ids(self):
         """Test that invalid instance IDs are rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge_sdk.validation.rft_multiturn_validator import (
             validate_ec2_instance_identifier,
         )
 
@@ -823,7 +852,7 @@ class TestValidateEc2InstanceIdentifier:
 
     def test_rejects_invalid_arns(self):
         """Test that invalid ARNs are rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge_sdk.validation.rft_multiturn_validator import (
             validate_ec2_instance_identifier,
         )
 
@@ -841,7 +870,7 @@ class TestValidateEc2InstanceIdentifier:
 
     def test_rejects_empty_string(self):
         """Test that empty string is rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge_sdk.validation.rft_multiturn_validator import (
             validate_ec2_instance_identifier,
         )
 
@@ -852,7 +881,7 @@ class TestValidateEc2InstanceIdentifier:
 
     def test_rejects_non_string(self):
         """Test that non-string types are rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge_sdk.validation.rft_multiturn_validator import (
             validate_ec2_instance_identifier,
         )
 
@@ -869,7 +898,7 @@ class TestValidateEcsClusterArn:
 
     def test_accepts_valid_cluster_arns(self):
         """Test that valid ECS cluster ARNs are accepted."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge_sdk.validation.rft_multiturn_validator import (
             validate_ecs_cluster_arn,
         )
 
@@ -886,7 +915,7 @@ class TestValidateEcsClusterArn:
 
     def test_rejects_invalid_cluster_arns(self):
         """Test that invalid ECS cluster ARNs are rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge_sdk.validation.rft_multiturn_validator import (
             validate_ecs_cluster_arn,
         )
 
@@ -909,7 +938,7 @@ class TestValidateEcsClusterArn:
 
     def test_rejects_empty_string(self):
         """Test that empty string is rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge_sdk.validation.rft_multiturn_validator import (
             validate_ecs_cluster_arn,
         )
 
@@ -920,7 +949,7 @@ class TestValidateEcsClusterArn:
 
     def test_rejects_non_string(self):
         """Test that non-string types are rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge_sdk.validation.rft_multiturn_validator import (
             validate_ecs_cluster_arn,
         )
 

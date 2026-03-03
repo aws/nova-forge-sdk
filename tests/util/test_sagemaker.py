@@ -5,17 +5,17 @@ from unittest.mock import MagicMock, patch
 
 from botocore.exceptions import ClientError
 
-from amzn_nova_customization_sdk.manager.runtime_manager import (
+from amzn_nova_forge_sdk.manager.runtime_manager import (
     RuntimeManager,
     SMHPRuntimeManager,
     SMTJRuntimeManager,
 )
-from amzn_nova_customization_sdk.model.model_config import ModelArtifacts
-from amzn_nova_customization_sdk.model.model_enums import DeploymentMode, Model
-from amzn_nova_customization_sdk.model.result.inference_result import (
+from amzn_nova_forge_sdk.model.model_config import ModelArtifacts
+from amzn_nova_forge_sdk.model.model_enums import DeploymentMode, Model
+from amzn_nova_forge_sdk.model.result.inference_result import (
     SingleInferenceResult,
 )
-from amzn_nova_customization_sdk.util.sagemaker import (
+from amzn_nova_forge_sdk.util.sagemaker import (
     _get_hub_content,
     _get_sagemaker_inference_image,
     _validate_sagemaker_instance_type_for_model_deployment,
@@ -38,7 +38,7 @@ class TestSagemaker(unittest.TestCase):
         self.endpoint_config_name = "test-endpoint-config"
         self.endpoint_name = "test-endpoint"
 
-    @patch("amzn_nova_customization_sdk.util.sagemaker._monitor_endpoint_creation")
+    @patch("amzn_nova_forge_sdk.util.sagemaker._monitor_endpoint_creation")
     def test_create_model_and_endpoint_success_fail_if_exists(
         self,
         mock_monitor_endpoint,
@@ -93,7 +93,7 @@ class TestSagemaker(unittest.TestCase):
             "708977205387.dkr.ecr.us-east-1.amazonaws.com/nova-inference-repo:SM-Inference-latest",
         )
 
-    @patch("amzn_nova_customization_sdk.util.sagemaker.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.sagemaker.boto3.client")
     def test_get_model_artifacts_smtj(self, mock_boto_client):
         job_name = "test-training-job"
         checkpoint_s3_uri = "s3://my-bucket/checkpoints/"
@@ -121,7 +121,7 @@ class TestSagemaker(unittest.TestCase):
             TrainingJobName=job_name
         )
 
-    @patch("amzn_nova_customization_sdk.util.sagemaker.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.sagemaker.boto3.client")
     def test_get_model_artifacts_smhp_single_rig(self, mock_boto_client):
         job_name = "test-hyperpod-job"
         cluster_name = "test-cluster"
@@ -156,7 +156,7 @@ class TestSagemaker(unittest.TestCase):
             ClusterName=cluster_name
         )
 
-    @patch("amzn_nova_customization_sdk.util.sagemaker.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.sagemaker.boto3.client")
     def test_get_model_artifacts_smhp_multiple_rigs(self, mock_boto_client):
         job_name = "test-hyperpod-job"
         cluster_name = "test-cluster"
@@ -184,7 +184,7 @@ class TestSagemaker(unittest.TestCase):
         self.assertIsNone(result.checkpoint_s3_path)
         self.assertEqual(result.output_s3_path, output_s3_path)
 
-    @patch("amzn_nova_customization_sdk.util.sagemaker.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.sagemaker.boto3.client")
     def test_get_model_artifacts_smhp_no_rigs(self, mock_boto_client):
         job_name = "test-hyperpod-job"
         cluster_name = "test-cluster"
@@ -207,7 +207,7 @@ class TestSagemaker(unittest.TestCase):
         self.assertIsNone(result.checkpoint_s3_path)
         self.assertEqual(result.output_s3_path, output_s3_path)
 
-    @patch("amzn_nova_customization_sdk.util.sagemaker.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.sagemaker.boto3.client")
     def test_get_model_artifacts_unsupported_platform(self, mock_boto_client):
         mock_sagemaker = MagicMock()
         mock_boto_client.return_value = mock_sagemaker
@@ -226,7 +226,7 @@ class TestSagemaker(unittest.TestCase):
 
         self.assertIn("Unsupported platform", str(context.exception))
 
-    @patch("amzn_nova_customization_sdk.util.sagemaker.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.sagemaker.boto3.client")
     def test_get_model_artifacts_smtj_client_error(self, mock_boto_client):
         job_name = "test-training-job"
         output_s3_path = "s3://my-bucket/output/"
@@ -249,7 +249,7 @@ class TestSagemaker(unittest.TestCase):
                 output_s3_path=output_s3_path,
             )
 
-    @patch("amzn_nova_customization_sdk.util.sagemaker.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.sagemaker.boto3.client")
     def test_get_model_artifacts_smhp_client_error(self, mock_boto_client):
         job_name = "test-hyperpod-job"
         cluster_name = "test-cluster"
@@ -274,7 +274,7 @@ class TestSagemaker(unittest.TestCase):
                 output_s3_path=output_s3_path,
             )
 
-    @patch("amzn_nova_customization_sdk.util.sagemaker.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.sagemaker.boto3.client")
     def test_get_hub_content_success(self, mock_boto_client):
         hub_name = "test-hub"
         hub_content_name = "test-content"
@@ -309,7 +309,7 @@ class TestSagemaker(unittest.TestCase):
             HubContentName=hub_content_name,
         )
 
-    @patch("amzn_nova_customization_sdk.util.sagemaker.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.sagemaker.boto3.client")
     def test_get_hub_content_non_json_document(self, mock_boto_client):
         hub_name = "test-hub"
         hub_content_name = "test-content"
@@ -337,7 +337,7 @@ class TestSagemaker(unittest.TestCase):
         self.assertIsInstance(result["HubContentDocument"], str)
         self.assertEqual(result["HubContentDocument"], "not a json string")
 
-    @patch("amzn_nova_customization_sdk.util.sagemaker.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.sagemaker.boto3.client")
     def test_get_hub_content_client_error(self, mock_boto_client):
         hub_name = "test-hub"
         hub_content_name = "test-content"
@@ -367,7 +367,7 @@ class TestSagemaker(unittest.TestCase):
         self.assertIn("Failed to get SageMaker hub content", str(context.exception))
         self.assertIn(hub_content_name, str(context.exception))
 
-    @patch("amzn_nova_customization_sdk.util.sagemaker.boto3.client")
+    @patch("amzn_nova_forge_sdk.util.sagemaker.boto3.client")
     def test_get_hub_content_generic_exception(self, mock_boto_client):
         hub_name = "test-hub"
         hub_content_name = "test-content"
@@ -378,7 +378,7 @@ class TestSagemaker(unittest.TestCase):
         mock_sagemaker.describe_hub_content.side_effect = Exception("Network error")
         mock_boto_client.return_value = mock_sagemaker
 
-        from amzn_nova_customization_sdk.util.sagemaker import _get_hub_content
+        from amzn_nova_forge_sdk.util.sagemaker import _get_hub_content
 
         with self.assertRaises(RuntimeError) as context:
             _get_hub_content(

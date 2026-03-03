@@ -6,13 +6,13 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
-from amzn_nova_customization_sdk.model.model_enums import Platform
-from amzn_nova_customization_sdk.model.result import BaseJobResult
-from amzn_nova_customization_sdk.model.result.eval_result import (
+from amzn_nova_forge_sdk.model.model_enums import Platform
+from amzn_nova_forge_sdk.model.result import BaseJobResult
+from amzn_nova_forge_sdk.model.result.eval_result import (
     SMTJEvaluationResult,
 )
-from amzn_nova_customization_sdk.model.result.job_result import JobStatus
-from amzn_nova_customization_sdk.recipe.recipe_config import EvaluationTask
+from amzn_nova_forge_sdk.model.result.job_result import JobStatus
+from amzn_nova_forge_sdk.recipe.recipe_config import EvaluationTask
 
 
 class TestSMTJEvaluationResult(unittest.TestCase):
@@ -355,7 +355,7 @@ class TestSMTJEvaluationResult(unittest.TestCase):
             self.result._cached_results_dir = cache_dir
 
             with patch(
-                "amzn_nova_customization_sdk.model.result.eval_result.logger"
+                "amzn_nova_forge_sdk.model.result.eval_result.logger"
             ) as mock_logger:
                 self.result.upload_tensorboard_results()
                 mock_logger.warning.assert_called_once()
@@ -434,7 +434,7 @@ class TestSMTJEvaluationResult(unittest.TestCase):
             self.assertEqual(data["eval_output_path"], self.eval_output_path)
             self.assertEqual(data, expected_data)
 
-    @patch("amzn_nova_customization_sdk.model.result.job_result.json.load")
+    @patch("amzn_nova_forge_sdk.model.result.job_result.json.load")
     @patch("builtins.open")
     def test_load_with_class_name(self, mock_open, mock_json_load):
         test_data = {
@@ -464,7 +464,7 @@ class TestSMTJEvaluationResult(unittest.TestCase):
                 eval_output_path=self.eval_output_path,
             )
 
-    @patch("amzn_nova_customization_sdk.model.result.job_result.json.load")
+    @patch("amzn_nova_forge_sdk.model.result.job_result.json.load")
     @patch("builtins.open")
     def test_load_without_class_name(self, mock_open, mock_json_load):
         test_data = {
@@ -483,7 +483,7 @@ class TestSMTJEvaluationResult(unittest.TestCase):
 
         self.assertIn("no class name found", str(context.exception))
 
-    @patch("amzn_nova_customization_sdk.model.result.job_result.json.load")
+    @patch("amzn_nova_forge_sdk.model.result.job_result.json.load")
     @patch("builtins.open")
     def test_load_with_bad_class_name(self, mock_open, mock_json_load):
         test_data = {
@@ -505,7 +505,7 @@ class TestSMTJEvaluationResult(unittest.TestCase):
             "not found or not a subclass of BaseJobResult", str(context.exception)
         )
 
-    @patch("amzn_nova_customization_sdk.model.result.job_result.json.load")
+    @patch("amzn_nova_forge_sdk.model.result.job_result.json.load")
     @patch("builtins.open")
     def test_load_with_unknown_fields_succeed(self, mock_open, mock_json_load):
         test_data = {

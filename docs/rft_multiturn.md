@@ -1,6 +1,6 @@
 # RFT Multiturn
 
-The Nova Customization SDK supports RFT (Reinforcement Fine-Tuning) multiturn training for multi-turn conversational tasks. This module provides infrastructure management and orchestration for running RFT training with custom reward environments.
+The Nova Forge SDK supports RFT (Reinforcement Fine-Tuning) multiturn training for multi-turn conversational tasks. This module provides infrastructure management and orchestration for running RFT training with custom reward environments.
 
 ## Table of Contents
 
@@ -8,6 +8,7 @@ The Nova Customization SDK supports RFT (Reinforcement Fine-Tuning) multiturn tr
 - [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
 - [Infrastructure Setup](#infrastructure-setup)
+- [Dataset Format](#dataset-format)
 - [Training](#training)
 - [Evaluation](#evaluation)
 - [Monitoring](#monitoring)
@@ -43,7 +44,8 @@ dditional SSM and ECS permissions are required - see the "If performing RFT Mult
 
 #### For EC2 Platform
 
-- EC2 instance launched ([guide](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/LaunchingAndUsingInstances.html))
+Requirements:
+- EC2 instance launched with **Amazon Linux 2023** ([guide](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/LaunchingAndUsingInstances.html))
 - Recommended instance type: `r5.24xlarge` or similar
 - SSM access enabled on the instance
 - IAM permissions for SSM commands
@@ -57,7 +59,7 @@ dditional SSM and ECS permissions are required - see the "If performing RFT Mult
 ## Quick Start
 
 ```python
-from amzn_nova_customization_sdk import *
+from amzn_nova_forge_sdk import *
 
 # 1. Setup infrastructure (LOCAL example)
 rft_infra = RFTMultiturnInfrastructure(
@@ -71,7 +73,7 @@ rft_infra = RFTMultiturnInfrastructure(
 rft_infra.setup()
 
 # Start training environment
-rft_infra.start_training_environment()
+rft_infra.start_environment(env_type=EnvType.TRAIN)
 
 # 2. Train model
 customizer = NovaModelCustomizer(
@@ -109,6 +111,9 @@ The `RFTMultiturnInfrastructure` class is the main entry point for managing RFT 
 - `python_venv_name` (str, conditional, default: `None`): Python virtual environment name. **Required for LOCAL and EC2**, optional for ECS.
 - `vf_env_id` (VFEnvId or str, optional, default: `None`): Built-in environment ID (e.g., `VFEnvId.WORDLE`). Mutually exclusive with `custom_env`.
 - `custom_env` (CustomEnvironment, optional, default: `None`): Custom environment object. Mutually exclusive with `vf_env_id`.
+- `starter_kit_path` (str, optional, default: `None`): Custom starter kit path. If not provided, uses default AWS starter kit.
+  - **LOCAL**: Local file path (e.g., `"~/my-starter-kit"` or `"/path/to/v1"`)
+  - **EC2/ECS**: Local path (auto-uploaded to S3) or S3 URI (e.g., `"s3://bucket/path/v1.tar.gz"`)
 - `rft_role_name` (str, optional, default: `"RFTExecutionRoleNovaSDK"`): IAM role name for RFT infrastructure permissions.
 - `custom_policy_path` (str, optional, default: `None`): Path to custom IAM policy JSON file. If not provided, uses SDK default policy.
 - `vpc_config` (dict, optional, default: uses cluster's default): **ECS only**: VPC configuration with `subnets` and `security_groups` keys.
@@ -125,7 +130,7 @@ The platform is automatically detected based on `infrastructure_arn`:
 ### LOCAL Platform
 
 ```python
-from amzn_nova_customization_sdk import RFTMultiturnInfrastructure, VFEnvId
+from amzn_nova_forge_sdk import RFTMultiturnInfrastructure, VFEnvId
 
 rft_infra = RFTMultiturnInfrastructure(
     stack_name="my-rft-stack",
@@ -170,6 +175,40 @@ rft_infra = RFTMultiturnInfrastructure(
 rft_infra.setup()
 ```
 
+### Custom Starter Kit Path
+
+You can provide a custom starter kit path instead of using the default AWS starter kit:
+
+```python
+# LOCAL: Use local file path
+rft_infra = RFTMultiturnInfrastructure(
+    stack_name="my-rft-stack",
+    region="us-east-1",
+    python_venv_name="my_rft_venv",
+    vf_env_id=VFEnvId.WORDLE,
+    starter_kit_path="~/my-custom-starter-kit"  # Local path
+)
+
+# EC2: Use local path (auto-uploaded to S3)
+rft_infra = RFTMultiturnInfrastructure(
+    stack_name="my-rft-stack",
+    region="us-east-1",
+    infrastructure_arn="i-1234567890abcdef0",
+    python_venv_name="my_rft_venv",
+    vf_env_id=VFEnvId.WORDLE,
+    starter_kit_path="/path/to/v1"  # Local path, will be uploaded to S3
+)
+
+# ECS: Use S3 URI directly
+rft_infra = RFTMultiturnInfrastructure(
+    stack_name="my-rft-stack",
+    region="us-east-1",
+    infrastructure_arn="arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster",
+    vf_env_id=VFEnvId.WORDLE,
+    starter_kit_path="s3://my-bucket/custom-starter-kits/v1.tar.gz"  # S3 URI
+)
+```
+
 ### Custom IAM Role
 
 ```python
@@ -182,6 +221,75 @@ rft_infra = RFTMultiturnInfrastructure(
     custom_policy_path="path/to/custom-policy.json"  # Custom policy JSON
 )
 ```
+
+## Dataset Format
+
+RFT Multiturn training requires a dataset with specific fields. The SDK supports both flat and nested formats, as well as OpenAI message format for prompts.
+
+### Required Fields
+
+- `id` (str): Unique identifier for each sample
+- `prompt` (str or list): The input prompt
+  - Can be a simple string: `"What is 2+2?"`
+  - Can be OpenAI message format: `[{"role": "user", "content": "What is 2+2?"}]`
+
+### Optional Fields
+
+- `answer` (str): Expected answer or completion
+- `task` (str): Task category or type
+- `info` (dict or str): Additional metadata
+  - Can be a dictionary: `{"difficulty": "easy"}`
+  - Can be a valid JSON string: `"{\"difficulty\": \"easy\"}"`
+
+**Important**: If any sample includes an optional field (answer, task, or info), ALL samples must include that field for consistency.
+
+**Loader initialization:**
+```python
+loader = CSVDatasetLoader(id="id", prompt="prompt", answer="answer", task="task", info="info")
+```
+
+### Dataset Validation
+
+The SDK automatically validates your dataset:
+
+```python
+from amzn_nova_forge_sdk import JSONLDatasetLoader, TrainingMethod, Model, EvaluationTask
+
+# Load dataset
+loader = JSONLDatasetLoader(id="id", prompt="prompt", answer="answer")
+loader.load("data.jsonl")
+
+# Transform to RFT Multiturn format for training
+loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+
+# Transform to RFT Multiturn format for evaluation
+# loader.transform(method=TrainingMethod.EVALUATION, eval_task=EvaluationTask.RFT_MULTITURN_EVAL, model=Model.NOVA_LITE_2)
+
+
+# Validate dataset for training
+loader.validate(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+
+# Validate dataset for evaluation
+# loader.validate(method=TrainingMethod.EVALUATION, eval_task=EvaluationTask.RFT_MULTITURN_EVAL, model=Model.NOVA_LITE_2)
+
+# Upload to S3
+s3_path = loader.save_data("s3://my-bucket/data/training_data.jsonl")
+print(f"Dataset uploaded to: {s3_path}")
+
+```
+
+### Validation Rules
+
+- `id`: Must be unique across all samples
+- `prompt`: Cannot be empty
+  - String prompts must be non-empty
+  - OpenAI format must have valid roles (system, user, assistant, tool, function)
+  - Tool messages must have `tool_call_id` and non-empty `content`
+  - Assistant messages with tool_calls must have valid structure
+- `answer`: Optional, but if present in any sample, must be present in all samples
+- `task`: Optional, but if present in any sample, must be present in all samples
+- `info`: Optional, but if present in any sample, must be present in all samples
+  - Must be a dict or valid JSON string
 
 ## Training
 
@@ -212,17 +320,23 @@ This method takes no parameters.
 rft_infra.setup()
 ```
 
-### start_training_environment() Method
+### start_environment() Method
 
-Starts the training environment on the configured platform.
+Starts the training or evaluation environment on the configured platform using the unified environment client.
 
 **Parameters:**
 
+- `env_type` (`EnvType`, required): Environment type - `EnvType.TRAIN` or `EnvType.EVAL`.
 - `vf_env_args` (`dict`, optional, default: `{}`): Environment-specific arguments passed to the verifier environment.
-- `groups_per_batch` (`int`, optional, default: `20`): Number of rollout groups to process per batch. Higher values increase throughput but require more memory.
-- `max_messages_per_poll` (`int`, optional, default: `10`): Maximum messages to retrieve from SQS per poll.
-- `client_timeout` (`float`, optional, default: `600.0`): Timeout in seconds for Lambda client requests.
-- `client_poll_interval` (`float`, optional, default: `0.5`): Interval in seconds between polling attempts.
+- `max_concurrent_rollouts` (`int`, optional, default: `40`): Maximum number of concurrent rollouts. Replaces the old `groups_per_batch × max_concurrent_batches × max_workers` pattern.
+- `max_rollout_timeout` (`float`, optional, default: `300.0`): Per-rollout timeout in seconds. Prevents stuck rollouts from blocking others.
+- `completion_poll_timeout` (`float`, optional, default: `600.0`): Timeout in seconds for completion polling.
+- `completion_poll_interval` (`float`, optional, default: `0.5`): Interval in seconds between completion polling attempts.
+- `rollout_poll_interval` (`float`, optional, default: `1.0`): Interval in seconds between SQS message polling.
+- `log_output_directory` (`str`, optional, default: `None`): Directory for logs and metrics. Recommended: `"/opt/ml/output/logs"` for SageMaker, `"./logs"` for local.
+- `config_name` (`str`, optional, default: `None`): Use YAML config instead of CLI flags. If provided, loads config from `configs/{config_name}.yaml`.
+- `config_path` (`str`, optional, default: `None`): Custom config directory path. Use with `config_name` to load from custom location.
+- `queue_url` (`str`, optional, default: `None`): SQS queue URL. Defaults to training queue from stack.
 
 **Returns:**
 
@@ -232,16 +346,78 @@ Starts the training environment on the configured platform.
 **Example:**
 
 ```python
-# Start with default parameters
-rft_infra.start_training_environment()
+from amzn_nova_forge_sdk import EnvType
 
-# Start with custom parameters
-rft_infra.start_training_environment(
+# Start training environment with default parameters
+rft_infra.start_environment(env_type=EnvType.TRAIN)
+
+# Start training with custom parameters
+rft_infra.start_environment(
+    env_type=EnvType.TRAIN,
     vf_env_args={"use_think": True, "max_turns": 10},
-    groups_per_batch=30,
-    max_messages_per_poll=10,
-    client_timeout=900.0,
-    client_poll_interval=1.0
+    max_concurrent_rollouts=60,
+    max_rollout_timeout=600.0,
+    log_output_directory="/opt/ml/output/logs"
+)
+
+# Start evaluation environment
+rft_infra.start_environment(
+    env_type=EnvType.EVAL,
+    vf_env_args={"num_eval_examples": 200},
+    max_concurrent_rollouts=100
+)
+
+```
+
+### start_training_environment() Method (DEPRECATED)
+
+**DEPRECATED**: This method is deprecated and will be removed in a future version. Use `start_environment(env_type=EnvType.TRAIN, ...)` instead.
+
+This is now a simple wrapper that calls `start_environment()` with `env_type=EnvType.TRAIN`.
+
+**Parameters:**
+
+Same as `start_environment()` but without the `env_type` parameter (automatically set to `EnvType.TRAIN`).
+
+**Example:**
+
+```python
+# Old way (deprecated)
+rft_infra.start_training_environment(
+    vf_env_args={"use_think": True, "max_turns": 10}
+)
+
+# New way (recommended)
+from amzn_nova_forge_sdk import EnvType
+rft_infra.start_environment(
+    env_type=EnvType.TRAIN,
+    vf_env_args={"use_think": True, "max_turns": 10}
+)
+```
+
+### start_evaluation_environment() Method (DEPRECATED)
+
+**DEPRECATED**: This method is deprecated and will be removed in a future version. Use `start_environment(env_type=EnvType.EVAL, ...)` instead.
+
+This is now a simple wrapper that calls `start_environment()` with `env_type=EnvType.EVAL`.
+
+**Parameters:**
+
+Same as `start_environment()` but without the `env_type` parameter (automatically set to `EnvType.EVAL`).
+
+**Example:**
+
+```python
+# Old way (deprecated)
+rft_infra.start_evaluation_environment(
+    vf_env_args={"num_eval_examples": 200}
+)
+
+# New way (recommended)
+from amzn_nova_forge_sdk import EnvType
+rft_infra.start_environment(
+    env_type=EnvType.EVAL,
+    vf_env_args={"num_eval_examples": 200}
 )
 ```
 
@@ -282,7 +458,7 @@ Use the `train()` method of `NovaModelCustomizer` with the `rft_multiturn_infra`
 **Example:**
 
 ```python
-from amzn_nova_customization_sdk import (
+from amzn_nova_forge_sdk import (
     NovaModelCustomizer,
     Model,
     TrainingMethod,
@@ -315,22 +491,9 @@ checkpoint_path = training_result.model_artifacts.checkpoint_s3_path
 
 ## Evaluation
 
-### start_evaluation_environment() Method
+### Starting Evaluation Environment
 
-Starts the evaluation environment on the configured platform.
-
-**Parameters:**
-
-- `vf_env_args` (`dict`, optional, default: `{}`): Environment-specific arguments passed to the verifier environment.
-- `rollouts_per_example` (`int`, optional, default: `1`): Number of rollouts to generate per evaluation example. Higher values provide more robust evaluation.
-- `max_concurrent` (`int`, optional, default: `60`): Maximum number of concurrent evaluation requests.
-- `client_timeout` (`float`, optional, default: `600.0`): Timeout in seconds for Lambda client requests.
-- `client_poll_interval` (`float`, optional, default: `0.5`): Interval in seconds between polling attempts.
-
-**Returns:**
-
-- **LOCAL/EC2**: Process ID or command invocation ID
-- **ECS**: Task ARN
+Use the `start_environment()` method with `env_type=EnvType.EVAL` to start the evaluation environment.
 
 **Important Notes:**
 
@@ -340,7 +503,7 @@ Starts the evaluation environment on the configured platform.
 **Example:**
 
 ```python
-from amzn_nova_customization_sdk import EnvType
+from amzn_nova_forge_sdk import EnvType
 
 # Stop training environment first (recommended if using same stack)
 rft_infra.kill_task(env_type=EnvType.TRAIN)
@@ -349,17 +512,21 @@ rft_infra.kill_task(env_type=EnvType.TRAIN)
 rft_infra.flush_all_queues()
 
 # Start evaluation environment with default parameters
-rft_infra.start_evaluation_environment()
+rft_infra.start_environment(env_type=EnvType.EVAL)
 
 # Start with custom parameters
-rft_infra.start_evaluation_environment(
+rft_infra.start_environment(
+    env_type=EnvType.EVAL,
     vf_env_args={"num_eval_examples": 200},
-    rollouts_per_example=3,
-    max_concurrent=100,
-    client_timeout=900.0,
-    client_poll_interval=1.0
+    max_concurrent_rollouts=100,
+    max_rollout_timeout=600.0,
+    log_output_directory="/opt/ml/output/logs"
 )
 ```
+
+### start_evaluation_environment() Method (DEPRECATED)
+
+**DEPRECATED**: Use `start_environment(env_type=EnvType.EVAL, ...)` instead. See the [start_environment() documentation](#start_environment-method) for details.
 
 ### Evaluate with NovaModelCustomizer
 
@@ -375,7 +542,7 @@ Use the `evaluate()` method of `NovaModelCustomizer` with the `rft_multiturn_inf
 **Example:**
 
 ```python
-from amzn_nova_customization_sdk import EvaluationTask
+from amzn_nova_forge_sdk import EvaluationTask
 
 eval_result = customizer.evaluate(
     job_name="rft-eval",
@@ -392,6 +559,80 @@ eval_result.show()
 ```
 
 ## Monitoring
+
+### Session Persistence
+
+The SDK provides `dump()` and `load()` methods to save and restore infrastructure state across sessions (e.g., after notebook restarts).
+
+#### dump() Method
+
+Saves infrastructure state to a JSON file for session recovery.
+
+**Parameters:**
+
+- `file_path` (`str`, optional, default: `None`): Directory path to save the state file. Saves to current directory if not provided.
+- `file_name` (`str`, optional, default: `None`): File name. If `None`, auto-generates with session ID.
+- `include_session_id` (`bool`, optional, default: `True`): If `True`, includes session ID in filename.
+
+**Returns:**
+
+- `Path`: Path to saved state file
+
+**Example:**
+
+```python
+# Save to current directory with auto-generated name
+state_file = rft_infra.dump()
+# Saves as: rft_state_my-stack_a1b2c3d4.json
+
+# Save to specific directory
+state_file = rft_infra.dump(file_path="/home/user/workspace")
+# Saves as: /home/user/workspace/rft_state_my-stack_a1b2c3d4.json
+
+# Save with custom filename
+state_file = rft_infra.dump(
+    file_name="my_state.json",
+    include_session_id=False
+)
+# Saves as: my_state.json
+```
+
+#### load() Method (Class Method)
+
+Loads infrastructure state from a file and reconnects to running processes.
+
+**Parameters:**
+
+- `file_path` (`str`, required): Path to state file.
+- `auto_reconnect` (`bool`, optional, default: `True`): If `True`, verify and reconnect to running processes.
+
+**Returns:**
+
+- `RFTMultiturnInfrastructure`: Reconstructed infrastructure instance
+
+**Example:**
+
+```python
+# After notebook restart or session interruption
+from amzn_nova_forge_sdk import RFTMultiturnInfrastructure
+
+# Load saved state
+rft_infra = RFTMultiturnInfrastructure.load(
+    "rft_state_my-stack_a1b2c3d4.json"
+)
+
+print(f"Reconnected to session: {rft_infra.session_id}")
+
+# Continue working with the infrastructure
+logs = rft_infra.get_logs(env_type=EnvType.TRAIN, limit=50)
+```
+
+**Use Cases:**
+
+- Recover from notebook kernel restarts
+- Share infrastructure state between team members
+- Resume monitoring after disconnection
+- Debug issues by loading historical states
 
 ### get_logs() Method
 
@@ -417,7 +658,7 @@ Retrieves logs from training, evaluation, or SAM deployment environments.
 **Examples:**
 
 ```python
-from amzn_nova_customization_sdk import EnvType
+from amzn_nova_forge_sdk import EnvType
 
 # Get last 100 lines from training environment
 logs = rft_infra.get_logs(env_type=EnvType.TRAIN, limit=100)
@@ -624,7 +865,7 @@ print(f"Uploaded to: {s3_uri}")
 ### Create Custom Environment
 
 ```python
-from amzn_nova_customization_sdk import CustomEnvironment
+from amzn_nova_forge_sdk import CustomEnvironment
 
 # Create single-turn environment
 custom_env = CustomEnvironment(
@@ -678,7 +919,7 @@ A Wordle game environment for word-guessing tasks.
 
 **Example**:
 ```python
-from amzn_nova_customization_sdk import VFEnvId
+from amzn_nova_forge_sdk import VFEnvId, EnvType
 
 rft_infra = RFTMultiturnInfrastructure(
     stack_name="my-rft-stack",
@@ -688,7 +929,8 @@ rft_infra = RFTMultiturnInfrastructure(
 )
 
 # Start with custom arguments
-rft_infra.start_training_environment(
+rft_infra.start_environment(
+    env_type=EnvType.TRAIN,
     vf_env_args={"use_think": True, "max_turns": 8}
 )
 ```
@@ -711,8 +953,8 @@ rft_infra = RFTMultiturnInfrastructure(
 )
 
 # Start evaluation with custom arguments
-rft_infra.start_evaluation_environment(
-    vf_env_args={"num_eval_examples": 200, "timeout": 120.0}
+rft_infra.start_environment(
+    env_type=EnvType.EVAL,
 )
 ```
 
@@ -751,7 +993,7 @@ Creates an IAM role with required permissions for RFT multiturn infrastructure.
 **Example:**
 
 ```python
-from amzn_nova_customization_sdk import create_rft_execution_role
+from amzn_nova_forge_sdk import create_rft_execution_role
 
 # Create role with default name
 role_arn = create_rft_execution_role(region="us-east-1")
@@ -796,7 +1038,7 @@ Lists CloudFormation stacks related to RFT multiturn infrastructure.
 **Example:**
 
 ```python
-from amzn_nova_customization_sdk import list_rft_stacks
+from amzn_nova_forge_sdk import list_rft_stacks
 
 # List only Nova Forge SDK stacks
 nova_stacks = list_rft_stacks(region="us-east-1")
@@ -832,7 +1074,7 @@ Stops a running training or evaluation task.
 **Example:**
 
 ```python
-from amzn_nova_customization_sdk import EnvType
+from amzn_nova_forge_sdk import EnvType
 
 # Stop training task
 rft_infra.kill_task(env_type=EnvType.TRAIN)
@@ -931,7 +1173,7 @@ rft_infra.cleanup(delete_stack=True)  # cleanup_environment defaults to False
 ### Complete Training Workflow
 
 ```python
-from amzn_nova_customization_sdk import (
+from amzn_nova_forge_sdk import (
     RFTMultiturnInfrastructure,
     NovaModelCustomizer,
     Model,
@@ -951,7 +1193,13 @@ rft_infra = RFTMultiturnInfrastructure(
 )
 
 rft_infra.setup()
-rft_infra.start_training_environment()
+
+# Start training environment
+rft_infra.start_environment(env_type=EnvType.TRAIN)
+
+# Save state for recovery (optional)
+state_file = rft_infra.dump()
+print(f"State saved to: {state_file}")
 
 # 2. Train
 customizer = NovaModelCustomizer(
@@ -976,7 +1224,7 @@ checkpoint_path = training_result.model_artifacts.checkpoint_s3_path
 
 # 3. Evaluate
 rft_infra.kill_task(env_type=EnvType.TRAIN)
-rft_infra.start_evaluation_environment()
+rft_infra.start_environment(env_type=EnvType.EVAL)
 
 eval_result = customizer.evaluate(
     job_name="rft-eval",
@@ -991,6 +1239,29 @@ eval_result.show()
 # 4. Cleanup
 rft_infra.kill_task(env_type=EnvType.EVAL)
 rft_infra.cleanup(delete_stack=True, cleanup_environment=True)
+```
+
+### Session Recovery Example
+
+```python
+from amzn_nova_forge_sdk import RFTMultiturnInfrastructure, EnvType
+
+# Save the config
+state_file = rft_infra.dump()
+
+# After notebook restart or interruption
+rft_infra = RFTMultiturnInfrastructure.load(
+    state_file
+)
+
+# Check logs to see current status
+logs = rft_infra.get_logs(env_type=EnvType.TRAIN, limit=100)
+for log in logs:
+    print(log)
+
+# Continue with evaluation or cleanup
+rft_infra.kill_task(env_type=EnvType.TRAIN)
+rft_infra.start_environment(env_type=EnvType.EVAL)
 ```
 
 ## Troubleshooting
@@ -1012,7 +1283,7 @@ custom_env.package_and_upload()
 **Issue**: Permission denied errors
 ```python
 # Solution: Ensure RFT execution role has required permissions
-from amzn_nova_customization_sdk import create_rft_execution_role
+from amzn_nova_forge_sdk import create_rft_execution_role
 role_arn = create_rft_execution_role(region="us-east-1")
 ```
 

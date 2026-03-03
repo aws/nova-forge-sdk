@@ -2,12 +2,12 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-from amzn_nova_customization_sdk.manager.runtime_manager import (
+from amzn_nova_forge_sdk.manager.runtime_manager import (
     JobConfig,
     SMHPRuntimeManager,
     SMTJRuntimeManager,
 )
-from amzn_nova_customization_sdk.recipe.recipe_builder import HYPERPOD_RECIPE_PATH
+from amzn_nova_forge_sdk.recipe.recipe_builder import HYPERPOD_RECIPE_PATH
 
 
 class TestSMTJRuntimeManager(unittest.TestCase):
@@ -45,14 +45,10 @@ class TestSMTJRuntimeManager(unittest.TestCase):
 
         self.assertEqual(manager.instance_count, new_instance_count)
 
-    @patch(
-        "amzn_nova_customization_sdk.manager.runtime_manager.sagemaker.session.Session"
-    )
-    @patch(
-        "amzn_nova_customization_sdk.manager.runtime_manager.sagemaker.get_execution_role"
-    )
-    @patch("amzn_nova_customization_sdk.manager.runtime_manager.boto3.client")
-    @patch("amzn_nova_customization_sdk.manager.runtime_manager.boto3.session.Session")
+    @patch("amzn_nova_forge_sdk.manager.runtime_manager.sagemaker.session.Session")
+    @patch("amzn_nova_forge_sdk.manager.runtime_manager.sagemaker.get_execution_role")
+    @patch("amzn_nova_forge_sdk.manager.runtime_manager.boto3.client")
+    @patch("amzn_nova_forge_sdk.manager.runtime_manager.boto3.session.Session")
     def test_setup(
         self,
         mock_boto_session_class,
@@ -87,7 +83,7 @@ class TestSMTJRuntimeManager(unittest.TestCase):
             boto_session=mock_boto_session, sagemaker_client=mock_client
         )
 
-    @patch("amzn_nova_customization_sdk.manager.runtime_manager.PyTorch")
+    @patch("amzn_nova_forge_sdk.manager.runtime_manager.PyTorch")
     @patch.object(SMTJRuntimeManager, "setup", return_value=None)
     def test_execute_success(self, mock_setup, mock_pytorch):
         manager = self._create_manager()
@@ -111,7 +107,7 @@ class TestSMTJRuntimeManager(unittest.TestCase):
         mock_estimator.fit.assert_called_once()
         self.assertEqual(job_id, "test-job")
 
-    @patch("amzn_nova_customization_sdk.manager.runtime_manager.PyTorch")
+    @patch("amzn_nova_forge_sdk.manager.runtime_manager.PyTorch")
     @patch.object(SMTJRuntimeManager, "setup", return_value=None)
     def test_execute_without_optional_params(self, mock_setup, mock_pytorch):
         manager = self._create_manager()
@@ -162,7 +158,7 @@ class TestSMTJRuntimeManager(unittest.TestCase):
             TrainingJobName="test-job"
         )
 
-    @patch("amzn_nova_customization_sdk.manager.runtime_manager.PyTorch")
+    @patch("amzn_nova_forge_sdk.manager.runtime_manager.PyTorch")
     @patch.object(SMTJRuntimeManager, "setup", return_value=None)
     def test_execute_handles_error(self, mock_setup, mock_pytorch):
         manager = self._create_manager()

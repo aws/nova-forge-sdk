@@ -5,7 +5,7 @@ This document defines the allowed instances types for each model/method combinat
 ### SMTJRuntimeManager (SageMaker Training Jobs)
 
 ```python
-from amzn_nova_customization_sdk.manager import *
+from amzn_nova_forge_sdk.manager import *
 
 runtime = SMTJRuntimeManager(
     instance_type="ml.p5.48xlarge",
@@ -48,7 +48,7 @@ _All allow 1, 2, 4, 8, or 16 instances_
 ### SMHPRuntimeManager (SageMaker HyperPod)
 
 ```python
-from amzn_nova_customization_sdk.manager import *
+from amzn_nova_forge_sdk.manager import *
 
 runtime = SMHPRuntimeManager(
     instance_type="ml.p5.48xlarge",

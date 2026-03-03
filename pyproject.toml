@@ -7,7 +7,7 @@
      build-backend = "setuptools.build_meta"
 
      [project]
-     name = "amzn-nova-customization-sdk"
+     name = "amzn-nova-forge-sdk"
      description = "A Python SDK for customizing Amazon Nova models."
      dynamic = ["dependencies", "version"]
      requires-python = ">=3.12"
@@ -26,8 +26,8 @@
      ]
 
      [tool.setuptools.package-data]
-     amzn_nova_customization_sdk = ["**/*.json", "**/*.yaml"]
+     amzn_nova_forge_sdk = ["**/*.json", "**/*.yaml"]
 
      [tool.setuptools.dynamic]
-     version = {attr = "amzn_nova_customization_sdk.__version__.VERSION"}
+     version = {attr = "amzn_nova_forge_sdk.__version__.VERSION"}
      dependencies = {file = "requirements.txt"}

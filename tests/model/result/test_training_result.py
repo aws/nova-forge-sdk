@@ -5,18 +5,18 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from amzn_nova_customization_sdk.model.model_config import ModelArtifacts
-from amzn_nova_customization_sdk.model.model_enums import (
+from amzn_nova_forge_sdk.model.model_config import ModelArtifacts
+from amzn_nova_forge_sdk.model.model_enums import (
     Model,
     Platform,
     TrainingMethod,
 )
-from amzn_nova_customization_sdk.model.result.job_result import (
+from amzn_nova_forge_sdk.model.result.job_result import (
     JobStatus,
     SMHPStatusManager,
     SMTJStatusManager,
 )
-from amzn_nova_customization_sdk.model.result.training_result import (
+from amzn_nova_forge_sdk.model.result.training_result import (
     SMHPTrainingResult,
     SMTJTrainingResult,
 )

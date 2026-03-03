@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from amzn_nova_customization_sdk.util.data_mixing import DataMixing
+from amzn_nova_forge_sdk.util.data_mixing import DataMixing
 
 
 class TestDataMixing:
@@ -96,9 +96,7 @@ class TestDataMixing:
         data_mixing = DataMixing()
         config = {"nova_code_percent": 100, "dataset_catalog": "some_catalog"}
 
-        with patch(
-            "amzn_nova_customization_sdk.util.data_mixing.logger"
-        ) as mock_logger:
+        with patch("amzn_nova_forge_sdk.util.data_mixing.logger") as mock_logger:
             data_mixing.set_config(config)
             mock_logger.warning.assert_called_once()
             assert "dataset_catalog" in data_mixing.config
@@ -127,7 +125,7 @@ class TestDataMixing:
             "other_field": {"default": "value"},
         }
 
-        with patch("amzn_nova_customization_sdk.util.data_mixing.logger"):
+        with patch("amzn_nova_forge_sdk.util.data_mixing.logger"):
             data_mixing._load_defaults_from_template(template)
 
         # dataset_catalog is stored separately, not in config directly
@@ -156,7 +154,7 @@ class TestDataMixing:
         }
         # Validation happens in set_config, not as a separate method
         with patch(
-            "amzn_nova_customization_sdk.validation.validator.Validator.validate_data_mixing_config"
+            "amzn_nova_forge_sdk.validation.validator.Validator.validate_data_mixing_config"
         ):
             data_mixing.set_config(config)  # Should not raise
 
@@ -170,7 +168,7 @@ class TestDataMixing:
         }
 
         with patch(
-            "amzn_nova_customization_sdk.validation.validator.Validator.validate_data_mixing_config",
+            "amzn_nova_forge_sdk.validation.validator.Validator.validate_data_mixing_config",
             side_effect=ValueError("Nova data percentages must sum to 100"),
         ):
             with pytest.raises(
@@ -187,7 +185,7 @@ class TestDataMixing:
         }
 
         with patch(
-            "amzn_nova_customization_sdk.validation.validator.Validator.validate_data_mixing_config",
+            "amzn_nova_forge_sdk.validation.validator.Validator.validate_data_mixing_config",
             side_effect=ValueError("customer_data_percent must be between 0 and 100"),
         ):
             with pytest.raises(
@@ -204,7 +202,7 @@ class TestDataMixing:
         }
 
         with patch(
-            "amzn_nova_customization_sdk.validation.validator.Validator.validate_data_mixing_config",
+            "amzn_nova_forge_sdk.validation.validator.Validator.validate_data_mixing_config",
             side_effect=ValueError("nova_code_percent must be between 0 and 100"),
         ):
             with pytest.raises(
@@ -222,7 +220,7 @@ class TestDataMixing:
         }
 
         with patch(
-            "amzn_nova_customization_sdk.validation.validator.Validator.validate_data_mixing_config",
+            "amzn_nova_forge_sdk.validation.validator.Validator.validate_data_mixing_config",
             side_effect=ValueError(
                 "Since customer_data_percent is 100 %, all nova data should sum to 0 %"
             ),
@@ -243,7 +241,7 @@ class TestDataMixing:
         }
         # Validation happens in set_config
         with patch(
-            "amzn_nova_customization_sdk.validation.validator.Validator.validate_data_mixing_config"
+            "amzn_nova_forge_sdk.validation.validator.Validator.validate_data_mixing_config"
         ):
             data_mixing.set_config(
                 config
@@ -259,7 +257,7 @@ class TestDataMixing:
         }
         # Validation happens in set_config
         with patch(
-            "amzn_nova_customization_sdk.validation.validator.Validator.validate_data_mixing_config"
+            "amzn_nova_forge_sdk.validation.validator.Validator.validate_data_mixing_config"
         ):
             data_mixing.set_config(config)  # Should not raise
 
@@ -298,7 +296,7 @@ class TestDataMixing:
 
         config = {"nova_new_percent": 100, "customer_data_percent": 50}
         with patch(
-            "amzn_nova_customization_sdk.validation.validator.Validator.validate_data_mixing_config"
+            "amzn_nova_forge_sdk.validation.validator.Validator.validate_data_mixing_config"
         ):
             data_mixing.set_config(config)
 
@@ -323,7 +321,7 @@ class TestDataMixing:
             "customer_data_percent": 50,
         }
         with patch(
-            "amzn_nova_customization_sdk.validation.validator.Validator.validate_data_mixing_config"
+            "amzn_nova_forge_sdk.validation.validator.Validator.validate_data_mixing_config"
         ):
             data_mixing.set_config(new_config)
 
@@ -336,7 +334,7 @@ class TestDataMixing:
         data_mixing = DataMixing()
         config = {"customer_data_percent": 100}
         with patch(
-            "amzn_nova_customization_sdk.validation.validator.Validator.validate_data_mixing_config"
+            "amzn_nova_forge_sdk.validation.validator.Validator.validate_data_mixing_config"
         ):
             data_mixing.set_config(config)  # Should not raise
 
@@ -349,7 +347,7 @@ class TestDataMixing:
             "customer_data_percent": 0,
         }
         with patch(
-            "amzn_nova_customization_sdk.validation.validator.Validator.validate_data_mixing_config"
+            "amzn_nova_forge_sdk.validation.validator.Validator.validate_data_mixing_config"
         ):
             data_mixing.set_config(config)  # Should not raise
 
@@ -362,7 +360,7 @@ class TestDataMixing:
             "customer_data_percent": {"default": 80},
         }
 
-        with patch("amzn_nova_customization_sdk.util.data_mixing.logger"):
+        with patch("amzn_nova_forge_sdk.util.data_mixing.logger"):
             data_mixing._load_defaults_from_template(template)
 
         # Should only load values from dict entries with 'default' key
@@ -397,7 +395,7 @@ class TestDataMixing:
         # Valid config 1
         config1 = {"nova_code_percent": 100, "customer_data_percent": 50}
         with patch(
-            "amzn_nova_customization_sdk.validation.validator.Validator.validate_data_mixing_config"
+            "amzn_nova_forge_sdk.validation.validator.Validator.validate_data_mixing_config"
         ):
             data_mixing.set_config(config1)
 
@@ -408,7 +406,7 @@ class TestDataMixing:
             "customer_data_percent": 80,
         }
         with patch(
-            "amzn_nova_customization_sdk.validation.validator.Validator.validate_data_mixing_config"
+            "amzn_nova_forge_sdk.validation.validator.Validator.validate_data_mixing_config"
         ):
             data_mixing.set_config(config2)
 
@@ -419,7 +417,7 @@ class TestDataMixing:
             "customer_data_percent": 80,
         }
         with patch(
-            "amzn_nova_customization_sdk.validation.validator.Validator.validate_data_mixing_config",
+            "amzn_nova_forge_sdk.validation.validator.Validator.validate_data_mixing_config",
             side_effect=ValueError("Invalid config"),
         ):
             with pytest.raises(ValueError):
@@ -435,7 +433,7 @@ class TestDataMixing:
             "customer_data_percent": 50,
         }
         with patch(
-            "amzn_nova_customization_sdk.validation.validator.Validator.validate_data_mixing_config"
+            "amzn_nova_forge_sdk.validation.validator.Validator.validate_data_mixing_config"
         ):
             data_mixing.set_config(config)  # Should not raise
 
@@ -562,9 +560,7 @@ class TestDataMixing:
             "dataset_catalog": "catalog_v2",  # Should be filtered out
         }
 
-        with patch(
-            "amzn_nova_customization_sdk.util.data_mixing.logger"
-        ) as mock_logger:
+        with patch("amzn_nova_forge_sdk.util.data_mixing.logger") as mock_logger:
             data_mixing.set_config(override_config)
             mock_logger.warning.assert_called_once()
 
@@ -619,7 +615,7 @@ class TestDataMixing:
             "customer_data_percent": 50,
         }
         with patch(
-            "amzn_nova_customization_sdk.validation.validator.Validator.validate_data_mixing_config"
+            "amzn_nova_forge_sdk.validation.validator.Validator.validate_data_mixing_config"
         ):
             data_mixing.set_config(config_with_none, normalize=False)
 
