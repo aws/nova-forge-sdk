@@ -1,4 +1,4 @@
-# Amazon Nova Forge SDK
+# Amazon Nova Customization SDK
 
 A comprehensive Python SDK for fine-tuning and customizing Amazon Nova models. This SDK provides a unified interface for training, evaluation, deployment, and monitoring of Nova models across both SageMaker Training Jobs and SageMaker HyperPod.
 
@@ -294,7 +294,7 @@ aws eks associate-access-policy \
 Replace the following placeholders:
 - `<your-cluster-name>`: Your HyperPod cluster's EKS cluster name (e.g., `sagemaker-my-cluster-eks`)
 - `<account_id>`: Your AWS account ID
-- `<your-execution-role-name>`: The name of your execution role (e.g., `NovaForgeSdkExecutionRole`)
+- `<your-execution-role-name>`: The name of your execution role (e.g., `NovaCustomizationSdkExecutionRole`)
 
 
 ### Instances
@@ -314,7 +314,7 @@ For HyperPod-based customization jobs, the SDK uses the [SageMaker HyperPod CLI]
 ```
 git clone -b release_v2 https://github.com/aws/sagemaker-hyperpod-cli.git
 ```
-2. If you are using a Python virtual environment to use the Nova Forge SDK, activate that environment with `source <path to venv>/bin/activate`
+2. If you are using a Python virtual environment to use the Nova Customization SDK, activate that environment with `source <path to venv>/bin/activate`
 
 
 #### For Forge Customers
@@ -373,7 +373,7 @@ pip install -e .
 
 ## Core Modules Overview
 
-The Nova Forge SDK is organized into the following modules:
+The Nova Customization SDK is organized into the following modules:
 
 | Module             | Purpose                                       | Key Components                             |
 | ------------------ | --------------------------------------------- | ------------------------------------------ |
@@ -475,7 +475,7 @@ Manages infrastructure for reinforcement fine-tuning with multi-turn conversatio
 ---
 ### Iterative Training
 
-The Nova Forge SDK supports iterative fine-tuning of Nova models.
+The Nova Customization SDK supports iterative fine-tuning of Nova models.
 
 This is done by progressively running fine-tuning jobs on the output checkpoint from the previous job:
 
@@ -510,7 +510,7 @@ stage2_result = stage2_customizer.train(job_name="stage2-training")
 
 ### Dry Run
 
-The Nova Forge SDK supports `dry_run` mode for the following functions: `train()`, `evaluate()`, and `batch_inference()`.
+The Nova Customization SDK supports `dry_run` mode for the following functions: `train()`, `evaluate()`, and `batch_inference()`.
 
 When calling any of the above functions, you can set the `dry_run` parameter to `True`.
 The SDK will still generate your recipe and validate your input, but it won't begin a job.

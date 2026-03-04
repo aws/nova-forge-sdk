@@ -1,6 +1,6 @@
 # RFT Multiturn
 
-The Nova Forge SDK supports RFT (Reinforcement Fine-Tuning) multiturn training for multi-turn conversational tasks. This module provides infrastructure management and orchestration for running RFT training with custom reward environments.
+The Nova Customization SDK supports RFT (Reinforcement Fine-Tuning) multiturn training for multi-turn conversational tasks. This module provides infrastructure management and orchestration for running RFT training with custom reward environments.
 
 ## Table of Contents
 
@@ -1040,7 +1040,7 @@ Lists CloudFormation stacks related to RFT multiturn infrastructure.
 ```python
 from amzn_nova_customization_sdk import list_rft_stacks
 
-# List only Nova Forge SDK stacks
+# List only Nova Customization SDK stacks
 nova_stacks = list_rft_stacks(region="us-east-1")
 print(f"Found {len(nova_stacks)} Nova SDK stacks:")
 for stack_name in nova_stacks:
