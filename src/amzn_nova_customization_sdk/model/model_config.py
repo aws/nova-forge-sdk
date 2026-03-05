@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """
-Data models for Nova Forge SDK.
+Data models for Nova Customization SDK.
 
 This module contains dataclass definitions and constants used across the SDK.
 """

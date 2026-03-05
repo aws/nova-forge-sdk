@@ -1,4 +1,4 @@
-# Nova Forge SDK - API Specification
+# Nova Customization SDK - API Specification
 
 ## Table of Contents
 1. [NovaModelCustomizer](#novamodelcustomizer)
