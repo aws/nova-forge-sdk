@@ -78,7 +78,7 @@ The SDK requires certain IAM permissions to perform tasks successfully. You can 
             "Effect": "Allow",
             "Action": [
                 "iam:CreatePolicy",
-                "iam:GetPolicy",
+                "iam:GetPolicy"
             ],
             "Resource": "arn:aws:iam::<account_id>:policy/*"
         },
@@ -180,9 +180,9 @@ The SDK requires certain IAM permissions to perform tasks successfully. You can 
 				"sagemaker-mlflow:TransitionModelVersionStage",
 				"sagemaker-mlflow:UpdateExperiment",
 				"sagemaker-mlflow:UpdateModelVersion",
-				"sagemaker-mlflow:UpdateRegister
+				"sagemaker-mlflow:UpdateRegisteredModel"
             ],
-			"Resource": "arn:aws:sagemaker:us-east-1:<account_id>:mlflow-tracking-server/*"
+			"Resource": "arn:aws:sagemaker:<region>:<account_id>:mlflow-tracking-server/*"
         }
     ]
 }
