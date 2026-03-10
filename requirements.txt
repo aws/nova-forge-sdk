@@ -176,7 +176,7 @@ six==1.17.0
     #   python-dateutil
 smdebug-rulesconfig==1.0.1
     # via sagemaker
-starlette==0.50.0
+starlette==0.52.1
     # via fastapi
 tblib==3.2.2
     # via sagemaker
