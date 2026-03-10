@@ -160,7 +160,7 @@ rpds-py==0.30.0
     # via
     #   jsonschema
     #   referencing
-ruff==0.15.0
+ruff==0.15.1
     # via hatch.envs.default
 s3transfer==0.16.0
     # via boto3
