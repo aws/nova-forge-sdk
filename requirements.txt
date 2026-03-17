@@ -410,7 +410,7 @@ rpds-py==0.30.0
     #   referencing
 rsa==4.9.1
     # via google-auth
-ruff==0.15.5
+ruff==0.15.6
     # via hatch.envs.default
 s3transfer==0.16.0
     # via boto3
