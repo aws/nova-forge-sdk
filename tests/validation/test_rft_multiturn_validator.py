@@ -2,7 +2,7 @@
 
 import pytest
 
-from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+from amzn_nova_forge.validation.rft_multiturn_validator import (
     validate_dict_values,
     validate_env_id,
     validate_path,
@@ -734,7 +734,7 @@ class TestValidatePlatform:
 
     def test_accepts_valid_platforms(self):
         """Test that valid platform values are accepted."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge.validation.rft_multiturn_validator import (
             validate_platform,
         )
 
@@ -744,7 +744,7 @@ class TestValidatePlatform:
 
     def test_rejects_invalid_platforms(self):
         """Test that invalid platform values are rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge.validation.rft_multiturn_validator import (
             validate_platform,
         )
 
@@ -766,7 +766,7 @@ class TestValidatePlatform:
 
     def test_rejects_empty_string(self):
         """Test that empty string is rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge.validation.rft_multiturn_validator import (
             validate_platform,
         )
 
@@ -775,7 +775,7 @@ class TestValidatePlatform:
 
     def test_rejects_non_string(self):
         """Test that non-string types are rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge.validation.rft_multiturn_validator import (
             validate_platform,
         )
 
@@ -790,7 +790,7 @@ class TestValidateEc2InstanceIdentifier:
 
     def test_accepts_valid_instance_ids(self):
         """Test that valid EC2 instance IDs are accepted."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge.validation.rft_multiturn_validator import (
             validate_ec2_instance_identifier,
         )
 
@@ -807,7 +807,7 @@ class TestValidateEc2InstanceIdentifier:
 
     def test_accepts_valid_instance_arns(self):
         """Test that valid EC2 instance ARNs are accepted and extracted."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge.validation.rft_multiturn_validator import (
             validate_ec2_instance_identifier,
         )
 
@@ -817,7 +817,7 @@ class TestValidateEc2InstanceIdentifier:
                 "i-1234567890abcdef0",
             ),
             (
-                "arn:aws:ec2:us-west-2:987654321098:instance/i-12345678",
+                "arn:aws:ec2:us-west-2:123456789012:instance/i-12345678",
                 "i-12345678",
             ),
             (
@@ -831,7 +831,7 @@ class TestValidateEc2InstanceIdentifier:
 
     def test_rejects_invalid_instance_ids(self):
         """Test that invalid instance IDs are rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge.validation.rft_multiturn_validator import (
             validate_ec2_instance_identifier,
         )
 
@@ -852,7 +852,7 @@ class TestValidateEc2InstanceIdentifier:
 
     def test_rejects_invalid_arns(self):
         """Test that invalid ARNs are rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge.validation.rft_multiturn_validator import (
             validate_ec2_instance_identifier,
         )
 
@@ -870,7 +870,7 @@ class TestValidateEc2InstanceIdentifier:
 
     def test_rejects_empty_string(self):
         """Test that empty string is rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge.validation.rft_multiturn_validator import (
             validate_ec2_instance_identifier,
         )
 
@@ -881,7 +881,7 @@ class TestValidateEc2InstanceIdentifier:
 
     def test_rejects_non_string(self):
         """Test that non-string types are rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge.validation.rft_multiturn_validator import (
             validate_ec2_instance_identifier,
         )
 
@@ -898,13 +898,13 @@ class TestValidateEcsClusterArn:
 
     def test_accepts_valid_cluster_arns(self):
         """Test that valid ECS cluster ARNs are accepted."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge.validation.rft_multiturn_validator import (
             validate_ecs_cluster_arn,
         )
 
         valid_arns = [
             "arn:aws:ecs:us-east-1:123456789012:cluster/my-cluster",
-            "arn:aws:ecs:us-west-2:987654321098:cluster/test-cluster",
+            "arn:aws:ecs:us-west-2:123456789012:cluster/test-cluster",
             "arn:aws:ecs:eu-west-1:111111111111:cluster/prod-cluster",
             "arn:aws:ecs:ap-southeast-2:222222222222:cluster/cluster_name",
             "arn:aws:ecs:us-east-1:123456789012:cluster/cluster-with-hyphens",
@@ -915,7 +915,7 @@ class TestValidateEcsClusterArn:
 
     def test_rejects_invalid_cluster_arns(self):
         """Test that invalid ECS cluster ARNs are rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge.validation.rft_multiturn_validator import (
             validate_ecs_cluster_arn,
         )
 
@@ -938,7 +938,7 @@ class TestValidateEcsClusterArn:
 
     def test_rejects_empty_string(self):
         """Test that empty string is rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge.validation.rft_multiturn_validator import (
             validate_ecs_cluster_arn,
         )
 
@@ -949,7 +949,7 @@ class TestValidateEcsClusterArn:
 
     def test_rejects_non_string(self):
         """Test that non-string types are rejected."""
-        from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+        from amzn_nova_forge.validation.rft_multiturn_validator import (
             validate_ecs_cluster_arn,
         )
 

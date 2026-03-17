@@ -1,4 +1,4 @@
-# Nova Customization SDK - API Specification
+# Nova Forge SDK - API Specification
 
 ## Table of Contents
 1. [NovaModelCustomizer](#novamodelcustomizer)
@@ -38,7 +38,7 @@ def __init__(
 **Parameters:**
 - `model` (Model): The Nova model to be trained (e.g., `Model.NOVA_MICRO`, `Model.NOVA_LITE`, `Model.NOVA_LITE_2`, `Model.NOVA_PRO`)
 - `method` (TrainingMethod): The fine-tuning method (e.g., `TrainingMethod.SFT_LORA`, `TrainingMethod.RFT`)
-- `infra` (RuntimeManager): Runtime infrastructure manager (e.g., `SMTJRuntimeManager` or `SMHPRuntimeManager`)
+- `infra` (RuntimeManager): Runtime infrastructure manager (e.g., `SMTJRuntimeManager`, `SMHPRuntimeManager`, or `BedrockRuntimeManager`)
 - `data_s3_path` (Optional[str]): S3 path to the training dataset
 - `output_s3_path` (Optional[str]): S3 path for output artifacts. If not provided, will be auto-generated
 - `model_path` (Optional[str]): S3 path for model path
@@ -46,7 +46,7 @@ def __init__(
   - Simple: `{'rft_lambda': True}` (uses default 200 samples)
   - Advanced: `{'rft_lambda': {'enabled': True, 'samples': 20}}` (custom sample count)
 - `generated_recipe_dir` (Optional[str]): Optional local path to save the generated recipe
-- `mlflow_monitor` (Optional[MLflowMonitor]): Optional MLflow monitoring configuration for experiment tracking
+- `mlflow_monitor` (Optional[MLflowMonitor]): Optional MLflow monitoring configuration for experiment tracking (SageMaker only, not supported on Bedrock)
 - `deployment_mode` (DeploymentMode): Behavior when deploying to existing endpoint name. Options: FAIL_IF_EXISTS (default), UPDATE_IF_EXISTS
 - `data_mixing_enabled` (bool): Enable data mixing feature for CPT and SFT training on SageMaker HyperPod. Default is False
   - **Note:** The `data_mixing_enabled` parameter must be set to `True` during initialization to use data mixing features.
@@ -58,11 +58,11 @@ def __init__(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk import *
+from amzn_nova_forge import *
 
+# SageMaker Training Jobs (SMTJ)
 infra = SMTJRuntimeManager(instance_type="ml.p5.48xlarge", instance_count=2)
 
-# Without MLflow monitoring
 customizer = NovaModelCustomizer(
  model=Model.NOVA_MICRO,
  method=TrainingMethod.SFT_LORA,
@@ -71,7 +71,21 @@ customizer = NovaModelCustomizer(
  output_s3_path="s3://my-bucket/output/"
 )
 
-# With MLflow monitoring
+# Amazon Bedrock (fully managed)
+bedrock_infra = BedrockRuntimeManager(
+ execution_role="arn:aws:iam::123456789012:role/BedrockRole",
+ base_model_identifier="arn:aws:bedrock:us-east-1::custom-model/amazon.nova-2-lite-v1:0:256k:abcdefghijk"
+)
+
+bedrock_customizer = NovaModelCustomizer(
+ model=Model.NOVA_MICRO,
+ method=TrainingMethod.SFT_LORA,
+ infra=bedrock_infra,
+ data_s3_path="s3://my-bucket/training-data/",
+ output_s3_path="s3://my-bucket/output/"
+)
+
+# With MLflow monitoring (SageMaker only)
 mlflow_monitor = MLflowMonitor(
  tracking_uri="arn:aws:sagemaker:us-east-1:123456789012:mlflow-app/app-xxx",
  experiment_name="nova-customization",
@@ -186,7 +200,7 @@ def train(
 - `dry_run` (Optional[bool]): Actually starts a job if False, otherwise just performs validation.
 
 **Returns:**
-- `TrainingResult`: Metadata object containing:
+- `TrainingResult`: Metadata object (either `SMTJTrainingResult`, `SMHPTrainingResult`, or `BedrockTrainingResult`) containing:
  - `job_id` (str): The training job identifier
  - `method` (TrainingMethod): The training method used
  - `started_time` (datetime): Job start timestamp
@@ -255,7 +269,7 @@ def evaluate(
 - `job_result` (Optional[TrainingResult]): Optional TrainingResult object to extract checkpoint path from. If provided and `model_path` is None, will automatically extract the checkpoint path from the training job's output and validate platform compatibility.
 
 **Returns:**
-- `EvaluationResult(BaseJobResult)`: Metadata object (either `SMTJEvaluationResult` or `SMHPEvaluationResult`) containing:
+- `EvaluationResult(BaseJobResult)`: Metadata object (either `SMTJEvaluationResult`, `SMHPEvaluationResult`, or `BedrockEvaluationResult`) containing:
   - `job_id` (str): The evaluation job identifier
   - `started_time` (datetime): Job start timestamp
   - `eval_output_path` (str): S3 path to evaluation results
@@ -265,7 +279,7 @@ def evaluate(
 **Example:**
 
 ```python
-from amzn_nova_customization_sdk.recipe import *
+from amzn_nova_forge.recipe import *
 
 # General eval task (with overrides)
 eval_result = customizer.evaluate(
@@ -344,7 +358,7 @@ def deploy(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk.model import *
+from amzn_nova_forge.model import *
 
 bedrock_deployment = customizer.deploy(
  model_artifact_path="s3://escrow-bucket/my-model-artifacts/",
@@ -376,7 +390,7 @@ You can also use the following method to create a Bedrock execution role with sc
  
  
 ```python
-from amzn_nova_customization_sdk.util.bedrock import create_bedrock_execution_role
+from amzn_nova_forge.util.bedrock import create_bedrock_execution_role
  
 iam_client = boto3.client("iam")
  
@@ -458,6 +472,7 @@ def batch_inference(
  - `job_id` (str): Batch inference job identifier
  - `started_time` (datetime): Job start timestamp
  - `inference_output_path` (str): S3 path to inference results
+ - Note: Batch inference is only supported on SageMaker platforms (SMTJ, SMHP)
 
 **Example:**
 ```python
@@ -519,7 +534,9 @@ class JobConfig:
     mlflow_experiment_name: Optional[str] = None
     mlflow_run_name: Optional[str] = None
 ```
-* The specific instance types that can be used with the runtime managers (SMTJ, SMHP) can be found in `docs/instance_type_spec.md`. This file also defines which instance types can be used with a specific model and method.
+* The specific instance types that can be used with the runtime managers (SMTJ, SMHP) can be found in `docs/instance_type_spec.md`.
+* This file also defines which instance types can be used with a specific model and method.
+* Bedrock is fully managed and does not require instance type configuration.
 ### SMTJRuntimeManager
 Manages SageMaker Training Jobs.
 
@@ -550,7 +567,7 @@ def __init__(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk.manager import *
+from amzn_nova_forge.manager import *
 infra = SMTJRuntimeManager(
  instance_type="ml.p5.48xlarge",
  instance_count=2
@@ -613,7 +630,7 @@ def __init__(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk.manager import *
+from amzn_nova_forge.manager import *
 infra = SMHPRuntimeManager(
  instance_type="ml.p5.48xlarge",
  instance_count=4,
@@ -651,6 +668,126 @@ def cleanup(
 ) -> None
 ```
 ---
+### BedrockRuntimeManager
+Manages Amazon Bedrock model customization jobs.
+
+#### Constructor
+
+**Signature:**
+```python
+def __init__(
+ self,
+ execution_role: str,
+ base_model_identifier: Optional[str] = None,
+ kms_key_id: Optional[str] = None,
+)
+```
+
+**Parameters:**
+- `execution_role` (str): IAM role ARN for Bedrock job execution
+- `base_model_identifier` (Optional[str]): Base model ARN (e.g., "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-2-lite-v1:0:256k")
+- `kms_key_id` (Optional[str]): Optional KMS Key Id for encryption
+
+**Example:**
+```python
+from amzn_nova_forge.manager import *
+infra = BedrockRuntimeManager(
+ execution_role="arn:aws:iam::123456789012:role/BedrockRole",
+ base_model_identifier="arn:aws:bedrock:us-east-1::custom-model/amazon.nova-2-lite-v1:0:256k:abcdefghijk" # optional: your custom model ARN for iterative training
+)
+```
+
+#### Methods
+
+##### `execute()`
+
+Starts a Bedrock model customization job.
+**Signature:**
+```python
+def execute(
+ self,
+ job_config: JobConfig
+) -> str
+```
+**Returns:**
+- `str`: Bedrock job ARN
+
+##### `cleanup()`
+Stops a Bedrock customization job.
+
+**Signature:**
+```python
+def cleanup(
+ self,
+ job_name: str
+) -> None
+```
+---
+### SMTJServerlessRuntimeManager
+Manages SageMaker Training Jobs.
+
+#### Constructor
+
+**Signature:**
+```python
+def __init__(
+    self,
+    model_package_group_name: str,
+    execution_role: Optional[str] = None,
+    kms_key_id: Optional[str] = None,
+    encrypt_inter_container_traffic: bool = False,
+    subnets: Optional[list[str]] = None,
+    security_group_ids: Optional[list[str]] = None,
+    max_job_runtime: Optional[int] = 86400, 
+)
+```
+
+**Parameters:**
+- `model_package_group_name` (str): Model package group name to use with SageMaker Model registry (required for SMTJ Serverless)
+- `execution_role` (Optional[str]): The execution role for the training job
+- `kms_key_id` (Optional[str]): Optional KMS Key Id to use in S3 Bucket encryption, training jobs and deployments.
+- `encrypt_inter_container_traffic` (bool): Boolean that determines whether to encrypt inter-container traffic. Default value is False.
+- `subnets` (Optional[list[str]]): Optional list of strings representing subnets. Default value is None.
+- `security_group_ids` (Optional[list[str]]): Optional list of strings representing security group IDs. Default value is None.
+- `max_job_runtime` (Optional[int]): Max Job Runtime in seconds (default: 1 day)
+**Example:**
+```python
+from amzn_nova_forge.manager import *
+infra = SMTJServerlessRuntimeManager(
+  model_package_group_name="model-group",
+)
+```
+#### Properties
+- `model_package_group_name` (str): Model Package Group name
+
+#### Methods
+
+##### `execute()`
+Starts a SageMaker training job.
+
+**Signature:**
+```python
+def execute(
+ self,
+ job_config: JobConfig
+) -> str
+```
+
+**Returns:**
+- `str`: Training job name/ID
+
+##### `cleanup()`
+Stops and cleans up a training job.
+
+**Signature:**
+```python
+def cleanup(
+ self,
+ job_name: str
+) -> None
+```
+---
+
 ## Dataset Loaders
 Dataset loaders handle loading, transforming, and saving datasets in various formats.
 
@@ -720,7 +857,7 @@ def load(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk.dataset import *
+from amzn_nova_forge.dataset import *
 loader = JSONLDatasetLoader()
 loader.load("s3://my-bucket/data/training.jsonl")
 ```
@@ -749,7 +886,7 @@ def load(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk.dataset import *
+from amzn_nova_forge.dataset import *
 loader = JSONDatasetLoader()
 loader.load("data/training.json")
 ```
@@ -778,7 +915,7 @@ def load(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk.dataset import *
+from amzn_nova_forge.dataset import *
 loader = CSVDatasetLoader(question="user_query", answer="bot_response")
 loader.load("data/conversations.csv")
 ```
@@ -1013,7 +1150,7 @@ def load(
 ```
 
 **Returns:**
-- JobResultObject. The instance of subclass of BaseJobResult such as SMTJEvaluationResult
+- JobResultObject. The instance of subclass of BaseJobResult such as SMTJEvaluationResult, SMHPEvaluationResult, BedrockEvaluationResult, SMTJTrainingResult, SMHPTrainingResult, or BedrockTrainingResult
 
 **Example:**
 ```python
@@ -1033,6 +1170,7 @@ Result object for SageMaker Training Job evaluation tasks.
 #### Subclasses
 - SMTJEvaluationResult
 - SMHPEvaluationResult
+- BedrockEvaluationResult
 
 #### Methods
 
@@ -1185,7 +1323,7 @@ def create_bedrock_execution_role(
 **Example:**
 ```python
 import boto3
-from amzn_nova_customization_sdk.iam.iam_role_creator import create_bedrock_execution_role
+from amzn_nova_forge.iam.iam_role_creator import create_bedrock_execution_role
 
 iam_client = boto3.client("iam")
 create_bedrock_execution_role(iam_client, "role-name", "bedrock_resource", "s3_resource")
@@ -1224,7 +1362,7 @@ def create_sagemaker_execution_role(
 **Example:**
 ```python
 import boto3
-from amzn_nova_customization_sdk.iam.iam_role_creator import create_sagemaker_execution_role
+from amzn_nova_forge.iam.iam_role_creator import create_sagemaker_execution_role
 
 iam_client = boto3.client("iam")
 create_sagemaker_execution_role(
@@ -1284,8 +1422,8 @@ def verify_reward_function(
 
 **Example**
 ```python
-from amzn_nova_customization_sdk import verify_reward_function
-from amzn_nova_customization_sdk.model.model_enums import Platform
+from amzn_nova_forge import verify_reward_function
+from amzn_nova_forge.model.model_enums import Platform
 
 # Test with Lambda ARN (platform required for Lambda ARNs)
 result = verify_reward_function(
@@ -1361,9 +1499,204 @@ result = verify_reward_function(
 ---
 ## Monitoring
 
+### CloudWatchLogMonitor
+
+Monitors CloudWatch logs and plots training metrics for Nova model training jobs. Supports both SageMaker Training Jobs (SMTJ) and SageMaker HyperPod (SMHP) platforms.
+
+#### Factory Methods
+
+##### `from_job_id()`
+
+Creates a CloudWatchLogMonitor from a job ID.
+
+**Signature:**
+```python
+@classmethod
+def from_job_id(
+    cls,
+    job_id: str,
+    platform: Platform,
+    started_time: Optional[datetime] = None,
+    **kwargs,
+) -> "CloudWatchLogMonitor"
+```
+
+**Parameters:**
+- `job_id` (str): The training job identifier
+- `platform` (Platform): Execution platform (`Platform.SMTJ` or `Platform.SMHP`)
+- `started_time` (Optional[datetime]): Job start time (used to filter logs)
+- `**kwargs`: Platform-specific parameters:
+  - SMHP requires: `cluster_name` (str), optional `namespace` (str, defaults to "kubeflow")
+
+**Returns:**
+- `CloudWatchLogMonitor`: Monitor instance
+
+**Example:**
+```python
+from amzn_nova_forge.monitor import CloudWatchLogMonitor
+from amzn_nova_forge.model.model_enums import Platform
+
+# SMTJ
+monitor = CloudWatchLogMonitor.from_job_id(
+    job_id="my-training-job",
+    platform=Platform.SMTJ,
+    started_time=datetime(2026, 1, 15, 12, 0, 0)
+)
+
+# SMHP
+monitor = CloudWatchLogMonitor.from_job_id(
+    job_id="my-hyperpod-job",
+    platform=Platform.SMHP,
+    cluster_name="my-cluster",
+    namespace="kubeflow"
+)
+```
+
+---
+
+##### `from_job_result()`
+
+Creates a CloudWatchLogMonitor from a training job result object.
+
+**Signature:**
+```python
+@classmethod
+def from_job_result(
+    cls,
+    job_result: BaseJobResult,
+    cloudwatch_logs_client=None
+) -> "CloudWatchLogMonitor"
+```
+
+**Parameters:**
+- `job_result` (BaseJobResult): A training or evaluation result object (e.g., `TrainingResult`)
+- `cloudwatch_logs_client` (Optional): Boto3 CloudWatch Logs client (auto-created if not provided)
+
+**Returns:**
+- `CloudWatchLogMonitor`: Monitor instance
+
+**Example:**
+```python
+result = customizer.train(job_name="my-job")
+monitor = CloudWatchLogMonitor.from_job_result(job_result=result)
+```
+
+---
+
+#### Methods
+
+##### `get_logs()`
+
+Retrieves CloudWatch log events for the job.
+
+**Signature:**
+```python
+def get_logs(
+    self,
+    limit: Optional[int] = None,
+    start_from_head: bool = False,
+    end_time: Optional[int] = None,
+) -> List[Dict]
+```
+
+**Parameters:**
+- `limit` (Optional[int]): Maximum number of log events to retrieve
+- `start_from_head` (bool): If True, start from the beginning of logs; if False, start from the end
+- `end_time` (Optional[int]): End time in epoch milliseconds
+
+**Returns:**
+- `List[Dict]`: List of log event dictionaries, each containing a `"message"` key
+
+**Example:**
+```python
+logs = monitor.get_logs(limit=100)
+```
+
+---
+
+##### `show_logs()`
+
+Prints CloudWatch log messages to the console.
+
+**Signature:**
+```python
+def show_logs(
+    self,
+    limit: Optional[int] = None,
+    start_from_head: bool = False,
+    end_time: Optional[int] = None,
+) -> None
+```
+
+**Parameters:**
+- `limit` (Optional[int]): Maximum number of log events to display
+- `start_from_head` (bool): If True, start from the beginning of logs; if False, start from the end
+- `end_time` (Optional[int]): End time in epoch milliseconds
+
+**Example:**
+```python
+monitor.show_logs(limit=50, start_from_head=True)
+```
+
+---
+
+##### `plot_metrics()`
+
+Parses training metrics from CloudWatch logs and displays them as matplotlib plots. Automatically fetches the latest logs if the job is still in progress or logs have not been retrieved yet.
+
+**Signature:**
+```python
+def plot_metrics(
+    self,
+    training_method: TrainingMethod,
+    metrics: Optional[List[str]] = None,
+    starting_step: Optional[int] = None,
+    ending_step: Optional[int] = None,
+) -> None
+```
+
+**Parameters:**
+- `training_method` (TrainingMethod): The training method used for the job (e.g., `TrainingMethod.SFT_LORA`, `TrainingMethod.CPT`, `TrainingMethod.RFT_LORA`)
+- `metrics` (Optional[List[str]]): List of metric names to plot. Available metrics depend on training method:
+  - CPT / SFT: `"training_loss"`
+  - RFT: `"reward_score"`
+- `starting_step` (Optional[int]): Filter to only show metrics from this global step onward
+- `ending_step` (Optional[int]): Filter to only show metrics up to this global step
+
+**Raises:**
+- `ValueError`: If `starting_step` > `ending_step`, or if no logs are found for the job
+- `NotImplementedError`: If an unsupported metric is requested for the given training method/platform
+
+**Example:**
+```python
+from amzn_nova_forge.monitor import CloudWatchLogMonitor
+from amzn_nova_forge.model.model_enums import Platform, TrainingMethod
+
+# Create monitor from a training result
+monitor = CloudWatchLogMonitor.from_job_result(job_result=training_result)
+
+# Plot training loss for an SFT job
+monitor.plot_metrics(
+    training_method=TrainingMethod.SFT_LORA,
+    metrics=["training_loss"]
+)
+
+# Plot reward score for an RFT job, filtered to steps 50-200
+monitor.plot_metrics(
+    training_method=TrainingMethod.RFT_LORA,
+    metrics=["reward_score"],
+    starting_step=50,
+    ending_step=200
+)
+```
+
+---
+
 ### MLflowMonitor
 
 MLflow monitoring configuration for Nova model training. This class provides experiment tracking capabilities through MLflow integration.
+
+**Note:** MLflow monitoring is only supported for SageMaker platforms (SMTJ, SMHP). It is not available for Bedrock platform.
 
 **MLflow Integration Features:**
 - Automatic logging of training metrics
@@ -1395,7 +1728,7 @@ def __init__(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk.monitor import *
+from amzn_nova_forge.monitor import *
 
 # With explicit tracking URI
 monitor = MLflowMonitor(
@@ -1595,6 +1928,7 @@ Infrastructure platforms.
 **Values:**
 - `Platform.SMTJ`: SageMaker Training Jobs
 - `Platform.SMHP`: SageMaker HyperPod
+- `Platform.BEDROCK`: Amazon Bedrock
 ---
 ### JobStatus Enum
 Job execution status.
@@ -1635,7 +1969,7 @@ def create_rft_execution_role(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk import create_rft_execution_role
+from amzn_nova_forge import create_rft_execution_role
 
 # Create role with default name
 role_arn = create_rft_execution_role(region="us-east-1")
@@ -1665,7 +1999,7 @@ def list_rft_stacks(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk import list_rft_stacks
+from amzn_nova_forge import list_rft_stacks
 
 # List only Nova SDK stacks
 nova_stacks = list_rft_stacks(region="us-east-1")
@@ -1711,7 +2045,7 @@ def __init__(
 
 **Example:**
 ```python
-from amzn_nova_customization_sdk import RFTMultiturnInfrastructure, CustomEnvironment, VFEnvId
+from amzn_nova_forge import RFTMultiturnInfrastructure, CustomEnvironment, VFEnvId
 
 # Option 1: LOCAL with built-in environment
 rft_infra = RFTMultiturnInfrastructure(

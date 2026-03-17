@@ -3,11 +3,11 @@ import shutil
 import tempfile
 import unittest
 
-from amzn_nova_customization_sdk.dataset.dataset_loader import (
+from amzn_nova_forge.dataset.dataset_loader import (
     JSONLDatasetLoader,
 )
-from amzn_nova_customization_sdk.dataset.dataset_validator import CPTDatasetValidator
-from amzn_nova_customization_sdk.model.model_enums import Model, TrainingMethod
+from amzn_nova_forge.dataset.dataset_validator import CPTDatasetValidator
+from amzn_nova_forge.model.model_enums import Model, TrainingMethod
 
 
 class TestCPTDatasetValidator(unittest.TestCase):
@@ -29,7 +29,7 @@ class TestCPTDatasetValidator(unittest.TestCase):
 
         test_file = self.create_temp_file("cpt_simple_success", cpt_simple_success)
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.CPT, Model.NOVA_LITE_2
+            training_method=TrainingMethod.CPT, model=Model.NOVA_LITE_2
         )
 
     def test_cpt_multiple_samples_success(self):
@@ -43,7 +43,7 @@ class TestCPTDatasetValidator(unittest.TestCase):
 
         test_file = self.create_temp_file("cpt_multiple_samples", cpt_multiple_samples)
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.CPT, Model.NOVA_PRO
+            training_method=TrainingMethod.CPT, model=Model.NOVA_PRO
         )
 
     def test_cpt_long_text_success(self):
@@ -59,7 +59,7 @@ class TestCPTDatasetValidator(unittest.TestCase):
 
         test_file = self.create_temp_file("cpt_long_text", cpt_long_text)
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.CPT, Model.NOVA_LITE
+            training_method=TrainingMethod.CPT, model=Model.NOVA_LITE
         )
 
     def test_cpt_empty_text_fail(self):
@@ -68,7 +68,7 @@ class TestCPTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("cpt_empty_text", cpt_empty_text)
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.CPT, Model.NOVA_MICRO
+                training_method=TrainingMethod.CPT, model=Model.NOVA_MICRO
             )
         self.assertIn("cannot be empty or whitespace-only", str(context.exception))
 
@@ -78,7 +78,7 @@ class TestCPTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("cpt_whitespace_text", cpt_whitespace_text)
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.CPT, Model.NOVA_LITE_2
+                training_method=TrainingMethod.CPT, model=Model.NOVA_LITE_2
             )
         self.assertIn("cannot be empty or whitespace-only", str(context.exception))
 
@@ -88,7 +88,7 @@ class TestCPTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("cpt_missing_text", cpt_missing_text)
         with self.assertRaises(ValueError):
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.CPT, Model.NOVA_LITE_2
+                training_method=TrainingMethod.CPT, model=Model.NOVA_LITE_2
             )
 
     def test_cpt_extra_fields_fail(self):
@@ -102,7 +102,7 @@ class TestCPTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("cpt_extra_fields", cpt_extra_fields)
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.CPT, Model.NOVA_LITE_2
+                training_method=TrainingMethod.CPT, model=Model.NOVA_LITE_2
             )
         self.assertIn("Extra inputs are not permitted", str(context.exception))
 
@@ -119,7 +119,7 @@ class TestCPTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("cpt_multiple_extra", cpt_multiple_extra)
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.CPT, Model.NOVA_LITE_2
+                training_method=TrainingMethod.CPT, model=Model.NOVA_LITE_2
             )
         self.assertIn("Extra inputs are not permitted", str(context.exception))
 
@@ -135,7 +135,7 @@ class TestCPTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("cpt_mixed_samples", cpt_mixed_samples)
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.CPT, Model.NOVA_LITE_2
+                training_method=TrainingMethod.CPT, model=Model.NOVA_LITE_2
             )
         self.assertIn("Sample 1", str(context.exception))
 
@@ -148,7 +148,7 @@ class TestCPTDatasetValidator(unittest.TestCase):
 
         test_file = self.create_temp_file("cpt_special_chars", cpt_special_chars)
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.CPT, Model.NOVA_LITE_2
+            training_method=TrainingMethod.CPT, model=Model.NOVA_LITE_2
         )
 
     def test_cpt_with_newlines_success(self):
@@ -156,7 +156,7 @@ class TestCPTDatasetValidator(unittest.TestCase):
 
         test_file = self.create_temp_file("cpt_newlines", cpt_newlines)
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.CPT, Model.NOVA_LITE_2
+            training_method=TrainingMethod.CPT, model=Model.NOVA_LITE_2
         )
 
     def test_cpt_wrong_field_type_fail(self):
@@ -165,7 +165,7 @@ class TestCPTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("cpt_wrong_type", cpt_wrong_type)
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.CPT, Model.NOVA_LITE_2
+                training_method=TrainingMethod.CPT, model=Model.NOVA_LITE_2
             )
         self.assertIn("Input should be a valid string", str(context.exception))
 
@@ -175,7 +175,7 @@ class TestCPTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("cpt_null_text", cpt_null_text)
         with self.assertRaises(ValueError):
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.CPT, Model.NOVA_LITE_2
+                training_method=TrainingMethod.CPT, model=Model.NOVA_LITE_2
             )
 
     def test_cpt_get_optional_fields(self):

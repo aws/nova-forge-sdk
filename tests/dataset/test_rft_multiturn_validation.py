@@ -11,13 +11,13 @@ from pathlib import Path
 
 import pytest
 
-from amzn_nova_customization_sdk.dataset import (
+from amzn_nova_forge.dataset import (
     CSVDatasetLoader,
     JSONDatasetLoader,
     JSONLDatasetLoader,
 )
-from amzn_nova_customization_sdk.model.model_enums import Model, TrainingMethod
-from amzn_nova_customization_sdk.recipe.recipe_config import EvaluationTask
+from amzn_nova_forge.model.model_enums import Model, TrainingMethod
+from amzn_nova_forge.recipe.recipe_config import EvaluationTask
 
 
 class TestRFTMultiturnValidation:
@@ -431,7 +431,7 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
             )
 
             # Check that IDs were auto-generated
-            transformed_data = list(loader.transformed_dataset())
+            transformed_data = list(loader.dataset())
             assert len(transformed_data) == 3
             assert transformed_data[0]["id"] == "sample_001"
             assert transformed_data[1]["id"] == "sample_002"
@@ -459,7 +459,7 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
             )
 
             # Check that IDs were auto-generated
-            transformed_data = list(loader.transformed_dataset())
+            transformed_data = list(loader.dataset())
             assert len(transformed_data) == 2
             assert transformed_data[0]["id"] == "sample_001"
             assert transformed_data[1]["id"] == "sample_002"
@@ -486,7 +486,7 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
             )
 
             # Check that IDs were auto-generated
-            transformed_data = list(loader.transformed_dataset())
+            transformed_data = list(loader.dataset())
             assert len(transformed_data) == 2
             assert transformed_data[0]["id"] == "sample_001"
             assert transformed_data[1]["id"] == "sample_002"
@@ -515,7 +515,7 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
             )
 
             # Check sequential counter behavior
-            transformed_data = list(loader.transformed_dataset())
+            transformed_data = list(loader.dataset())
             assert transformed_data[0]["id"] == "sample_001"
             assert transformed_data[1]["id"] == "custom-001"  # User-provided ID
             assert transformed_data[2]["id"] == "sample_002"  # Counter continues
@@ -544,7 +544,7 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
             )
 
             # Check that answer was converted to string
-            transformed_data = list(loader.transformed_dataset())
+            transformed_data = list(loader.dataset())
             assert transformed_data[0]["metadata"]["answer"] == "4"
             assert isinstance(transformed_data[0]["metadata"]["answer"], str)
         finally:
@@ -569,7 +569,7 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
             )
 
             # Check that answer was converted to string
-            transformed_data = list(loader.transformed_dataset())
+            transformed_data = list(loader.dataset())
             assert transformed_data[0]["metadata"]["answer"] == "3.14159"
             assert isinstance(transformed_data[0]["metadata"]["answer"], str)
         finally:
@@ -594,7 +594,7 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
             )
 
             # Check that task was converted to string
-            transformed_data = list(loader.transformed_dataset())
+            transformed_data = list(loader.dataset())
             assert transformed_data[0]["metadata"]["task"] == "123"
             assert isinstance(transformed_data[0]["metadata"]["task"], str)
         finally:
@@ -626,7 +626,7 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
             )
 
             # Check that both were converted to strings
-            transformed_data = list(loader.transformed_dataset())
+            transformed_data = list(loader.dataset())
             assert transformed_data[0]["metadata"]["answer"] == "42"
             assert transformed_data[0]["metadata"]["task"] == "99"
             assert isinstance(transformed_data[0]["metadata"]["answer"], str)
@@ -653,7 +653,7 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
             )
 
             # Empty string should be filtered out (not included in metadata)
-            transformed_data = list(loader.transformed_dataset())
+            transformed_data = list(loader.dataset())
             assert "answer" not in transformed_data[0]["metadata"]
         finally:
             Path(temp_path).unlink()
@@ -684,7 +684,7 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
             )
 
             # Should pass validation with special characters
-            transformed_data = list(loader.transformed_dataset())
+            transformed_data = list(loader.dataset())
             assert (
                 transformed_data[0]["metadata"]["answer"]
                 == "Answer with\nnewlines\tand\ttabs"
