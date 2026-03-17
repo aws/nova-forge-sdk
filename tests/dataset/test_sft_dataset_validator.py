@@ -2,10 +2,10 @@ import json
 import tempfile
 import unittest
 
-from amzn_nova_customization_sdk.dataset.dataset_loader import (
+from amzn_nova_forge.dataset.dataset_loader import (
     JSONLDatasetLoader,
 )
-from amzn_nova_customization_sdk.model.model_enums import Model, TrainingMethod
+from amzn_nova_forge.model.model_enums import Model, TrainingMethod
 
 # TODO: Clean up these unit tests to use helper functions to set up the datasets for readability.
 
@@ -56,7 +56,7 @@ class TestSFTDatasetValidator(unittest.TestCase):
         )
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.SFT_LORA, Model.NOVA_MICRO
+                training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_MICRO
             )
 
     def test_sft_one_with_text_data_success(self):
@@ -65,7 +65,9 @@ class TestSFTDatasetValidator(unittest.TestCase):
             path="src/NovaCustomizationSDK/tests/test_data/sft_train_samples_converse.jsonl"
         )
 
-        dataset_loader.validate(TrainingMethod.SFT_LORA, Model.NOVA_LITE)
+        dataset_loader.validate(
+            training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE
+        )
 
     def test_sft_one_with_text_data_fail(self):
         text_data_fail = [
@@ -82,7 +84,9 @@ class TestSFTDatasetValidator(unittest.TestCase):
 
         dataset_loader = JSONLDatasetLoader().load(test_file)
         with self.assertRaises(ValueError):
-            dataset_loader.validate(TrainingMethod.SFT_LORA, Model.NOVA_LITE)
+            dataset_loader.validate(
+                training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE
+            )
 
     def test_sft_one_with_video_format_success(self):
         sft_one_video_success = [
@@ -127,7 +131,7 @@ class TestSFTDatasetValidator(unittest.TestCase):
             "sft_one_video_success", sft_one_video_success
         )
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.SFT_LORA, Model.NOVA_LITE
+            training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE
         )
 
     def test_sft_one_with_video_format_fail(self):
@@ -173,7 +177,9 @@ class TestSFTDatasetValidator(unittest.TestCase):
 
         dataset_loader = JSONLDatasetLoader().load(test_file)
         with self.assertRaises(ValueError):
-            dataset_loader.validate(TrainingMethod.SFT_LORA, Model.NOVA_LITE)
+            dataset_loader.validate(
+                training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE
+            )
 
     def test_sft_one_with_image_success(self):
         sft_one_image_success = [
@@ -216,7 +222,7 @@ class TestSFTDatasetValidator(unittest.TestCase):
             "sft_one_image_success", sft_one_image_success
         )
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.SFT_LORA, Model.NOVA_LITE
+            training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE
         )
 
     def test_sft_one_with_image_fail(self):
@@ -260,7 +266,9 @@ class TestSFTDatasetValidator(unittest.TestCase):
 
         dataset_loader = JSONLDatasetLoader().load(test_file)
         with self.assertRaises(ValueError):
-            dataset_loader.validate(TrainingMethod.SFT_LORA, Model.NOVA_LITE)
+            dataset_loader.validate(
+                training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE
+            )
 
     def test_sft_one_mixing_image_and_video_fail(self):
         sft_one_img_vid_fail = [
@@ -311,7 +319,9 @@ class TestSFTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("sft_one_img_vid_fail", sft_one_img_vid_fail)
         dataset_loader = JSONLDatasetLoader().load(test_file)
         with self.assertRaises(ValueError):
-            dataset_loader.validate(TrainingMethod.SFT_LORA, Model.NOVA_LITE)
+            dataset_loader.validate(
+                training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE
+            )
 
     def test_sft_one_reasoning_content_fail(self):
         sft_one_reasoning_content_fail = [
@@ -347,7 +357,7 @@ class TestSFTDatasetValidator(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.SFT_LORA, Model.NOVA_LITE
+                training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE
             )
 
     # SFT 2.0 Tests (Reasoning Content)
@@ -382,7 +392,7 @@ class TestSFTDatasetValidator(unittest.TestCase):
 
         test_file = self.create_temp_file("sft_two_success", sft_two_success)
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.SFT_LORA, Model.NOVA_LITE_2
+            training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2
         )
 
     def test_sft_two_fail(self):
@@ -417,7 +427,7 @@ class TestSFTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("test_sft_two_fail", test_sft_two_fail)
         with self.assertRaises(ValueError):
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.SFT_LORA, Model.NOVA_LITE_2
+                training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2
             )
 
     def test_sft_two_doc_success(self):
@@ -461,7 +471,7 @@ class TestSFTDatasetValidator(unittest.TestCase):
             "test_sft_two_doc_success", test_sft_two_doc_success
         )
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.SFT_LORA, Model.NOVA_LITE_2
+            training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2
         )
 
     def test_sft_two_doc_fail(self):
@@ -506,7 +516,7 @@ class TestSFTDatasetValidator(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.SFT_LORA, Model.NOVA_LITE_2
+                training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2
             )
 
     def test_sft_with_invalid_video_format_fails(self):
@@ -554,13 +564,13 @@ class TestSFTDatasetValidator(unittest.TestCase):
 
         # Works for SFT 1.0
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.SFT_LORA, Model.NOVA_LITE
+            training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE
         )
 
         # Doesn't work for SFT 2.0
         with self.assertRaises(ValueError):
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.SFT_LORA, Model.NOVA_LITE_2
+                training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2
             )
 
     def test_sft_with_invalid_img_format_fails(self):
@@ -608,13 +618,13 @@ class TestSFTDatasetValidator(unittest.TestCase):
 
         # Works for SFT 1.0
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.SFT_LORA, Model.NOVA_LITE
+            training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE
         )
 
         # Doesn't work for SFT 2.0
         with self.assertRaises(ValueError):
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.SFT_LORA, Model.NOVA_LITE_2
+                training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2
             )
 
     # Tool Configuration Tests
@@ -683,7 +693,7 @@ class TestSFTDatasetValidator(unittest.TestCase):
 
         test_file = self.create_temp_file("tool_config_success", tool_config_success)
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.SFT_LORA, Model.NOVA_LITE_2
+            training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2
         )
 
     def test_tool_config_fail_with_nova_lite_1(self):
@@ -712,7 +722,7 @@ class TestSFTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("tool_config_fail_nova_1", tool_config_fail)
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.SFT_LORA, Model.NOVA_LITE
+                training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE
             )
         self.assertIn(
             "Tool configuration is only supported for Nova Lite 2.0",
@@ -735,7 +745,7 @@ class TestSFTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("empty_tools", empty_tools)
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.SFT_LORA, Model.NOVA_LITE_2
+                training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2
             )
         self.assertIn("tools list cannot be empty", str(context.exception))
 
@@ -772,7 +782,7 @@ class TestSFTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("duplicate_tools", duplicate_tools)
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.SFT_LORA, Model.NOVA_LITE_2
+                training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2
             )
         self.assertIn("duplicate tool names found", str(context.exception))
 
@@ -813,7 +823,7 @@ class TestSFTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("tool_use_wrong_role", tool_use_wrong_role)
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.SFT_LORA, Model.NOVA_LITE_2
+                training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2
             )
         self.assertIn(
             "toolUse can only be included in assistant messages", str(context.exception)
@@ -857,7 +867,7 @@ class TestSFTDatasetValidator(unittest.TestCase):
         )
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.SFT_LORA, Model.NOVA_LITE_2
+                training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2
             )
         self.assertIn(
             "toolResult can only be included in user messages", str(context.exception)
@@ -901,7 +911,7 @@ class TestSFTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("invalid_tool_id", invalid_tool_id)
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.SFT_LORA, Model.NOVA_LITE_2
+                training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2
             )
         self.assertIn("not found in any preceding toolUse", str(context.exception))
 
@@ -954,7 +964,7 @@ class TestSFTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("tool_not_in_config", tool_not_in_config)
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.SFT_LORA, Model.NOVA_LITE_2
+                training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2
             )
         self.assertIn("not found in toolConfig", str(context.exception))
 
@@ -1008,7 +1018,7 @@ class TestSFTDatasetValidator(unittest.TestCase):
 
         test_file = self.create_temp_file("tool_result_json", tool_result_json)
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.SFT_LORA, Model.NOVA_LITE_2
+            training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2
         )
 
     def test_tool_with_reasoning_content_success(self):
@@ -1064,7 +1074,7 @@ class TestSFTDatasetValidator(unittest.TestCase):
 
         test_file = self.create_temp_file("tool_with_reasoning", tool_with_reasoning)
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.SFT_LORA, Model.NOVA_LITE_2
+            training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2
         )
 
     def test_tool_use_and_result_in_same_content_item_fail(self):
@@ -1108,7 +1118,7 @@ class TestSFTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("tool_same_item", tool_same_item)
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.SFT_LORA, Model.NOVA_LITE_2
+                training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2
             )
         self.assertIn("cannot coexist in the same ContentItem", str(context.exception))
 

@@ -5,11 +5,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from amzn_nova_customization_sdk.rft_multiturn.common_infra_commands import (
+from amzn_nova_forge.rft_multiturn.common_infra_commands import (
     BASE_PYTHON_COMMAND,
     CommonInfraCommands,
 )
-from amzn_nova_customization_sdk.validation.rft_multiturn_validator import (
+from amzn_nova_forge.validation.rft_multiturn_validator import (
     validate_env_id,
 )
 

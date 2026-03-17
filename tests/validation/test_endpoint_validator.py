@@ -1,7 +1,7 @@
 import unittest
 
-from amzn_nova_customization_sdk.model.model_enums import Model
-from amzn_nova_customization_sdk.validation.endpoint_validator import (
+from amzn_nova_forge.model.model_enums import Model
+from amzn_nova_forge.validation.endpoint_validator import (
     validate_endpoint_arn,
     validate_s3_uri_prefix,
     validate_sagemaker_environment_variables,

@@ -2,10 +2,10 @@ import json
 import tempfile
 import unittest
 
-from amzn_nova_customization_sdk.dataset.dataset_loader import (
+from amzn_nova_forge.dataset.dataset_loader import (
     JSONLDatasetLoader,
 )
-from amzn_nova_customization_sdk.model.model_enums import Model, TrainingMethod
+from amzn_nova_forge.model.model_enums import Model, TrainingMethod
 
 
 class TestRFTDatasetValidator(unittest.TestCase):
@@ -40,7 +40,7 @@ class TestRFTDatasetValidator(unittest.TestCase):
 
         test_file = self.create_temp_file("rft_simple_success", rft_simple_success)
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.RFT_FULL, Model.NOVA_LITE_2
+            training_method=TrainingMethod.RFT_FULL, model=Model.NOVA_LITE_2
         )
 
     def test_rft_simple_fail(self):
@@ -65,7 +65,9 @@ class TestRFTDatasetValidator(unittest.TestCase):
 
         dataset_loader = JSONLDatasetLoader().load(test_file)
         with self.assertRaises(ValueError):
-            dataset_loader.validate(TrainingMethod.RFT_FULL, Model.NOVA_LITE_2)
+            dataset_loader.validate(
+                training_method=TrainingMethod.RFT_FULL, model=Model.NOVA_LITE_2
+            )
 
     def test_rft_with_tools_success(self):
         rft_with_tools_success = [
@@ -112,7 +114,7 @@ class TestRFTDatasetValidator(unittest.TestCase):
             "rft_with_tools_success", rft_with_tools_success
         )
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.RFT_FULL, Model.NOVA_LITE_2
+            training_method=TrainingMethod.RFT_FULL, model=Model.NOVA_LITE_2
         )
 
     def test_rft_with_tools_fail(self):
@@ -177,7 +179,7 @@ class TestRFTDatasetValidator(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.RFT_FULL, Model.NOVA_LITE_2
+                training_method=TrainingMethod.RFT_FULL, model=Model.NOVA_LITE_2
             )
 
     def test_rft_with_nova_one_fail(self):
@@ -201,7 +203,7 @@ class TestRFTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("rft_sample", rft_sample)
         with self.assertRaises(ValueError):
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.RFT_FULL, Model.NOVA_LITE
+                training_method=TrainingMethod.RFT_FULL, model=Model.NOVA_LITE
             )
 
     def test_rft_with_missing_optional_param_fail(self):
@@ -241,7 +243,7 @@ class TestRFTDatasetValidator(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.RFT_FULL, Model.NOVA_LITE_2
+                training_method=TrainingMethod.RFT_FULL, model=Model.NOVA_LITE_2
             )
 
     # Additional tool configuration tests
@@ -258,7 +260,7 @@ class TestRFTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("rft_empty_tools", rft_empty_tools)
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.RFT_FULL, Model.NOVA_LITE_2
+                training_method=TrainingMethod.RFT_FULL, model=Model.NOVA_LITE_2
             )
         self.assertIn(
             "tools list cannot be empty when provided", str(context.exception)
@@ -277,7 +279,7 @@ class TestRFTDatasetValidator(unittest.TestCase):
 
         test_file = self.create_temp_file("rft_no_tools", rft_no_tools)
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.RFT_FULL, Model.NOVA_LITE_2
+            training_method=TrainingMethod.RFT_FULL, model=Model.NOVA_LITE_2
         )
 
     def test_rft_with_invalid_tool_type_fail(self):
@@ -302,7 +304,7 @@ class TestRFTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("rft_invalid_type", rft_invalid_type)
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.RFT_FULL, Model.NOVA_LITE_2
+                training_method=TrainingMethod.RFT_FULL, model=Model.NOVA_LITE_2
             )
         self.assertIn("Invalid tool type, must be 'function'", str(context.exception))
 
@@ -331,7 +333,7 @@ class TestRFTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("rft_invalid_params", rft_invalid_params)
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.RFT_FULL, Model.NOVA_LITE_2
+                training_method=TrainingMethod.RFT_FULL, model=Model.NOVA_LITE_2
             )
         self.assertIn(
             "Invalid parameters type, must be 'object'", str(context.exception)
@@ -359,7 +361,7 @@ class TestRFTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("rft_empty_name", rft_empty_name)
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.RFT_FULL, Model.NOVA_LITE_2
+                training_method=TrainingMethod.RFT_FULL, model=Model.NOVA_LITE_2
             )
         self.assertIn("Invalid function name, cannot be empty", str(context.exception))
 
@@ -385,7 +387,7 @@ class TestRFTDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("rft_empty_desc", rft_empty_desc)
         with self.assertRaises(ValueError) as context:
             JSONLDatasetLoader().load(test_file).validate(
-                TrainingMethod.RFT_FULL, Model.NOVA_LITE_2
+                training_method=TrainingMethod.RFT_FULL, model=Model.NOVA_LITE_2
             )
         self.assertIn(
             "Invalid function description, cannot be empty", str(context.exception)
@@ -445,7 +447,7 @@ class TestRFTDatasetValidator(unittest.TestCase):
 
         test_file = self.create_temp_file("rft_multiple_tools", rft_multiple_tools)
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.RFT_FULL, Model.NOVA_LITE_2
+            training_method=TrainingMethod.RFT_FULL, model=Model.NOVA_LITE_2
         )
 
     def tearDown(self):

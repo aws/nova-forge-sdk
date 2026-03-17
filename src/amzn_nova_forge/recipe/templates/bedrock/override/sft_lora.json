@@ -1,0 +1,30 @@
+{
+  "batchSize": {
+    "type": "integer",
+    "default": 1,
+    "min": 1,
+    "max": 64,
+    "description": "The number of training samples processed together in one iteration. Larger batch sizes can improve training stability and speed but require more memory. Default is 1."
+  },
+  "epochCount": {
+    "type": "integer",
+    "default": 2,
+    "min": 1,
+    "max": 5,
+    "description": "The number of iterations through the entire training dataset. Default is 2. Larger datasets require fewer epochs, smaller datasets require more."
+  },
+  "learningRate": {
+    "type": "float",
+    "default": 0.00001,
+    "min": 0.000001,
+    "max": 0.0001,
+    "description": "The rate at which model parameters are updated after each batch. Higher values may speed convergence but risk training instability."
+  },
+  "learningRateWarmupSteps": {
+    "type": "integer",
+    "default": 10,
+    "min": 0,
+    "max": 100,
+    "description": "Number of iterations over which learning rate gradually increases. Recommended: dataset_size / 640 for Nova Micro, / 160 for Nova Lite, / 320 for Nova Pro. Avoid large values for small datasets."
+  }
+}

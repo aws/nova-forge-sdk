@@ -2,7 +2,7 @@
 
 import pytest
 
-from amzn_nova_customization_sdk.rft_multiturn.constants import (
+from amzn_nova_forge.rft_multiturn.constants import (
     ECR_REPO_NAME,
     IAM_PROPAGATION_WAIT_TIME,
     JOB_STATUS_COMPLETED,

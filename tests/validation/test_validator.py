@@ -1,17 +1,17 @@
 import unittest
 from unittest.mock import MagicMock, Mock, patch
 
-from amzn_nova_customization_sdk.manager.runtime_manager import (
+from amzn_nova_forge.manager.runtime_manager import (
     SMHPRuntimeManager,
     SMTJRuntimeManager,
 )
-from amzn_nova_customization_sdk.model.model_enums import (
+from amzn_nova_forge.model.model_enums import (
     Model,
     Platform,
     TrainingMethod,
 )
-from amzn_nova_customization_sdk.recipe.recipe_config import EvaluationTask
-from amzn_nova_customization_sdk.validation.validator import (
+from amzn_nova_forge.recipe.recipe_config import EvaluationTask
+from amzn_nova_forge.validation.validator import (
     CLUSTER_NAME_REGEX,
     JOB_NAME_REGEX,
     NAMESPACE_REGEX,
@@ -34,11 +34,11 @@ class TestValidator(unittest.TestCase):
         self.mock_smtj_infra.instance_type = "ml.p5.48xlarge"
         self.mock_smtj_infra.region = "us-east-1"
 
-    @patch("amzn_nova_customization_sdk.validation.validator.get_cluster_instance_info")
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
-    @patch("sagemaker.get_execution_role")
+    @patch("amzn_nova_forge.validation.validator.get_cluster_instance_info")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
+    @patch("sagemaker.core.helper.session_helper.get_execution_role")
     @patch(
-        "amzn_nova_customization_sdk.manager.runtime_manager.SMHPRuntimeManager.required_calling_role_permissions"
+        "amzn_nova_forge.manager.runtime_manager.SMHPRuntimeManager.required_calling_role_permissions"
     )
     def test_validate_smhp_infrastructure_success(
         self,
@@ -106,7 +106,7 @@ class TestValidator(unittest.TestCase):
 
         try:
             with patch(
-                "amzn_nova_customization_sdk.manager.runtime_manager.SMHPRuntimeManager.setup"
+                "amzn_nova_forge.manager.runtime_manager.SMHPRuntimeManager.setup"
             ):
                 smhp_infra = SMHPRuntimeManager(
                     "ml.p5.48xlarge", 4, "test-cluster", "kubeflow"
@@ -124,9 +124,9 @@ class TestValidator(unittest.TestCase):
         except ValueError:
             self.fail("validate() raised ValueError unexpectedly!")
 
-    @patch("amzn_nova_customization_sdk.validation.validator.get_cluster_instance_info")
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
-    @patch("sagemaker.get_execution_role")
+    @patch("amzn_nova_forge.validation.validator.get_cluster_instance_info")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
+    @patch("sagemaker.core.helper.session_helper.get_execution_role")
     def test_validate_smhp_missing_instance_type(
         self, mock_get_execution_role, mock_boto3_client, mock_get_cluster_info
     ):
@@ -201,7 +201,7 @@ class TestValidator(unittest.TestCase):
 
         with self.assertRaises(ValueError) as context:
             with patch(
-                "amzn_nova_customization_sdk.manager.runtime_manager.SMHPRuntimeManager.setup"
+                "amzn_nova_forge.manager.runtime_manager.SMHPRuntimeManager.setup"
             ):
                 smhp_infra = SMHPRuntimeManager(
                     "ml.p5.48xlarge", 4, "test-cluster", "kubeflow"
@@ -223,7 +223,7 @@ class TestValidator(unittest.TestCase):
             str(context.exception),
         )
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_validate_iam_permissions_directly(self, mock_boto3_client):
         """Test IAM validation method directly."""
         # Mock IAM client
@@ -281,13 +281,15 @@ class TestValidator(unittest.TestCase):
 
         mock_boto3_client.side_effect = mock_client_factory
 
-        with patch("sagemaker.get_execution_role") as mock_get_role:
+        with patch(
+            "sagemaker.core.helper.session_helper.get_execution_role"
+        ) as mock_get_role:
             with patch(
-                "amzn_nova_customization_sdk.manager.runtime_manager.SMTJRuntimeManager.required_calling_role_permissions",
+                "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.required_calling_role_permissions",
                 return_value=[],
             ):
                 with patch(
-                    "amzn_nova_customization_sdk.manager.runtime_manager.SMTJRuntimeManager.setup"
+                    "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.setup"
                 ):
                     mock_get_role.return_value = (
                         "arn:aws:iam::123456789012:role/ValidRole"
@@ -311,7 +313,7 @@ class TestValidator(unittest.TestCase):
                 # Should not add any errors
                 self.assertEqual(len(errors), 0)
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_validate_iam_permissions_invalid_trust_policy(self, mock_boto3_client):
         """Test IAM validation with invalid trust policy."""
         # Mock IAM client with invalid trust policy
@@ -357,13 +359,15 @@ class TestValidator(unittest.TestCase):
 
         mock_boto3_client.side_effect = mock_client_factory
 
-        with patch("sagemaker.get_execution_role") as mock_get_role:
+        with patch(
+            "sagemaker.core.helper.session_helper.get_execution_role"
+        ) as mock_get_role:
             with patch(
-                "amzn_nova_customization_sdk.manager.runtime_manager.SMTJRuntimeManager.required_calling_role_permissions",
+                "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.required_calling_role_permissions",
                 return_value=[],
             ):
                 with patch(
-                    "amzn_nova_customization_sdk.manager.runtime_manager.SMTJRuntimeManager.setup"
+                    "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.setup"
                 ):
                     mock_get_role.return_value = (
                         "arn:aws:iam::123456789012:role/InvalidRole"
@@ -393,7 +397,7 @@ class TestValidator(unittest.TestCase):
             self.assertIn("does not trust sagemaker.amazonaws.com service", error_text)
             self.assertIn("missing required permissions", error_text)
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_validate_iam_permissions_cross_account_success(self, mock_boto3_client):
         """Test IAM validation for cross-account role with successful assumption."""
         # Mock STS client for cross-account detection (different accounts)
@@ -460,13 +464,15 @@ class TestValidator(unittest.TestCase):
 
         mock_boto3_client.side_effect = mock_client_factory
 
-        with patch("sagemaker.get_execution_role") as mock_get_role:
+        with patch(
+            "sagemaker.core.helper.session_helper.get_execution_role"
+        ) as mock_get_role:
             with patch(
-                "amzn_nova_customization_sdk.manager.runtime_manager.SMTJRuntimeManager.required_calling_role_permissions",
+                "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.required_calling_role_permissions",
                 return_value=[],
             ):
                 with patch(
-                    "amzn_nova_customization_sdk.manager.runtime_manager.SMTJRuntimeManager.setup"
+                    "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.setup"
                 ):
                     mock_get_role.return_value = (
                         "arn:aws:iam::222222222222:role/CrossAccountRole"
@@ -492,7 +498,7 @@ class TestValidator(unittest.TestCase):
                 # Should not add any errors for successful cross-account validation
                 self.assertEqual(len(errors), 0)
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_validate_iam_permissions_cross_account_assume_fail(
         self, mock_boto3_client
     ):
@@ -522,13 +528,15 @@ class TestValidator(unittest.TestCase):
 
         mock_boto3_client.side_effect = mock_client_factory
 
-        with patch("sagemaker.get_execution_role") as mock_get_role:
+        with patch(
+            "sagemaker.core.helper.session_helper.get_execution_role"
+        ) as mock_get_role:
             with patch(
-                "amzn_nova_customization_sdk.manager.runtime_manager.SMTJRuntimeManager.required_calling_role_permissions",
+                "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.required_calling_role_permissions",
                 return_value=[],
             ):
                 with patch(
-                    "amzn_nova_customization_sdk.manager.runtime_manager.SMTJRuntimeManager.setup"
+                    "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.setup"
                 ):
                     cross_account_role = (
                         "arn:aws:iam::222222222222:role/CrossAccountRole"
@@ -551,7 +559,7 @@ class TestValidator(unittest.TestCase):
                     # Should not add any errors - silently skip validation for cross-account
                     self.assertEqual(len(errors), 0)
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_validate_iam_permissions_cross_account_limited_permissions(
         self, mock_boto3_client
     ):
@@ -604,13 +612,15 @@ class TestValidator(unittest.TestCase):
 
         mock_boto3_client.side_effect = mock_client_factory
 
-        with patch("sagemaker.get_execution_role") as mock_get_role:
+        with patch(
+            "sagemaker.core.helper.session_helper.get_execution_role"
+        ) as mock_get_role:
             with patch(
-                "amzn_nova_customization_sdk.manager.runtime_manager.SMTJRuntimeManager.required_calling_role_permissions",
+                "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.required_calling_role_permissions",
                 return_value=[],
             ):
                 with patch(
-                    "amzn_nova_customization_sdk.manager.runtime_manager.SMTJRuntimeManager.setup"
+                    "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.setup"
                 ):
                     mock_get_role.return_value = (
                         "arn:aws:iam::222222222222:role/CrossAccountRole"
@@ -636,8 +646,8 @@ class TestValidator(unittest.TestCase):
                 # Should not add any errors - validates trust policy only
                 self.assertEqual(len(errors), 0)
 
-    @patch("amzn_nova_customization_sdk.validation.validator.get_cluster_instance_info")
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.get_cluster_instance_info")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_validate_infrastructure_directly(
         self, mock_boto3_client, mock_get_cluster_info
     ):
@@ -665,8 +675,8 @@ class TestValidator(unittest.TestCase):
         # Should not add any errors
         self.assertEqual(len(errors), 0)
 
-    @patch("amzn_nova_customization_sdk.validation.validator.get_cluster_instance_info")
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.get_cluster_instance_info")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_validate_infrastructure_insufficient_capacity(
         self, mock_boto3_client, mock_get_cluster_info
     ):
@@ -709,7 +719,7 @@ class TestValidationConfig(unittest.TestCase):
         expected = {"iam": True, "infra": True}
         self.assertEqual(config, expected)
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_validation_config_iam_disabled(self, mock_boto3_client):
         """Test that IAM validation is skipped when disabled."""
         mock_infra = Mock(spec=SMTJRuntimeManager)
@@ -752,7 +762,7 @@ class TestValidationConfig(unittest.TestCase):
             self.assertNotIn("not available in cluster", str(e))
             self.assertNotIn("Failed to validate cluster", str(e))
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_validation_config_partial_merge_with_defaults(self, mock_boto3_client):
         """Test that partial validation config is merged with defaults."""
         mock_infra = Mock(spec=SMTJRuntimeManager)
@@ -779,7 +789,7 @@ class TestValidationConfig(unittest.TestCase):
 class TestRFTValidation(unittest.TestCase):
     """Test RFT validator integration with Validator."""
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_rft_validator_with_lambda_arn(self, mock_boto3_client):
         """Test RFT validator with required lambda ARN parameter."""
         mock_infra = Mock(spec=SMTJRuntimeManager)
@@ -799,7 +809,7 @@ class TestRFTValidation(unittest.TestCase):
         except ValueError:
             self.fail("RFT validate() raised ValueError unexpectedly!")
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_rft_validator_with_invalid_lambda_arn(self, mock_boto3_client):
         """Test RFT validator fails with invalid lambda ARN."""
         mock_infra = Mock(spec=SMTJRuntimeManager)
@@ -819,7 +829,7 @@ class TestRFTValidation(unittest.TestCase):
 
         self.assertIn("must be a valid Lambda function ARN", str(context.exception))
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_rft_validator_without_lambda_arn(self, mock_boto3_client):
         """Test RFT validator fails without lambda ARN."""
         mock_infra = Mock(spec=SMTJRuntimeManager)
@@ -844,7 +854,7 @@ class TestRFTValidation(unittest.TestCase):
 class TestEvaluationValidation(unittest.TestCase):
     """Test evaluation-specific validation."""
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_evaluation_with_valid_task(self, mock_boto3_client):
         """Test evaluation with valid task."""
         mock_infra = Mock(spec=SMTJRuntimeManager)
@@ -864,7 +874,7 @@ class TestEvaluationValidation(unittest.TestCase):
         except ValueError:
             self.fail("Evaluation validate() raised ValueError unexpectedly!")
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_evaluation_with_valid_byod_task(self, mock_boto3_client):
         """Test evaluation with valid task."""
         mock_infra = Mock(spec=SMTJRuntimeManager)
@@ -885,7 +895,7 @@ class TestEvaluationValidation(unittest.TestCase):
         except ValueError:
             self.fail("Evaluation validate() raised ValueError unexpectedly!")
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_eval_validator_with_invalid_byod_task(self, mock_boto3_client):
         """Test eval validator fails with invalid BYOD eval task"""
         mock_infra = Mock(spec=SMTJRuntimeManager)
@@ -909,7 +919,7 @@ class TestEvaluationValidation(unittest.TestCase):
             str(context.exception),
         )
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_evaluation_with_valid_subtask(self, mock_boto3_client):
         """Test evaluation with valid subtask."""
         mock_infra = Mock(spec=SMTJRuntimeManager)
@@ -930,7 +940,7 @@ class TestEvaluationValidation(unittest.TestCase):
         except ValueError:
             self.fail("Evaluation validate() raised ValueError unexpectedly!")
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_eval_validator_with_invalid_subtask(self, mock_boto3_client):
         """Test eval validator fails with invalid subtask"""
         mock_infra = Mock(spec=SMTJRuntimeManager)
@@ -951,7 +961,7 @@ class TestEvaluationValidation(unittest.TestCase):
 
         self.assertIn("Invalid subtask", str(context.exception))
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_eval_validator_with_unsupported_subtask(self, mock_boto3_client):
         """Test eval validator fails with unsupported subtask"""
         mock_infra = Mock(spec=SMTJRuntimeManager)
@@ -972,7 +982,7 @@ class TestEvaluationValidation(unittest.TestCase):
 
         self.assertIn("does not support subtasks", str(context.exception))
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_evaluation_with_valid_processor_config(self, mock_boto3_client):
         """Test evaluation with valid processor_config."""
         mock_infra = Mock(spec=SMTJRuntimeManager)
@@ -995,7 +1005,7 @@ class TestEvaluationValidation(unittest.TestCase):
         except ValueError:
             self.fail("Evaluation validate() raised ValueError unexpectedly!")
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_eval_validator_with_processor_config_but_not_needed(
         self, mock_boto3_client
     ):
@@ -1020,7 +1030,7 @@ class TestEvaluationValidation(unittest.TestCase):
             "processor_config is only supported for gen_qa task", str(context.exception)
         )
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_eval_validator_with_processor_config_missing_lambda_arn(
         self, mock_boto3_client
     ):
@@ -1045,7 +1055,7 @@ class TestEvaluationValidation(unittest.TestCase):
             "processor_config must contain a lambda_arn", str(context.exception)
         )
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_eval_validator_with_rl_env_config_missing_reward_lambda_arn(
         self, mock_boto3_client
     ):
@@ -1068,7 +1078,7 @@ class TestEvaluationValidation(unittest.TestCase):
 
         self.assertIn("rl_env must contain a reward_lambda_arn", str(context.exception))
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_eval_validator_with_rl_env_config_invalid_task(self, mock_boto3_client):
         """Test eval validator fails when rl_env_config is provided but for invalid task"""
         mock_infra = Mock(spec=SMTJRuntimeManager)
@@ -1092,7 +1102,7 @@ class TestEvaluationValidation(unittest.TestCase):
             str(context.exception),
         )
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_eval_validator_with_valid_rl_env_config(self, mock_boto3_client):
         """Test eval validator succeeds when rl_env_config is provided"""
         mock_infra = Mock(spec=SMTJRuntimeManager)
@@ -1617,7 +1627,7 @@ class TestRecipeValidation(unittest.TestCase):
 
         self.assertEqual(len(errors), 0)
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_validate_recipe_integration_with_full_validate_method(
         self, mock_boto3_client
     ):
@@ -2183,7 +2193,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
             RoleName="TestRole", PolicyName="InlinePolicy"
         )
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_validate_permissions_with_insufficient_resource_permissions(
         self, mock_boto3_client
     ):
@@ -2250,7 +2260,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
             errors[1],
         )
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_validate_permissions_with_multiple_s3_resources(self, mock_boto3_client):
         """Test that validation generates separate permissions for multiple S3 resources"""
         mock_iam_client = Mock()
@@ -2319,7 +2329,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
         self.assertIn("s3:GetObject", output_actions)
         self.assertIn("s3:PutObject", output_actions)
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_validate_permissions_fails_with_missing_specific_bucket_access(
         self, mock_boto3_client
     ):
@@ -2379,7 +2389,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
         self.assertIn("bucket2", errors[0])
         self.assertIn("s3:GetObject", errors[0])
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_validate_permissions_fails_with_bucket_access_but_missing_object_access(
         self, mock_boto3_client
     ):
@@ -2473,13 +2483,13 @@ class TestPermissionValidationMethods(unittest.TestCase):
             self.assertEqual(len(errors), 1)
             self.assertIn("Failed to evaluate resource lambda", errors[0])
 
-    @patch("sagemaker.get_execution_role")
+    @patch("sagemaker.core.helper.session_helper.get_execution_role")
     @patch("subprocess.run")
     def test_runtime_managers_define_mixed_permission_validation_types(
         self, mock_run, mock_get_execution_role
     ):
         """Test that runtime managers correctly define permissions using multiple validation approaches"""
-        from amzn_nova_customization_sdk.manager.runtime_manager import (
+        from amzn_nova_forge.manager.runtime_manager import (
             SMHPRuntimeManager,
             SMTJRuntimeManager,
         )
@@ -2513,7 +2523,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
         self.assertTrue(has_tuples, "SMTJ should have tuple permissions")
         self.assertTrue(has_strings, "SMTJ should have string permissions")
 
-    @patch("amzn_nova_customization_sdk.validation.validator.boto3.client")
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_validate_calling_role_permissions_with_action_prefix_wildcards(
         self, mock_boto3_client
     ):
@@ -2593,6 +2603,120 @@ class TestPermissionValidationMethods(unittest.TestCase):
 
     def test_validate_cluster_name_does_not_raise_exception(self):
         Validator.validate_cluster_name("good_cluster-name")
+
+
+class TestBedrockRegionValidation(unittest.TestCase):
+    """Test cases for Bedrock region validation"""
+
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
+    def test_bedrock_region_validation_rejects_non_us_east_1(self, mock_boto3_client):
+        """Test that Bedrock validation rejects regions other than us-east-1"""
+        from amzn_nova_forge.manager.runtime_manager import (
+            BedrockRuntimeManager,
+        )
+
+        # Mock Bedrock runtime manager with us-west-2 region
+        mock_bedrock_infra = Mock(spec=BedrockRuntimeManager)
+        mock_bedrock_infra.region = "us-west-2"
+        mock_bedrock_infra.instance_type = None
+        mock_bedrock_infra.execution_role = "arn:aws:iam::123456789012:role/BedrockRole"
+
+        # Attempt validation - should fail due to region
+        with self.assertRaises(ValueError) as context:
+            Validator.validate(
+                platform=Platform.BEDROCK,
+                method=TrainingMethod.SFT_LORA,
+                infra=mock_bedrock_infra,
+                recipe={},
+                overrides_template={},
+                validation_config={
+                    "iam": False,
+                    "infra": False,
+                },  # Disable other validations
+            )
+
+        error_message = str(context.exception)
+        self.assertIn("us-west-2", error_message)
+        self.assertIn("not supported", error_message)
+        self.assertIn(
+            "https://docs.aws.amazon.com/bedrock/latest/userguide/custom-model-fine-tuning.html",
+            error_message,
+        )
+
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
+    def test_bedrock_region_validation_accepts_us_east_1(self, mock_boto3_client):
+        """Test that Bedrock validation accepts us-east-1 region"""
+        from amzn_nova_forge.manager.runtime_manager import (
+            BedrockRuntimeManager,
+        )
+
+        # Mock Bedrock runtime manager with us-east-1 region
+        mock_bedrock_infra = Mock(spec=BedrockRuntimeManager)
+        mock_bedrock_infra.region = "us-east-1"
+        mock_bedrock_infra.instance_type = None
+        mock_bedrock_infra.execution_role = "arn:aws:iam::123456789012:role/BedrockRole"
+
+        # Mock IAM/STS clients for permission validation
+        mock_iam_client = Mock()
+        mock_sts_client = Mock()
+
+        mock_boto3_client.side_effect = lambda service, **kwargs: {
+            "iam": mock_iam_client,
+            "sts": mock_sts_client,
+        }[service]
+
+        mock_sts_client.get_caller_identity.return_value = {
+            "Arn": "arn:aws:sts::123456789012:assumed-role/TestRole/session",
+            "Account": "123456789012",
+        }
+
+        mock_iam_client.simulate_principal_policy.return_value = {
+            "EvaluationResults": [{"EvalDecision": "allowed"}]
+        }
+
+        # Attempt validation - should succeed
+        try:
+            Validator.validate(
+                platform=Platform.BEDROCK,
+                method=TrainingMethod.SFT_LORA,
+                infra=mock_bedrock_infra,
+                recipe={},
+                overrides_template={},
+            )
+        except ValueError as e:
+            # Should not raise ValueError for region
+            if "region" in str(e).lower() or "us-west-2" in str(e):
+                self.fail(f"Validation failed with region error: {e}")
+
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
+    def test_bedrock_region_validation_runs_even_with_iam_disabled(
+        self, mock_boto3_client
+    ):
+        """Test that region validation runs even when IAM validation is disabled"""
+        from amzn_nova_forge.manager.runtime_manager import (
+            BedrockRuntimeManager,
+        )
+
+        # Mock Bedrock runtime manager with invalid region
+        mock_bedrock_infra = Mock(spec=BedrockRuntimeManager)
+        mock_bedrock_infra.region = "eu-west-1"
+        mock_bedrock_infra.instance_type = None
+        mock_bedrock_infra.execution_role = "arn:aws:iam::123456789012:role/BedrockRole"
+
+        # Attempt validation with IAM disabled - should still fail due to region
+        with self.assertRaises(ValueError) as context:
+            Validator.validate(
+                platform=Platform.BEDROCK,
+                method=TrainingMethod.SFT_LORA,
+                infra=mock_bedrock_infra,
+                recipe={},
+                overrides_template={},
+                validation_config={"iam": False},  # IAM validation disabled
+            )
+
+        error_message = str(context.exception)
+        self.assertIn("eu-west-1", error_message)
+        self.assertIn("not supported", error_message)
 
 
 if __name__ == "__main__":

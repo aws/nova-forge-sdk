@@ -4,8 +4,8 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from amzn_nova_customization_sdk.rft_multiturn.base_infra import EnvType, StackOutputs
-from amzn_nova_customization_sdk.rft_multiturn.ec2_infra import EC2RFTInfrastructure
+from amzn_nova_forge.rft_multiturn.base_infra import EnvType, StackOutputs
+from amzn_nova_forge.rft_multiturn.ec2_infra import EC2RFTInfrastructure
 
 
 def setup_ami_validation_mocks(mock_ec2):

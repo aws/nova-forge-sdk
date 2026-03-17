@@ -2,10 +2,10 @@ import json
 import tempfile
 import unittest
 
-from amzn_nova_customization_sdk.dataset.dataset_loader import (
+from amzn_nova_forge.dataset.dataset_loader import (
     JSONLDatasetLoader,
 )
-from amzn_nova_customization_sdk.model.model_enums import Model, TrainingMethod
+from amzn_nova_forge.model.model_enums import Model, TrainingMethod
 
 
 class TestEvalDatasetValidator(unittest.TestCase):
@@ -31,7 +31,7 @@ class TestEvalDatasetValidator(unittest.TestCase):
 
         test_file = self.create_temp_file("eval_text_success", eval_text_success)
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.EVALUATION, Model.NOVA_LITE
+            training_method=TrainingMethod.EVALUATION, model=Model.NOVA_LITE
         )
 
     def test_eval_text_fail(self):
@@ -46,7 +46,9 @@ class TestEvalDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("eval_text_fail", eval_text_fail)
         dataset_loader = JSONLDatasetLoader().load(test_file)
         with self.assertRaises(ValueError):
-            dataset_loader.validate(TrainingMethod.EVALUATION, Model.NOVA_LITE)
+            dataset_loader.validate(
+                training_method=TrainingMethod.EVALUATION, model=Model.NOVA_LITE
+            )
 
     def test_eval_img_success(self):
         eval_img_success = [
@@ -59,7 +61,7 @@ class TestEvalDatasetValidator(unittest.TestCase):
         ]
         test_file = self.create_temp_file("eval_img_success", eval_img_success)
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.EVALUATION, Model.NOVA_LITE
+            training_method=TrainingMethod.EVALUATION, model=Model.NOVA_LITE
         )
 
     def test_eval_img_fail(self):
@@ -75,7 +77,9 @@ class TestEvalDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("eval_img_fail", eval_img_fail)
         dataset_loader = JSONLDatasetLoader().load(test_file)
         with self.assertRaises(ValueError):
-            dataset_loader.validate(TrainingMethod.EVALUATION, Model.NOVA_LITE)
+            dataset_loader.validate(
+                training_method=TrainingMethod.EVALUATION, model=Model.NOVA_LITE
+            )
 
     def test_eval_metadata_success(self):
         eval_metadata_success = [
@@ -90,7 +94,7 @@ class TestEvalDatasetValidator(unittest.TestCase):
             "eval_metadata_success", eval_metadata_success
         )
         JSONLDatasetLoader().load(test_file).validate(
-            TrainingMethod.EVALUATION, Model.NOVA_LITE
+            training_method=TrainingMethod.EVALUATION, model=Model.NOVA_LITE
         )
 
     def test_eval_metadata_fail(self):
@@ -105,7 +109,9 @@ class TestEvalDatasetValidator(unittest.TestCase):
         test_file = self.create_temp_file("eval_metadata_fail", eval_metadata_fail)
         dataset_loader = JSONLDatasetLoader().load(test_file)
         with self.assertRaises(ValueError):
-            dataset_loader.validate(TrainingMethod.EVALUATION, Model.NOVA_LITE)
+            dataset_loader.validate(
+                training_method=TrainingMethod.EVALUATION, model=Model.NOVA_LITE
+            )
 
     def tearDown(self):
         """Clean up temporary files created during each unit test."""

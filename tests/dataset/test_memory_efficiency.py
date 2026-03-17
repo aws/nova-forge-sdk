@@ -15,11 +15,11 @@ from unittest.mock import patch
 
 import pytest
 
-from amzn_nova_customization_sdk.dataset.dataset_loader import (
+from amzn_nova_forge.dataset.dataset_loader import (
     CSVDatasetLoader,
     JSONLDatasetLoader,
 )
-from amzn_nova_customization_sdk.model.model_enums import Model, TrainingMethod
+from amzn_nova_forge.model.model_enums import Model, TrainingMethod
 
 
 class TestMemoryEfficiency(unittest.TestCase):
@@ -78,7 +78,7 @@ class TestMemoryEfficiency(unittest.TestCase):
                 return self._generate_jsonl_lines(size)
 
             with patch(
-                "amzn_nova_customization_sdk.dataset.dataset_loader.load_file_content",
+                "amzn_nova_forge.dataset.dataset_loader.load_file_content",
                 side_effect=lambda *args, **kwargs: mock_generator(),
             ):
                 loader = JSONLDatasetLoader()
@@ -86,7 +86,7 @@ class TestMemoryEfficiency(unittest.TestCase):
 
                 # Process all records
                 count = 0
-                for record in loader.raw_dataset():
+                for record in loader.dataset():
                     count += 1
                     # Simulate some processing
                     _ = record.get("text", "")
@@ -136,7 +136,7 @@ class TestMemoryEfficiency(unittest.TestCase):
                 return self._generate_csv_lines(size)
 
             with patch(
-                "amzn_nova_customization_sdk.dataset.dataset_loader.load_file_content",
+                "amzn_nova_forge.dataset.dataset_loader.load_file_content",
                 side_effect=lambda *args, **kwargs: mock_generator(),
             ):
                 loader = CSVDatasetLoader()
@@ -144,7 +144,7 @@ class TestMemoryEfficiency(unittest.TestCase):
 
                 # Process all records
                 count = 0
-                for record in loader.raw_dataset():
+                for record in loader.dataset():
                     count += 1
                     _ = record.get("text", "")
 
@@ -183,16 +183,18 @@ class TestMemoryEfficiency(unittest.TestCase):
                     yield json.dumps({"text": f"Sample text {i} " * 10})
 
             with patch(
-                "amzn_nova_customization_sdk.dataset.dataset_loader.load_file_content",
+                "amzn_nova_forge.dataset.dataset_loader.load_file_content",
                 side_effect=lambda *args, **kwargs: mock_generator(),
             ):
                 loader = JSONLDatasetLoader()
                 loader.load("test.jsonl")
-                loader.transform(TrainingMethod.CPT, Model.NOVA_MICRO)
+                loader.transform(
+                    training_method=TrainingMethod.CPT, model=Model.NOVA_MICRO
+                )
 
                 # Process transformed data
                 count = 0
-                for record in loader.transformed_dataset():
+                for record in loader.dataset():
                     count += 1
                     _ = record.get("text", "")
 
@@ -229,14 +231,14 @@ class TestMemoryEfficiency(unittest.TestCase):
                 return self._generate_jsonl_lines(size)
 
             with patch(
-                "amzn_nova_customization_sdk.dataset.dataset_loader.load_file_content",
+                "amzn_nova_forge.dataset.dataset_loader.load_file_content",
                 side_effect=lambda *args, **kwargs: mock_generator(),
             ):
                 loader = JSONLDatasetLoader()
                 loader.load("test.jsonl")
 
                 # Iterate without storing
-                for record in loader.raw_dataset():
+                for record in loader.dataset():
                     # Just access the data, don't store it
                     _ = record.get("text")
 
@@ -286,11 +288,11 @@ class TestMemoryEfficiency(unittest.TestCase):
                 return self._generate_jsonl_lines(size)
 
             with patch(
-                "amzn_nova_customization_sdk.dataset.dataset_loader.load_file_content",
+                "amzn_nova_forge.dataset.dataset_loader.load_file_content",
                 side_effect=lambda *args, **kwargs: mock_generator(),
             ):
                 # Suppress logger output
-                with patch("amzn_nova_customization_sdk.dataset.dataset_loader.logger"):
+                with patch("amzn_nova_forge.dataset.dataset_loader.logger"):
                     loader = JSONLDatasetLoader()
                     loader.load("test.jsonl")
                     loader.show(n=show_n)
@@ -320,14 +322,14 @@ class TestMemoryEfficiency(unittest.TestCase):
         """
         Verify that multiple iterations over the same dataset don't accumulate memory.
 
-        Each call to raw_dataset() should create a fresh iterator.
+        Each call to dataset() should create a fresh iterator.
         """
 
         def mock_generator():
             return self._generate_jsonl_lines(10)
 
         with patch(
-            "amzn_nova_customization_sdk.dataset.dataset_loader.load_file_content",
+            "amzn_nova_forge.dataset.dataset_loader.load_file_content",
             side_effect=lambda *args, **kwargs: mock_generator(),
         ):
             loader = JSONLDatasetLoader()
@@ -338,7 +340,7 @@ class TestMemoryEfficiency(unittest.TestCase):
 
             # Iterate multiple times
             for iteration in range(3):
-                for record in loader.raw_dataset():
+                for record in loader.dataset():
                     _ = record.get("text")
 
             final_current, _ = tracemalloc.get_traced_memory()

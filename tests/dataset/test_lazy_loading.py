@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
-from amzn_nova_customization_sdk.dataset.dataset_loader import (
+from amzn_nova_forge.dataset.dataset_loader import (
     CSVDatasetLoader,
     JSONLDatasetLoader,
 )
@@ -30,7 +30,7 @@ class TestLazyLoading(unittest.TestCase):
                 yield f'{{"id": {i}, "value": "line_{i}"}}'
 
         with patch(
-            "amzn_nova_customization_sdk.dataset.dataset_loader.load_file_content",
+            "amzn_nova_forge.dataset.dataset_loader.load_file_content",
             side_effect=lambda *args, **kwargs: mock_line_generator(),
         ):
             loader = JSONLDatasetLoader()
@@ -42,7 +42,7 @@ class TestLazyLoading(unittest.TestCase):
             )
 
             # Get the generator
-            dataset_iter = loader.raw_dataset()
+            dataset_iter = loader.dataset()
 
             # Still no lines accessed
             self.assertEqual(
@@ -81,14 +81,14 @@ class TestLazyLoading(unittest.TestCase):
                 yield f"{i},name_{i},value_{i}"
 
         with patch(
-            "amzn_nova_customization_sdk.dataset.dataset_loader.load_file_content",
+            "amzn_nova_forge.dataset.dataset_loader.load_file_content",
             side_effect=lambda *args, **kwargs: mock_line_generator(),
         ):
             loader = CSVDatasetLoader()
             loader.load("test.csv")
 
             # Get the generator
-            dataset_iter = loader.raw_dataset()
+            dataset_iter = loader.dataset()
 
             # CSV reader needs to read header, so that's expected
             # But data rows should not be accessed yet
@@ -123,13 +123,13 @@ class TestLazyLoading(unittest.TestCase):
                 yield f'{{"my_text": "line_{i}"}}'
 
         with patch(
-            "amzn_nova_customization_sdk.dataset.dataset_loader.load_file_content",
+            "amzn_nova_forge.dataset.dataset_loader.load_file_content",
             side_effect=lambda *args, **kwargs: mock_line_generator(),
         ):
-            loader = JSONLDatasetLoader(text="my_text")
+            loader = JSONLDatasetLoader()
             loader.load("test.jsonl")
 
-            from amzn_nova_customization_sdk.model.model_enums import (
+            from amzn_nova_forge.model.model_enums import (
                 Model,
                 TrainingMethod,
             )
@@ -137,17 +137,21 @@ class TestLazyLoading(unittest.TestCase):
             # Reset counters before transform
             lines_accessed.clear()
 
-            loader.transform(TrainingMethod.CPT, Model.NOVA_MICRO)
+            loader.transform(
+                training_method=TrainingMethod.CPT,
+                model=Model.NOVA_MICRO,
+                column_mappings={"text": "my_text"},
+            )
 
             # Transform will validate the schema which reads all records once
             # This is expected - we need to check if transformation is needed
-            # But the important part is that transformed_dataset is still lazy
+            # But the important part is that the dataset is still lazy
 
             # Reset counters to test lazy iteration of transformed data
             lines_accessed.clear()
 
             # Get transformed iterator
-            transformed_iter = loader.transformed_dataset()
+            transformed_iter = loader.dataset()
 
             # Nothing should be accessed yet
             self.assertEqual(
@@ -177,7 +181,7 @@ class TestLazyLoading(unittest.TestCase):
 
     def test_s3_streaming_uses_iter_lines(self):
         """Verify S3 downloads use streaming iter_lines, not read()."""
-        with patch("amzn_nova_customization_sdk.util.recipe.boto3.client") as mock_boto:
+        with patch("amzn_nova_forge.util.recipe.boto3.client") as mock_boto:
             mock_s3 = MagicMock()
             mock_boto.return_value = mock_s3
 
@@ -189,14 +193,14 @@ class TestLazyLoading(unittest.TestCase):
             mock_s3.get_object.return_value = {"Body": mock_body}
 
             with patch(
-                "amzn_nova_customization_sdk.util.recipe._parse_s3_uri",
+                "amzn_nova_forge.util.recipe._parse_s3_uri",
                 return_value=("bucket", "key.jsonl"),
             ):
                 loader = JSONLDatasetLoader()
                 loader.load("s3://bucket/key.jsonl")
 
                 # Consume first item
-                dataset_iter = loader.raw_dataset()
+                dataset_iter = loader.dataset()
                 first = next(dataset_iter)
 
                 # Verify iter_lines was called (streaming), not read() (full load)

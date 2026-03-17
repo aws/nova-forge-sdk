@@ -2,12 +2,12 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-from amzn_nova_customization_sdk.manager.runtime_manager import (
+from amzn_nova_forge.manager.runtime_manager import (
     JobConfig,
     SMHPRuntimeManager,
     SMTJRuntimeManager,
 )
-from amzn_nova_customization_sdk.recipe.recipe_builder import HYPERPOD_RECIPE_PATH
+from amzn_nova_forge.recipe.recipe_builder import HYPERPOD_RECIPE_PATH
 
 
 class TestSMTJRuntimeManager(unittest.TestCase):
@@ -45,14 +45,10 @@ class TestSMTJRuntimeManager(unittest.TestCase):
 
         self.assertEqual(manager.instance_count, new_instance_count)
 
-    @patch(
-        "amzn_nova_customization_sdk.manager.runtime_manager.sagemaker.session.Session"
-    )
-    @patch(
-        "amzn_nova_customization_sdk.manager.runtime_manager.sagemaker.get_execution_role"
-    )
-    @patch("amzn_nova_customization_sdk.manager.runtime_manager.boto3.client")
-    @patch("amzn_nova_customization_sdk.manager.runtime_manager.boto3.session.Session")
+    @patch("amzn_nova_forge.manager.runtime_manager.Session")
+    @patch("amzn_nova_forge.manager.runtime_manager.get_execution_role")
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.session.Session")
     def test_setup(
         self,
         mock_boto_session_class,
@@ -87,14 +83,25 @@ class TestSMTJRuntimeManager(unittest.TestCase):
             boto_session=mock_boto_session, sagemaker_client=mock_client
         )
 
-    @patch("amzn_nova_customization_sdk.manager.runtime_manager.PyTorch")
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    @patch("amzn_nova_forge.manager.runtime_manager.ModelTrainer")
     @patch.object(SMTJRuntimeManager, "setup", return_value=None)
-    def test_execute_success(self, mock_setup, mock_pytorch):
+    def test_execute_success(
+        self, mock_setup, mock_model_trainer_cls, mock_boto_client
+    ):
         manager = self._create_manager()
 
-        mock_estimator = MagicMock()
-        mock_pytorch.return_value = mock_estimator
-        mock_estimator.fit.return_value = None
+        mock_model_trainer = MagicMock()
+        mock_model_trainer.with_tensorboard_output_config.return_value = (
+            mock_model_trainer
+        )
+        mock_model_trainer_cls.from_recipe.return_value = mock_model_trainer
+
+        mock_sagemaker_client = MagicMock()
+        mock_sagemaker_client.list_training_jobs.return_value = {
+            "TrainingJobSummaries": [{"TrainingJobName": "test-job-suffix"}]
+        }
+        mock_boto_client.return_value = mock_sagemaker_client
 
         job_config = JobConfig(
             job_name="test-job",
@@ -107,18 +114,29 @@ class TestSMTJRuntimeManager(unittest.TestCase):
 
         job_id = manager.execute(job_config)
 
-        mock_pytorch.assert_called_once()
-        mock_estimator.fit.assert_called_once()
-        self.assertEqual(job_id, "test-job")
+        mock_model_trainer_cls.from_recipe.assert_called_once()
+        mock_model_trainer.train.assert_called_once_with(wait=False, logs=False)
+        self.assertEqual(job_id, "test-job-suffix")
 
-    @patch("amzn_nova_customization_sdk.manager.runtime_manager.PyTorch")
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    @patch("amzn_nova_forge.manager.runtime_manager.ModelTrainer")
     @patch.object(SMTJRuntimeManager, "setup", return_value=None)
-    def test_execute_without_optional_params(self, mock_setup, mock_pytorch):
+    def test_execute_without_optional_params(
+        self, mock_setup, mock_model_trainer_cls, mock_boto_client
+    ):
         manager = self._create_manager()
 
-        mock_estimator = MagicMock()
-        mock_pytorch.return_value = mock_estimator
-        mock_estimator.fit.return_value = None
+        mock_model_trainer = MagicMock()
+        mock_model_trainer.with_tensorboard_output_config.return_value = (
+            mock_model_trainer
+        )
+        mock_model_trainer_cls.from_recipe.return_value = mock_model_trainer
+
+        mock_sagemaker_client = MagicMock()
+        mock_sagemaker_client.list_training_jobs.return_value = {
+            "TrainingJobSummaries": [{"TrainingJobName": "test-job-suffix"}]
+        }
+        mock_boto_client.return_value = mock_sagemaker_client
 
         job_config = JobConfig(
             job_name="test-job",
@@ -129,12 +147,11 @@ class TestSMTJRuntimeManager(unittest.TestCase):
 
         job_id = manager.execute(job_config)
 
-        mock_pytorch.assert_called_once()
-        call_args = mock_estimator.fit.call_args
-        self.assertNotIn("inputs", call_args.kwargs)
-        self.assertEqual(call_args.kwargs["job_name"], "test-job")
-        self.assertEqual(call_args.kwargs["wait"], False)
-        self.assertEqual(job_id, "test-job")
+        mock_model_trainer_cls.from_recipe.assert_called_once()
+        call_kwargs = mock_model_trainer_cls.from_recipe.call_args.kwargs
+        self.assertNotIn("input_data_config", call_kwargs)
+        mock_model_trainer.train.assert_called_once_with(wait=False, logs=False)
+        self.assertEqual(job_id, "test-job-suffix")
 
     @patch.object(SMTJRuntimeManager, "setup", return_value=None)
     def test_cleanup_success(self, mock_setup):
@@ -162,14 +179,17 @@ class TestSMTJRuntimeManager(unittest.TestCase):
             TrainingJobName="test-job"
         )
 
-    @patch("amzn_nova_customization_sdk.manager.runtime_manager.PyTorch")
+    @patch("amzn_nova_forge.manager.runtime_manager.ModelTrainer")
     @patch.object(SMTJRuntimeManager, "setup", return_value=None)
-    def test_execute_handles_error(self, mock_setup, mock_pytorch):
+    def test_execute_handles_error(self, mock_setup, mock_model_trainer_cls):
         manager = self._create_manager()
 
-        mock_estimator = MagicMock()
-        mock_estimator.fit.side_effect = Exception("Training failed")
-        mock_pytorch.return_value = mock_estimator
+        mock_model_trainer = MagicMock()
+        mock_model_trainer.with_tensorboard_output_config.return_value = (
+            mock_model_trainer
+        )
+        mock_model_trainer.train.side_effect = Exception("Training failed")
+        mock_model_trainer_cls.from_recipe.return_value = mock_model_trainer
 
         job_config = JobConfig(
             job_name="test-job",
@@ -184,8 +204,8 @@ class TestSMTJRuntimeManager(unittest.TestCase):
             manager.execute(job_config)
 
         self.assertEqual(str(context.exception), "Training failed")
-        mock_pytorch.assert_called_once()
-        mock_estimator.fit.assert_called_once()
+        mock_model_trainer_cls.from_recipe.assert_called_once()
+        mock_model_trainer.train.assert_called_once()
 
 
 class TestSMHPRuntimeManager(unittest.TestCase):
