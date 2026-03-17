@@ -1,0 +1,20 @@
+# Bedrock SFT LoRA Recipe Template for Amazon Nova Models
+# This template defines the default configuration for Supervised Fine-Tuning with LoRA
+
+run:
+  name: bedrock-sft-lora
+  model_type: amazon.nova-micro-v1:0:128k
+  model_name_or_path: nova-micro/prod
+
+training_config:
+  method: sft_lora
+  
+  # SFT Hyperparameters (passed to Bedrock API as strings)
+  epochCount: "{{epochCount}}"
+  batchSize: "{{batchSize}}"
+  learningRate: "{{learningRate}}"
+  learningRateWarmupSteps: "{{learningRateWarmupSteps}}"
+  
+  trainer:
+    peft:
+      peft_scheme: lora

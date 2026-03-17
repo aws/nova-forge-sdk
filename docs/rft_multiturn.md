@@ -1,6 +1,6 @@
 # RFT Multiturn
 
-The Nova Customization SDK supports RFT (Reinforcement Fine-Tuning) multiturn training for multi-turn conversational tasks. This module provides infrastructure management and orchestration for running RFT training with custom reward environments.
+The Nova Forge SDK supports RFT (Reinforcement Fine-Tuning) multiturn training for multi-turn conversational tasks. This module provides infrastructure management and orchestration for running RFT training with custom reward environments.
 
 ## Table of Contents
 
@@ -59,7 +59,7 @@ Requirements:
 ## Quick Start
 
 ```python
-from amzn_nova_customization_sdk import *
+from amzn_nova_forge import *
 
 # 1. Setup infrastructure (LOCAL example)
 rft_infra = RFTMultiturnInfrastructure(
@@ -130,7 +130,7 @@ The platform is automatically detected based on `infrastructure_arn`:
 ### LOCAL Platform
 
 ```python
-from amzn_nova_customization_sdk import RFTMultiturnInfrastructure, VFEnvId
+from amzn_nova_forge import RFTMultiturnInfrastructure, VFEnvId
 
 rft_infra = RFTMultiturnInfrastructure(
     stack_name="my-rft-stack",
@@ -253,7 +253,7 @@ loader = CSVDatasetLoader(id="id", prompt="prompt", answer="answer", task="task"
 The SDK automatically validates your dataset:
 
 ```python
-from amzn_nova_customization_sdk import JSONLDatasetLoader, TrainingMethod, Model, EvaluationTask
+from amzn_nova_forge import JSONLDatasetLoader, TrainingMethod, Model, EvaluationTask
 
 # Load dataset
 loader = JSONLDatasetLoader(id="id", prompt="prompt", answer="answer")
@@ -346,7 +346,7 @@ Starts the training or evaluation environment on the configured platform using t
 **Example:**
 
 ```python
-from amzn_nova_customization_sdk import EnvType
+from amzn_nova_forge import EnvType
 
 # Start training environment with default parameters
 rft_infra.start_environment(env_type=EnvType.TRAIN)
@@ -388,7 +388,7 @@ rft_infra.start_training_environment(
 )
 
 # New way (recommended)
-from amzn_nova_customization_sdk import EnvType
+from amzn_nova_forge import EnvType
 rft_infra.start_environment(
     env_type=EnvType.TRAIN,
     vf_env_args={"use_think": True, "max_turns": 10}
@@ -414,7 +414,7 @@ rft_infra.start_evaluation_environment(
 )
 
 # New way (recommended)
-from amzn_nova_customization_sdk import EnvType
+from amzn_nova_forge import EnvType
 rft_infra.start_environment(
     env_type=EnvType.EVAL,
     vf_env_args={"num_eval_examples": 200}
@@ -458,7 +458,7 @@ Use the `train()` method of `NovaModelCustomizer` with the `rft_multiturn_infra`
 **Example:**
 
 ```python
-from amzn_nova_customization_sdk import (
+from amzn_nova_forge import (
     NovaModelCustomizer,
     Model,
     TrainingMethod,
@@ -503,7 +503,7 @@ Use the `start_environment()` method with `env_type=EnvType.EVAL` to start the e
 **Example:**
 
 ```python
-from amzn_nova_customization_sdk import EnvType
+from amzn_nova_forge import EnvType
 
 # Stop training environment first (recommended if using same stack)
 rft_infra.kill_task(env_type=EnvType.TRAIN)
@@ -542,7 +542,7 @@ Use the `evaluate()` method of `NovaModelCustomizer` with the `rft_multiturn_inf
 **Example:**
 
 ```python
-from amzn_nova_customization_sdk import EvaluationTask
+from amzn_nova_forge import EvaluationTask
 
 eval_result = customizer.evaluate(
     job_name="rft-eval",
@@ -614,7 +614,7 @@ Loads infrastructure state from a file and reconnects to running processes.
 
 ```python
 # After notebook restart or session interruption
-from amzn_nova_customization_sdk import RFTMultiturnInfrastructure
+from amzn_nova_forge import RFTMultiturnInfrastructure
 
 # Load saved state
 rft_infra = RFTMultiturnInfrastructure.load(
@@ -658,7 +658,7 @@ Retrieves logs from training, evaluation, or SAM deployment environments.
 **Examples:**
 
 ```python
-from amzn_nova_customization_sdk import EnvType
+from amzn_nova_forge import EnvType
 
 # Get last 100 lines from training environment
 logs = rft_infra.get_logs(env_type=EnvType.TRAIN, limit=100)
@@ -865,7 +865,7 @@ print(f"Uploaded to: {s3_uri}")
 ### Create Custom Environment
 
 ```python
-from amzn_nova_customization_sdk import CustomEnvironment
+from amzn_nova_forge import CustomEnvironment
 
 # Create single-turn environment
 custom_env = CustomEnvironment(
@@ -919,7 +919,7 @@ A Wordle game environment for word-guessing tasks.
 
 **Example**:
 ```python
-from amzn_nova_customization_sdk import VFEnvId, EnvType
+from amzn_nova_forge import VFEnvId, EnvType
 
 rft_infra = RFTMultiturnInfrastructure(
     stack_name="my-rft-stack",
@@ -993,7 +993,7 @@ Creates an IAM role with required permissions for RFT multiturn infrastructure.
 **Example:**
 
 ```python
-from amzn_nova_customization_sdk import create_rft_execution_role
+from amzn_nova_forge import create_rft_execution_role
 
 # Create role with default name
 role_arn = create_rft_execution_role(region="us-east-1")
@@ -1038,9 +1038,9 @@ Lists CloudFormation stacks related to RFT multiturn infrastructure.
 **Example:**
 
 ```python
-from amzn_nova_customization_sdk import list_rft_stacks
+from amzn_nova_forge import list_rft_stacks
 
-# List only Nova Customization SDK stacks
+# List only Nova Forge SDK stacks
 nova_stacks = list_rft_stacks(region="us-east-1")
 print(f"Found {len(nova_stacks)} Nova SDK stacks:")
 for stack_name in nova_stacks:
@@ -1074,7 +1074,7 @@ Stops a running training or evaluation task.
 **Example:**
 
 ```python
-from amzn_nova_customization_sdk import EnvType
+from amzn_nova_forge import EnvType
 
 # Stop training task
 rft_infra.kill_task(env_type=EnvType.TRAIN)
@@ -1173,7 +1173,7 @@ rft_infra.cleanup(delete_stack=True)  # cleanup_environment defaults to False
 ### Complete Training Workflow
 
 ```python
-from amzn_nova_customization_sdk import (
+from amzn_nova_forge import (
     RFTMultiturnInfrastructure,
     NovaModelCustomizer,
     Model,
@@ -1244,7 +1244,7 @@ rft_infra.cleanup(delete_stack=True, cleanup_environment=True)
 ### Session Recovery Example
 
 ```python
-from amzn_nova_customization_sdk import RFTMultiturnInfrastructure, EnvType
+from amzn_nova_forge import RFTMultiturnInfrastructure, EnvType
 
 # Save the config
 state_file = rft_infra.dump()
@@ -1283,7 +1283,7 @@ custom_env.package_and_upload()
 **Issue**: Permission denied errors
 ```python
 # Solution: Ensure RFT execution role has required permissions
-from amzn_nova_customization_sdk import create_rft_execution_role
+from amzn_nova_forge import create_rft_execution_role
 role_arn = create_rft_execution_role(region="us-east-1")
 ```
 

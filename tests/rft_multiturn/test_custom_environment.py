@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from amzn_nova_customization_sdk.rft_multiturn.custom_environment import (
+from amzn_nova_forge.rft_multiturn.custom_environment import (
     MULTI_TURN_TEMPLATE,
     PYPROJECT_TEMPLATE,
     README_TEMPLATE,
@@ -295,7 +295,10 @@ class TestCustomEnvironmentClass:
         mock_tar = MagicMock()
         mock_tarfile.return_value.__enter__.return_value = mock_tar
 
-        with patch("sagemaker.Session", return_value=mock_sagemaker_session):
+        with patch(
+            "sagemaker.core.helper.session_helper.Session",
+            return_value=mock_sagemaker_session,
+        ):
             env = CustomEnvironment(env_id="test_env", local_path="/path")
             s3_uri = env.package_and_upload(region="us-east-1")
 

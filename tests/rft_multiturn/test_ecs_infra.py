@@ -4,8 +4,8 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from amzn_nova_customization_sdk.rft_multiturn.base_infra import EnvType, StackOutputs
-from amzn_nova_customization_sdk.rft_multiturn.ecs_infra import ECSRFTInfrastructure
+from amzn_nova_forge.rft_multiturn.base_infra import EnvType, StackOutputs
+from amzn_nova_forge.rft_multiturn.ecs_infra import ECSRFTInfrastructure
 
 
 class TestECSRFTInfrastructure:

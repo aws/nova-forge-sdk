@@ -1,4 +1,4 @@
-# Amazon Nova Customization SDK
+# Amazon Nova Forge SDK
 
 A comprehensive Python SDK for fine-tuning and customizing Amazon Nova models. This SDK provides a unified interface for training, evaluation, deployment, and monitoring of Nova models across both SageMaker Training Jobs and SageMaker HyperPod.
 
@@ -10,13 +10,14 @@ A comprehensive Python SDK for fine-tuning and customizing Amazon Nova models. T
 - [Core Modules Overview](#core-modules-overview)
 - [Additional Features](#additional-features)
 - [Getting Started](#getting-started)
+- [Security Best Practices for SDK Users](#security-best-practices-for-sdk-users)
 
 ## Installation
 
 ```bash
-pip install amzn-nova-customization-sdk
+pip install amzn-nova-forge
 ```
-* The SDK requires [sagemaker 2.254.1](https://pypi.org/project/sagemaker/2.254.1/), which is automatically set by pip.
+* The SDK requires [sagemaker](https://pypi.org/project/sagemaker/), which is automatically set by pip.
 
 
 ## Setup
@@ -114,6 +115,19 @@ The SDK requires certain IAM permissions to perform tasks successfully. You can 
             "Resource": "*"
         },
         {
+            "Sid": "BedrockCustomizationJobs",
+            "Effect": "Allow",
+            "Action": [
+                "bedrock:CreateModelCustomizationJob",
+                "bedrock:GetModelCustomizationJob",
+                "bedrock:StopModelCustomizationJob"
+            ],
+            "Resource": [
+                "arn:aws:bedrock:<region>:<account_id>:model-customization-job/*",
+                "arn:aws:bedrock:<region>:<account_id>:custom-model/*"
+            ]
+        },
+        {
             "Sid": "DeployModelInBedrock",
             "Effect": "Allow",
             "Action": [
@@ -121,7 +135,8 @@ The SDK requires certain IAM permissions to perform tasks successfully. You can 
                 "bedrock:CreateProvisionedModelThroughput",
                 "bedrock:GetCustomModel",
                 "bedrock:GetCustomModelDeployment",
-                "bedrock:GetProvisionedModelThroughput"
+                "bedrock:GetProvisionedModelThroughput",
+                "bedrock:ListCustomModelDeployments"
             ],
             "Resource": "arn:aws:bedrock:<region>:<account_id>:custom-model/*"
         },
@@ -252,10 +267,20 @@ If performing RFT Multiturn training, you also need the following additional per
                 "arn:aws:ecs:<region>:<account_id>:task/*",
                 "arn:aws:ecs:<region>:<account_id>:task-definition/*"
             ]
+        },
+        {
+            "Sid": "RFTMultiturnInfraDiscovery",
+            "Effect": "Allow",
+            "Action": [
+                "cloudformation:ListStacks",
+                "ecs:DescribeClusters"
+            ],
+            "Resource": "*"
         }
     ]
 }
 ```
+> **Note:** `cloudformation:ListStacks` and `ecs:DescribeClusters` are read-only actions that do not support resource-level permissions in IAM, so `Resource` must be `"*"`. They cannot create, modify, or delete any resources.
 
 For SMTJ jobs you can set your execution role via:
 ```
@@ -294,7 +319,7 @@ aws eks associate-access-policy \
 Replace the following placeholders:
 - `<your-cluster-name>`: Your HyperPod cluster's EKS cluster name (e.g., `sagemaker-my-cluster-eks`)
 - `<account_id>`: Your AWS account ID
-- `<your-execution-role-name>`: The name of your execution role (e.g., `NovaCustomizationSdkExecutionRole`)
+- `<your-execution-role-name>`: The name of your execution role (e.g., `NovaForgeSdkExecutionRole`)
 
 
 ### Instances
@@ -314,7 +339,7 @@ For HyperPod-based customization jobs, the SDK uses the [SageMaker HyperPod CLI]
 ```
 git clone -b release_v2 https://github.com/aws/sagemaker-hyperpod-cli.git
 ```
-2. If you are using a Python virtual environment to use the Nova Customization SDK, activate that environment with `source <path to venv>/bin/activate`
+2. If you are using a Python virtual environment to use the Nova Forge SDK, activate that environment with `source <path to venv>/bin/activate`
 
 
 #### For Forge Customers
@@ -366,45 +391,42 @@ pip install -e .
 
 ### Platform Support
 
-| Platform | Description             | Models Supported |
-| -------- | ----------------------- | ---------------- |
-| `SMTJ`   | SageMaker Training Jobs | All models       |
-| `SMHP`   | SageMaker HyperPod      | All models       |
+| Platform  | Description                      | Models Supported |
+| --------- | -------------------------------- | ---------------- |
+| `SMTJ`    | SageMaker Training Jobs          | All models       |
+| `SMHP`    | SageMaker HyperPod               | All models       |
+| `BEDROCK` | Amazon Bedrock (Managed Service) | All models       |
 
 ## Core Modules Overview
 
-The Nova Customization SDK is organized into the following modules:
+The Nova Forge SDK is organized into the following modules:
 
-| Module             | Purpose                                       | Key Components                             |
-| ------------------ | --------------------------------------------- | ------------------------------------------ |
-| **Dataset**        | Data loading, transformation, and preparation | `DatasetLoader`, `DatasetTransformer`      |
-| **Manager**        | Runtime infrastructure management             | `SMTJRuntimeManager`, `SMHPRuntimeManager` |
-| **Model**          | Main SDK entrypoint and orchestration         | `NovaModelCustomizer`                      |
-| **Monitor**        | Job monitoring and logging                    | `CloudWatchLogMonitor`, `MLflowMonitor`   |
-| **RFT Multiturn**  | Reinforcement fine-tuning infrastructure      | `RFTMultiturnInfrastructure`               |
+| Module             | Purpose                                       | Key Components                                                   |
+| ------------------ | --------------------------------------------- | ---------------------------------------------------------------- |
+| **Dataset**        | Data loading, transformation, and preparation | `JSONLDatasetLoader`, `JSONDatasetLoader`, `CSVDatasetLoader`    |
+| **Manager**        | Runtime infrastructure management             | `SMTJRuntimeManager`, `SMHPRuntimeManager`, `BedrockRuntimeManager` |
+| **Model**          | Main SDK entrypoint and orchestration         | `NovaModelCustomizer`                                             |
+| **Monitor**        | Job monitoring and logging                    | `CloudWatchLogMonitor`, `MLflowMonitor`                          |
+| **RFT Multiturn**  | Reinforcement fine-tuning infrastructure      | `RFTMultiturnInfrastructure`                                      |
 
-* For detailed API documentation: See [`docs/spec.md`](docs/spec.md)  
+* For detailed API documentation: See [`docs/spec.md`](docs/spec.md)
 * For usage examples: See [`samples/nova_quickstart.ipynb`](samples/nova_quickstart.ipynb)
 * For RFT Singleturn examples: See [`samples/rft_singleturn_quickstart.ipynb`](samples/rft_singleturn_quickstart.ipynb)
 * For RFT Multiturn documentation: See [`docs/rft_multiturn.md`](docs/rft_multiturn.md)
 * For RFT Multiturn examples: See [`samples/rft_multiturn_quickstart.ipynb`](samples/rft_multiturn_quickstart.ipynb)
 
 ### Dataset Module
-Handles data loading, transformation, and validation for training datasets.
+Handles data loading, transformation, validation, and persistence for training datasets. Supports JSONL, JSON, and CSV formats from local files or S3.
 
-**Main Methods:**
-- `load()` - Load dataset from local or S3 path
-- `transform()` - Transform data to required format for training method
-- `validate()` - Validate dataset format and content
-- `split_data()` - Split dataset into train/validation/test sets
-- `save_data()` - Save processed dataset to local or S3 path
-- `show()` - Display sample rows from dataset
+```python
+loader = JSONLDatasetLoader()
+loader.load("data.jsonl")
+loader.transform(method=TransformMethod.SCHEMA, training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2)
+loader.validate(method=ValidateMethod.SCHEMA, training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2)
+loader.save("output.jsonl")
+```
 
-**Key Classes:**
-- DatasetLoader - Abstract class for dataset loading
-- JSONDatasetLoader - For loading JSON data
-- JSONLDatasetLoader - For loading JSONL data
-- CSVDatasetLoader - For loader CSV data
+For the full data preparation guide including column mappings, splitting, and end-to-end examples, see [docs/data_prep.md](docs/data_prep.md).
 
 ### Manager Module
 Manages runtime infrastructure for executing training and evaluation jobs.
@@ -417,6 +439,7 @@ For the allowed instance types for each model/method combination, see `docs/inst
 **Key Classes:**
 - `SMTJRuntimeManager` - For SageMaker Training Jobs
 - `SMHPRuntimeManager` - For SageMaker HyperPod clusters
+- `BedrockRuntimeManager` - For Amazon Bedrock managed service
 
 ### Model Module
 Provides the main SDK entrypoint for orchestrating model customization workflows.
@@ -475,7 +498,7 @@ Manages infrastructure for reinforcement fine-tuning with multi-turn conversatio
 ---
 ### Iterative Training
 
-The Nova Customization SDK supports iterative fine-tuning of Nova models.
+The Nova Forge SDK supports iterative fine-tuning of Nova models.
 
 This is done by progressively running fine-tuning jobs on the output checkpoint from the previous job:
 
@@ -510,7 +533,7 @@ stage2_result = stage2_customizer.train(job_name="stage2-training")
 
 ### Dry Run
 
-The Nova Customization SDK supports `dry_run` mode for the following functions: `train()`, `evaluate()`, and `batch_inference()`.
+The Nova Forge SDK supports `dry_run` mode for the following functions: `train()`, `evaluate()`, and `batch_inference()`.
 
 When calling any of the above functions, you can set the `dry_run` parameter to `True`.
 The SDK will still generate your recipe and validate your input, but it won't begin a job.
@@ -581,3 +604,131 @@ This comprehensive SDK enables end-to-end customization of Amazon Nova models wi
 To get started customizing Nova models, please see the following files:
 * Notebook with "quick start" examples to start customizing at `samples/nova_quickstart.ipynb`
 * Specification document with detailed information about each module at `docs/spec.md`
+
+---
+## Security Best Practices for SDK Users
+
+### 1. IAM and Access Management
+
+**Execution Roles**
+
+- Use dedicated execution roles for SageMaker training jobs with minimal required permissions
+- Avoid using admin roles - follow the principle of least privilege
+- Regularly audit role permissions and remove unused policies
+
+```python
+# Good: Explicit execution role
+runtime = SMTJRuntimeManager(
+    instance_type="ml.p5.48xlarge",
+    instance_count=2,
+    execution_role="arn:aws:iam::123456789012:role/SageMakerNovaTrainingRole"
+)
+
+# Avoid: Using default role without validation
+```
+
+**Required Permissions**
+
+The SDK requires specific IAM permissions. Review the [IAM](#iam-rolespolicies) section and:
+
+* Grant only the minimum permissions needed for your use case
+* Use condition statements to restrict resource access
+* Regularly review and rotate access keys
+
+### 2. Credential Management
+
+**AWS Credentials**
+
+* Never hardcode credentials in code or configuration files
+* Use IAM roles instead of access keys when possible
+* Rotate credentials regularly
+* Use AWS Secrets Manager for application secrets
+* Enable credential monitoring through AWS Config
+
+**MLflow Integration**
+
+* Secure MLflow tracking URIs with proper authentication
+* Use encrypted connections to MLflow servers
+* Implement access controls on experiment data
+* Regularly audit MLflow access logs
+
+### 3. Data Security and Privacy
+
+**Training Data Protection**
+
+- Encrypt data at rest in S3 using KMS keys
+- Use S3 bucket policies to restrict access
+- Validate data sources before processing
+
+```python
+# Ensure your S3 buckets have proper encryption and access controls
+customizer = NovaModelCustomizer(
+    model=Model.NOVA_LITE_2,
+    method=TrainingMethod.SFT_LORA,
+    infra=runtime,
+    data_s3_path="s3://secure-training-bucket/encrypted-data/",
+    output_s3_path="s3://secure-output-bucket/results/"
+)
+```
+
+### 4. Network Security
+
+**VPC Configuration**
+
+* Deploy in private subnets when possible
+* Use VPC endpoints for AWS service access
+* Implement security groups with minimal required ports
+* Enable VPC Flow Logs for network monitoring
+
+### 5. Secure Communication
+
+- Always use HTTPS endpoints
+- Never disable SSL certificate verification
+- Keep TLS libraries updated
+
+### 6. Input Validation
+
+- Always validate user inputs before passing to SDK
+- Sanitize data that will be stored or processed
+- Check resource quotas before job submission
+- Sanitize job names and resource identifiers
+
+
+```python
+# The SDK includes built-in validation
+loader = JSONLDatasetLoader(question="input", answer="output")
+loader.load("s3://your-bucket/training-data.jsonl")
+# Always validate your data format
+loader.validate(method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2)
+```
+
+### 7. Monitoring & Logging
+
+- Enable CloudTrail for API audit logs
+- Use CloudWatch for operational monitoring
+- Never log sensitive data (tokens, credentials, PII)
+- Monitor job logs through CloudWatch
+- Set up alerts for suspicious activities
+
+**Security Monitoring**
+- Monitor failed authentication attempts
+- Track unusual resource access patterns
+- Log all model deployment activities
+
+### 8. Deployment Security
+
+**Bedrock Deployment**
+
+- Use least privilege policies for Bedrock access
+- Implement endpoint access controls
+- Monitor model inference patterns
+- Enable request/response logging when appropriate
+
+### 9. Validation
+
+The SDK includes built-in validation:
+
+- IAM permission validation before job execution
+- Input sanitization for user-provided parameters
+
+Validation is enabled by default.

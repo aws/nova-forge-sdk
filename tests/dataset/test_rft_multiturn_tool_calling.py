@@ -13,9 +13,9 @@ from pathlib import Path
 
 import pytest
 
-from amzn_nova_customization_sdk.dataset import JSONLDatasetLoader
-from amzn_nova_customization_sdk.model.model_enums import Model, TrainingMethod
-from amzn_nova_customization_sdk.recipe.recipe_config import EvaluationTask
+from amzn_nova_forge.dataset import JSONLDatasetLoader
+from amzn_nova_forge.model.model_enums import Model, TrainingMethod
+from amzn_nova_forge.recipe.recipe_config import EvaluationTask
 
 
 class TestRFTMultiturnToolCalling:
