@@ -1,33 +1,52 @@
 [build-system]
-     requires = [
-       "build",
-       "setuptools",
-       "wheel",
-     ]
-     build-backend = "setuptools.build_meta"
+requires = [
+    "build",
+    "setuptools",
+    "wheel",
+]
+build-backend = "setuptools.build_meta"
 
-     [project]
-     name = "amzn-nova-forge"
-     description = "A Python SDK for customizing Amazon Nova models."
-     dynamic = ["dependencies", "version"]
-     requires-python = ">=3.12"
-     authors = [
-       {name = "Amazon", email="nova-customizersdk@amazon.com"},
-     ]
-     license = "Apache-2.0"
-     readme = "README.md"
+[project]
+name = "amzn-nova-forge"
+description = "A Python SDK for customizing Amazon Nova models."
+dynamic = ["version"]
+requires-python = ">=3.12"
+authors = [
+    {name = "Amazon", email="nova-customizersdk@amazon.com"},
+]
+license = "Apache-2.0"
+readme = "README.md"
+dependencies = [
+    "boto3",
+    "matplotlib",
+    "sagemaker==3.5.0",
+]
 
-     [project.optional-dependencies]
-     dev = [
-       "build",
-       "setuptools",
-       "twine",
-       "wheel",
-     ]
+[project.optional-dependencies]
+dev = [
+    "build",
+    "setuptools",
+    "twine",
+    "wheel",
+]
 
-     [tool.setuptools.package-data]
-     amzn_nova_forge = ["**/*.json", "**/*.yaml"]
+[tool.setuptools.package-data]
+amzn_nova_forge = ["**/*.json", "**/*.yaml"]
 
-     [tool.setuptools.dynamic]
-     version = {attr = "amzn_nova_forge.__version__.VERSION"}
-     dependencies = {file = "requirements.txt"}
+[tool.setuptools.dynamic]
+version = {attr = "amzn_nova_forge.__version__.VERSION"}
+
+[tool.coverage.run]
+source_pkgs = ["amzn_nova_forge"]
+branch = true
+parallel = true
+
+[tool.coverage.paths]
+"amzn_nova_forge" = ["src/amzn_nova_forge", "**/site-packages/amzn_nova_forge"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "no cov",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]
