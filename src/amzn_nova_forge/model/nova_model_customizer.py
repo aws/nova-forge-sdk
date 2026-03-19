@@ -475,7 +475,7 @@ class NovaModelCustomizer:
             "validation_data_s3_path": validation_data_s3_path,
             "input_s3_data_type": "Converse"
             if self.method not in (TrainingMethod.RFT_LORA, TrainingMethod.RFT_FULL)
-            else None,
+            else "S3Prefix",
         }
 
         # Add method parameter only for Bedrock (which needs it to determine customization type)
