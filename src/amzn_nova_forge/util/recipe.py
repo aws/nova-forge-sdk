@@ -793,14 +793,14 @@ def load_recipe_templates(
             _, _, image_uri = download_templates_from_local(
                 recipe_metadata=recipe_metadata
             )
-        
+
         # Override image URI if provided
         if image_uri_override:
             from amzn_nova_forge.validation.validator import Validator
 
             Validator.validate_ecr_image_uri(image_uri_override)
             image_uri = image_uri_override
-        
+
         return recipe_metadata, recipe_template, overrides_template, image_uri
 
     # For non-Bedrock platforms, instance_type is required
