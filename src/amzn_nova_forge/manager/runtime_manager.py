@@ -27,7 +27,11 @@ import yaml
 from botocore.exceptions import ClientError
 from sagemaker.ai_registry.dataset import DataSet
 from sagemaker.core.helper.session_helper import Session, get_execution_role
-from sagemaker.core.shapes import OutputDataConfig, TensorBoardOutputConfig
+from sagemaker.core.shapes import (
+    OutputDataConfig,
+    S3DataSource,
+    TensorBoardOutputConfig,
+)
 from sagemaker.core.training.configs import (
     Compute,
     InputData,
@@ -290,7 +294,12 @@ class SMTJRuntimeManager(RuntimeManager):
             # https://docs.aws.amazon.com/sagemaker/latest/dg/nova-model-evaluation.html#nova-model-evaluation-notebook
             if job_config.data_s3_path:
                 input_data = InputData(
-                    channel_name="train", data_source=job_config.data_s3_path
+                    channel_name="train",
+                    data_source=S3DataSource(
+                        s3_uri=job_config.data_s3_path,
+                        s3_data_type=job_config.input_s3_data_type,
+                        s3_data_distribution_type="FullyReplicated",
+                    ),
                 )
                 trainer_config["input_data_config"] = [input_data]
 
