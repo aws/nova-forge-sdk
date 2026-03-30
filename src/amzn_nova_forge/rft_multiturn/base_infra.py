@@ -33,13 +33,9 @@ from amzn_nova_forge.validation.rft_multiturn_validator import (
 )
 
 from .constants import (
-    ECR_REPO_NAME,
     IAM_PROPAGATION_WAIT_TIME,
-    RFT_EVAL_LOG,
     RFT_EXECUTION_ROLE_NAME,
     RFT_POLICY_NAME,
-    RFT_SAM_LOG,
-    RFT_TRAIN_LOG,
     STACK_NAME_SUFFIX,
     STARTER_KIT_S3,
 )
@@ -88,13 +84,6 @@ class EnvType(Enum):
     TRAIN = "train"
     EVAL = "eval"
     SAM = "sam"
-
-
-LOG_FILES = {
-    EnvType.TRAIN: RFT_TRAIN_LOG,
-    EnvType.EVAL: RFT_EVAL_LOG,
-    EnvType.SAM: RFT_SAM_LOG,
-}
 
 
 class VFEnvId(str, Enum):
@@ -165,14 +154,15 @@ def _build_combined_policy_document(
                 f"arn:aws:logs:{region}:{account_id}:log-group:/aws/lambda/*{STACK_NAME_SUFFIX}*",
                 f"arn:aws:logs:{region}:{account_id}:log-group:/ecs/*{STACK_NAME_SUFFIX}*:*",
             ],
-            "ECR_RESOURCE_PLACEHOLDER": f"arn:aws:ecr:{region}:{account_id}:repository/{ECR_REPO_NAME}",
             "ECS_RESOURCE_PLACEHOLDER": [
                 f"arn:aws:ecs:{region}:{account_id}:cluster/*",
                 f"arn:aws:ecs:{region}:{account_id}:service/*/*",
+                f"arn:aws:ecs:{region}:{account_id}:task/*/*",
                 f"arn:aws:ecs:{region}:{account_id}:task-definition/*{STACK_NAME_SUFFIX}*",
                 f"arn:aws:ecs:{region}:{account_id}:task-definition/*{STACK_NAME_SUFFIX}*:*",
             ],
             "ECS_READONLY_RESOURCE_PLACEHOLDER": "*",
+            "WILDCARD_RESOURCE_PLACEHOLDER": "*",
             "S3_RESOURCE_PLACEHOLDER": [
                 "arn:aws:s3:::aws-sam-cli-managed-*",
                 "arn:aws:s3:::aws-sam-cli-managed-*/*",
@@ -226,7 +216,6 @@ def _build_combined_policy_document(
         "lambda_policy",
         "sqs_policy",
         "logs_policy",
-        "ecr_policy",
         "ecs_policy",
         "ecs_readonly_policy",
         "ec2_vpc_policy",

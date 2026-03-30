@@ -11,4 +11,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-VERSION = "1.3.24"  # pragma: no cover
+from amzn_nova_forge.notifications.notification_manager import (
+    NotificationManager,
+    NotificationManagerInfraError,
+)
+from amzn_nova_forge.notifications.smhp_notification_manager import (
+    SMHPNotificationManager,
+)
+from amzn_nova_forge.notifications.smtj_notification_manager import (
+    SMTJNotificationManager,
+)
+
+__all__ = [
+    "NotificationManager",
+    "NotificationManagerInfraError",
+    "SMTJNotificationManager",
+    "SMHPNotificationManager",
+]

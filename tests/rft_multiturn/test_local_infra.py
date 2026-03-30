@@ -172,13 +172,15 @@ class TestLocalRFTInfrastructure:
 
     @patch("boto3.client")
     @patch("subprocess.run")
+    @patch("os.makedirs")
     @patch("builtins.open", new_callable=mock_open)
     def test_deploy_sam_stack_success(
-        self, mock_file, mock_subprocess, mock_boto_client
+        self, mock_file, mock_makedirs, mock_subprocess, mock_boto_client
     ):
         """Test successful SAM stack deployment."""
         mock_boto_client.return_value = MagicMock()
         mock_subprocess.return_value = Mock(returncode=0, stderr="", stdout="Success")
+        mock_makedirs.return_value = None
 
         infra = LocalRFTInfrastructure(
             region="us-east-1",
@@ -197,15 +199,17 @@ class TestLocalRFTInfrastructure:
 
     @patch("boto3.client")
     @patch("subprocess.run")
+    @patch("os.makedirs")
     @patch("builtins.open", new_callable=mock_open)
     def test_deploy_sam_stack_failure(
-        self, mock_file, mock_subprocess, mock_boto_client
+        self, mock_file, mock_makedirs, mock_subprocess, mock_boto_client
     ):
         """Test SAM stack deployment failure."""
         mock_boto_client.return_value = MagicMock()
         mock_subprocess.return_value = Mock(
             returncode=1, stderr="Deployment failed", stdout=""
         )
+        mock_makedirs.return_value = None
 
         infra = LocalRFTInfrastructure(
             region="us-east-1",

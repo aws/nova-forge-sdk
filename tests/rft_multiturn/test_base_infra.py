@@ -6,7 +6,6 @@ import pytest
 
 from amzn_nova_forge.rft_multiturn import EnvType, StackOutputs, VFEnvId
 from amzn_nova_forge.rft_multiturn.base_infra import (
-    ECR_REPO_NAME,
     RFT_EXECUTION_ROLE_NAME,
     RFT_POLICY_NAME,
     STACK_NAME_SUFFIX,
@@ -100,11 +99,6 @@ class TestConstants:
         """Test that RFT_POLICY_NAME constant exists."""
         assert RFT_POLICY_NAME is not None
         assert isinstance(RFT_POLICY_NAME, str)
-
-    def test_ecr_repo_name_exists(self):
-        """Test that ECR_REPO_NAME constant exists."""
-        assert ECR_REPO_NAME is not None
-        assert isinstance(ECR_REPO_NAME, str)
 
     def test_starter_kit_s3_exists(self):
         """Test that STARTER_KIT_S3 constant exists."""

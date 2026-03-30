@@ -30,7 +30,7 @@ from amzn_nova_forge.validation.rft_multiturn_validator import (
     validate_url,
 )
 
-BASE_PYTHON_COMMAND = "python3.12"
+from .constants import BASE_PYTHON_COMMAND
 
 
 class CommonInfraCommands:
@@ -238,12 +238,12 @@ class CommonInfraCommands:
 
             commands.append(
                 f"cd {parent_dir_q} && [ ! -d {check_dir_q} ] && "
-                f"git clone {starter_kit_s3_q} {target_base_q}-tmp {log_append} && "
+                f"git clone -b master {starter_kit_s3_q} {target_base_q}-tmp {log_append} && "
                 f"mv {target_base_q}-tmp/* {target_base_q}-tmp/.git* {target_dir_q}/ 2>/dev/null || true && "
                 f"rm -rf {target_base_q}-tmp {log_append} || "
                 f"echo 'Starter kit already exists' {log_append}"
             )
-            # Only checkout master if it's a git repo
+            # Checkout master in case clone didn't check it out (e.g. detached HEAD)
             commands.append(
                 f"cd {target_dir_q} && "
                 f"(git rev-parse --verify master >/dev/null 2>&1 && git checkout master {log_append} || "
@@ -390,8 +390,11 @@ class CommonInfraCommands:
             f"cd {parent_path_q}",
             # Create base_path if it doesn't exist
             f"mkdir -p {base_path_q}",
-            # Only create venv if it doesn't exist
-            f"[ ! -d {base_path_q}/{python_venv_name_q} ] && {python_cmd_q} -m venv {base_path_q}/{python_venv_name_q} || echo '{python_venv_name_q} already exists, skipping creation'",
+            # Create venv if it doesn't exist or is broken (missing activate script).
+            f"if [ ! -f {base_path_q}/{python_venv_name_q}/bin/activate ]; then "
+            f"rm -rf {base_path_q}/{python_venv_name_q} && "
+            f"{python_cmd_q} -m venv {base_path_q}/{python_venv_name_q}; "
+            f"else echo '{python_venv_name_q} already exists'; fi",
         ]
 
         # Install dependencies based on starter kit type

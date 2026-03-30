@@ -265,6 +265,40 @@ class TestRFTMultiturnInfrastructure:
                 )
                 assert rft.region == "us-west-2"
 
+    def test_check_stack_exists_raises_for_delete_failed(self):
+        """Stack in DELETE_FAILED raises RuntimeError with stack name and delete hint."""
+        mock_cfn = MagicMock()
+        ClientError = type("ClientError", (Exception,), {})
+        mock_cfn.exceptions.ClientError = ClientError
+
+        # During __init__, _check_stack_exists is called — return healthy stack
+        mock_cfn.describe_stacks.return_value = {
+            "Stacks": [{"StackStatus": "CREATE_COMPLETE"}]
+        }
+        with patch("boto3.client", return_value=mock_cfn):
+            with patch(
+                "amzn_nova_forge.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
+            ):
+                infra = RFTMultiturnInfrastructure(
+                    stack_name="test-stack",
+                    vf_env_id=VFEnvId.WORDLE,
+                    python_venv_name="venv",
+                )
+        infra.region = "us-east-1"
+
+        # Now simulate the stack transitioning to DELETE_FAILED
+        mock_cfn.describe_stacks.return_value = {
+            "Stacks": [{"StackStatus": "DELETE_FAILED"}]
+        }
+        with patch("boto3.client", return_value=mock_cfn):
+            with pytest.raises(RuntimeError) as exc_info:
+                infra._check_stack_exists("my-stuck-stack")
+
+        msg = str(exc_info.value)
+        assert "DELETE_FAILED" in msg
+        assert "my-stuck-stack" in msg
+        assert "delete-stack" in msg
+
 
 class TestListRFTStacks:
     """Test list_rft_stacks function."""

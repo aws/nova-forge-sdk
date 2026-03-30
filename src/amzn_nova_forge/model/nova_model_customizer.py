@@ -109,8 +109,7 @@ from amzn_nova_forge.validation.endpoint_validator import (
 )
 from amzn_nova_forge.validation.validator import (
     Validator,
-    get_rft_verification_samples,
-    should_verify_rft_lambda,
+    validate_rft_lambda_name,
     verify_rft_lambda,
 )
 
@@ -142,8 +141,8 @@ class NovaModelCustomizer:
             data_s3_path: S3 path to the training dataset
             output_s3_path: Optional S3 path for output artifacts. If not provided, will be auto-generated
             model_path: Optional S3 path for model path
-            validation_config: Optional dict to control validation. Keys: 'iam' (bool), 'infra' (bool).
-                             Defaults to {'iam': True, 'infra': True}
+            validation_config: Optional dict to control validation. Keys: 'iam' (bool), 'infra' (bool), 'recipe' (bool).
+                             Defaults to {'iam': True, 'infra': True, 'recipe': True}
             generated_recipe_dir: Optional path to save generated recipe YAMLs and persist job results.
                                 If None, no result persistence occurs.
             mlflow_monitor: Optional MLflowMonitor instance for experiment tracking
@@ -385,7 +384,8 @@ class NovaModelCustomizer:
                     'global_batch_size': 128,
                     'max_length': 16384
                 }
-            rft_lambda_arn: Optional rewards Lambda ARN, only required for RFT training methods
+            rft_lambda_arn: Optional Lambda ARN for RFT reward function (only used for RFT training methods).
+                If passed, takes priority over rft_lambda_arn set on the RuntimeManager.
             rft_multiturn_infra: Optional RFT multiturn infrastructure, required for RFT_MULTITURN methods
             validation_data_s3_path: Optional validation S3 path, only applicable for CPT (but is still optional for CPT)
             dry_run: Actually starts a job if False, otherwise just performs validation. Default is False.
@@ -397,6 +397,8 @@ class NovaModelCustomizer:
         Raises:
             Exception: If job execution fails
         """
+        # Prefer the value passed directly, fall back to manager attribute
+        rft_lambda_arn = rft_lambda_arn or getattr(self.infra, "rft_lambda_arn", None)
         existing_result = load_existing_result(
             self,
             job_name,
@@ -410,16 +412,12 @@ class NovaModelCustomizer:
         if existing_result:
             return cast(TrainingResult, existing_result)
 
-        # Verify RFT lambda if verification is enabled (single-turn only)
-        if should_verify_rft_lambda(self.validation_config) and rft_lambda_arn:
-            sample_count = get_rft_verification_samples(self.validation_config)
-            verify_rft_lambda(
-                lambda_arn=rft_lambda_arn,
-                sample_count=sample_count,
-                data_s3_path=self.data_s3_path,
-                region=self.region,
-                platform=self.platform,
-            )
+        # Resolve lambda ARN — prefer deprecated train() arg, then manager's resolved ARN
+        rft_lambda_arn = rft_lambda_arn or getattr(self.infra, "rft_lambda_arn", None)
+
+        if rft_lambda_arn:
+            validate_rft_lambda_name(rft_lambda_arn.split(":")[-1], self.platform)
+            logger.info(f"Using reward lambda: {rft_lambda_arn}")
 
         # Create RecipeBuilder and let it handle all data mixing logic
         recipe_builder = RecipeBuilder(
@@ -639,6 +637,11 @@ class NovaModelCustomizer:
         if existing_result:
             return cast(EvaluationResult, existing_result)
 
+        if rl_env and rl_env.get("reward_lambda_arn"):
+            validate_rft_lambda_name(
+                rl_env["reward_lambda_arn"].split(":")[-1], self.platform
+            )
+
         # Resolve model checkpoint path
         resolved_model_path = resolve_model_checkpoint_path(
             model_path=model_path,
@@ -682,12 +685,37 @@ class NovaModelCustomizer:
             )
             customizer_data_s3_path = None
 
+        # Auto-populate processor/rl_env lambda_arn from runtime manager if not explicitly provided
+        resolved_processor = processor
+        resolved_rl_env = rl_env
+        infra_lambda_arn = getattr(self.infra, "rft_lambda_arn", None)
+
+        # If processor.lambda_arn is passed for RFT_EVAL, treat it as rl_env.reward_lambda_arn
+        if (
+            eval_task == EvaluationTask.RFT_EVAL
+            and resolved_processor
+            and resolved_processor.get("lambda_arn")
+        ):
+            if resolved_rl_env is None:
+                resolved_rl_env = {
+                    "reward_lambda_arn": resolved_processor["lambda_arn"]
+                }
+                logger.info(
+                    f"Using reward_lambda_arn: {resolved_processor['lambda_arn']}"
+                )
+            resolved_processor = None
+
+        if infra_lambda_arn:
+            if resolved_rl_env is None and eval_task == EvaluationTask.RFT_EVAL:
+                resolved_rl_env = {"reward_lambda_arn": infra_lambda_arn}
+                logger.info(f"Using reward_lambda_arn: {infra_lambda_arn}")
+
         recipe_builder = RecipeBuilder(
             region=self.region,
             job_name=job_name,
             platform=self.platform,
             model=self.model,
-            method=self.method,
+            method=TrainingMethod.EVALUATION,
             instance_type=self.infra.instance_type,
             instance_count=self.infra.instance_count,
             infra=self.infra,
@@ -696,8 +724,8 @@ class NovaModelCustomizer:
             model_path=resolved_model_path,
             eval_task=eval_task,
             subtask=subtask,
-            processor_config=processor,
-            rl_env_config=rl_env,
+            processor_config=resolved_processor,
+            rl_env_config=resolved_rl_env,
             rft_multiturn_infra=rft_multiturn_infra,
             mlflow_monitor=self.mlflow_monitor,
             image_uri_override=self._image_uri,
