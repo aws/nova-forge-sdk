@@ -51,8 +51,6 @@ from amzn_nova_forge.util.sagemaker import (
     DEFAULT_MAX_CONCURRENCY,
 )
 from amzn_nova_forge.validation.validator import (
-    get_rft_verification_samples,
-    should_verify_rft_lambda,
     verify_rft_lambda,
 )
 
@@ -764,6 +762,7 @@ class TestTrain(TestNovaModelCustomizer):
         mock_smhp_infra = create_autospec(SMHPRuntimeManager)
         mock_smhp_infra.cluster_name = "test-cluster"
         mock_smhp_infra.namespace = "test-namespace"
+        mock_smhp_infra.rft_lambda_arn = None
 
         expected_job_id = "smhp-job-123"
         mock_smhp_infra.execute.return_value = expected_job_id
@@ -1108,6 +1107,39 @@ class TestEvaluate(TestNovaModelCustomizer):
         job_config = call_args.kwargs["job_config"]
         self.assertIn("test-smhp-eval-job", job_config.job_name)
         self.assertEqual(job_config.input_s3_data_type, "S3Prefix")
+
+    @patch("boto3.client")
+    @patch(
+        "amzn_nova_forge.recipe.recipe_builder.RecipeBuilder.__init__",
+        return_value=None,
+    )
+    @patch("amzn_nova_forge.recipe.recipe_builder.RecipeBuilder.build_and_validate")
+    @patch("uuid.uuid4")
+    def test_evaluate_passes_evaluation_method_to_recipe_builder(
+        self, mock_uuid, mock_build_and_validate, mock_recipe_init, mock_boto_client
+    ):
+        """Test that evaluate() passes TrainingMethod.EVALUATION to RecipeBuilder, not the customizer's training method."""
+        mock_uuid.return_value = MagicMock()
+        mock_uuid.return_value.__str__ = lambda x: "test-eval-uuid"
+        mock_build_and_validate.return_value = (
+            "mock_eval_recipe.yaml",
+            self.output_s3_path,
+            self.data_s3_path,
+            "image",
+        )
+        mock_boto_client.return_value = MagicMock()
+
+        expected_job_id = "eval-job-method-check"
+        self.mock_runtime_manager.execute.return_value = expected_job_id
+
+        self.customizer.evaluate(
+            job_name="test-eval-method",
+            eval_task=EvaluationTask.MMLU,
+            model_path="s3://test/model",
+        )
+
+        init_call_kwargs = mock_recipe_init.call_args[1]
+        self.assertEqual(init_call_kwargs["method"], TrainingMethod.EVALUATION)
 
 
 class TestDeploy(TestNovaModelCustomizer):
@@ -2154,89 +2186,206 @@ class TestLambdaVerification(unittest.TestCase):
                 output_s3_path=self.output_s3_path,
             )
 
-    def test_should_verify_rft_lambda_no_validation_config(self):
-        """Test should_verify_rft_lambda returns False when validation_config is None"""
-        result = should_verify_rft_lambda(None)
-        self.assertFalse(result)
+    # ------------------------------------------------------------------
+    # train() rft_lambda_arn resolution
+    # ------------------------------------------------------------------
 
-    def test_should_verify_rft_lambda_empty_validation_config(self):
-        """Test should_verify_rft_lambda returns False when validation_config is empty"""
-        result = should_verify_rft_lambda({})
-        self.assertFalse(result)
+    @patch("amzn_nova_forge.model.nova_model_customizer.SMTJTrainingResult")
+    @patch("amzn_nova_forge.model.nova_model_customizer.get_model_artifacts")
+    @patch("amzn_nova_forge.model.nova_model_customizer.RecipeBuilder")
+    @patch("amzn_nova_forge.model.nova_model_customizer.Validator")
+    def test_train_reads_rft_lambda_arn_from_infra(
+        self, mock_validator, mock_rb, mock_gma, mock_training_result
+    ):
+        """train() uses infra.rft_lambda_arn when no arg is passed."""
+        arn = "arn:aws:lambda:us-east-1:123456789012:function:my-SageMaker-fn"
+        self.mock_runtime_manager.rft_lambda_arn = arn
+        self.mock_runtime_manager.rft_lambda = arn
 
-    def test_should_verify_rft_lambda_boolean_true(self):
-        """Test should_verify_rft_lambda returns True when rft_lambda is True"""
-        result = should_verify_rft_lambda({"rft_lambda": True})
-        self.assertTrue(result)
-
-    def test_should_verify_rft_lambda_boolean_false(self):
-        """Test should_verify_rft_lambda returns False when rft_lambda is False"""
-        result = should_verify_rft_lambda({"rft_lambda": False})
-        self.assertFalse(result)
-
-    def test_should_verify_rft_lambda_dict_enabled_true(self):
-        """Test should_verify_rft_lambda returns True when dict config has enabled=True"""
-        result = should_verify_rft_lambda(
-            {"rft_lambda": {"enabled": True, "samples": 5}}
+        mock_rb_instance = MagicMock()
+        mock_rb.return_value = mock_rb_instance
+        mock_rb_instance.build_and_validate.return_value = (
+            "recipe.yaml",
+            self.output_s3_path,
+            self.data_s3_path,
+            None,
         )
-        self.assertTrue(result)
+        self.mock_runtime_manager.execute.return_value = "job-123"
 
-    def test_should_verify_rft_lambda_dict_enabled_false(self):
-        """Test should_verify_rft_lambda returns False when dict config has enabled=False"""
-        result = should_verify_rft_lambda(
-            {"rft_lambda": {"enabled": False, "samples": 5}}
+        with patch(
+            "amzn_nova_forge.model.nova_model_customizer.validate_rft_lambda_name"
+        ) as mock_validate_name:
+            self.customizer.method = TrainingMethod.RFT_LORA
+            self.customizer.train(job_name="test-rft-job")
+            mock_validate_name.assert_called_once_with(
+                arn.split(":")[-1], self.customizer.platform
+            )
+
+    @patch("amzn_nova_forge.model.nova_model_customizer.SMTJTrainingResult")
+    @patch("amzn_nova_forge.model.nova_model_customizer.get_model_artifacts")
+    @patch("amzn_nova_forge.model.nova_model_customizer.RecipeBuilder")
+    @patch("amzn_nova_forge.model.nova_model_customizer.Validator")
+    def test_train_prefers_direct_arg_over_infra_rft_lambda_arn(
+        self, mock_validator, mock_rb, mock_gma, mock_training_result
+    ):
+        """train() prefers the directly-passed rft_lambda_arn over infra.rft_lambda_arn."""
+        infra_arn = "arn:aws:lambda:us-east-1:123456789012:function:infra-fn"
+        direct_arn = "arn:aws:lambda:us-east-1:123456789012:function:direct-fn"
+        self.mock_runtime_manager.rft_lambda_arn = infra_arn
+        self.mock_runtime_manager.rft_lambda = infra_arn
+
+        mock_rb_instance = MagicMock()
+        mock_rb.return_value = mock_rb_instance
+        mock_rb_instance.build_and_validate.return_value = (
+            "recipe.yaml",
+            self.output_s3_path,
+            self.data_s3_path,
+            None,
         )
-        self.assertFalse(result)
+        self.mock_runtime_manager.execute.return_value = "job-123"
 
-    def test_should_verify_rft_lambda_dict_no_enabled_key(self):
-        """Test should_verify_rft_lambda returns False when dict config has no enabled key"""
-        result = should_verify_rft_lambda({"rft_lambda": {"samples": 5}})
-        self.assertFalse(result)
+        with patch(
+            "amzn_nova_forge.model.nova_model_customizer.validate_rft_lambda_name"
+        ) as mock_validate_name:
+            self.customizer.method = TrainingMethod.RFT_LORA
+            self.customizer.train(job_name="test-rft-job", rft_lambda_arn=direct_arn)
+            # Should validate the direct ARN, not the infra one
+            mock_validate_name.assert_called_once_with(
+                direct_arn.split(":")[-1], self.customizer.platform
+            )
 
-    def test_should_verify_rft_lambda_with_other_validation_keys(self):
-        """Test should_verify_rft_lambda works correctly with other validation keys present"""
-        result = should_verify_rft_lambda(
-            {
-                "iam": True,
-                "infra": True,
-                "rft_lambda": True,
-            }
+    @patch("amzn_nova_forge.model.nova_model_customizer.SMTJTrainingResult")
+    @patch("amzn_nova_forge.model.nova_model_customizer.get_model_artifacts")
+    @patch("amzn_nova_forge.model.nova_model_customizer.RecipeBuilder")
+    @patch("amzn_nova_forge.model.nova_model_customizer.Validator")
+    def test_train_uses_rft_lambda_arn_when_infra_has_none(
+        self, mock_validator, mock_rb, mock_gma, mock_training_result
+    ):
+        """train() uses the directly-passed rft_lambda_arn when infra has none."""
+        arn = "arn:aws:lambda:us-east-1:123456789012:function:my-SageMaker-fn"
+        self.mock_runtime_manager.rft_lambda_arn = None
+        self.mock_runtime_manager.rft_lambda = None
+
+        mock_rb_instance = MagicMock()
+        mock_rb.return_value = mock_rb_instance
+        mock_rb_instance.build_and_validate.return_value = (
+            "recipe.yaml",
+            self.output_s3_path,
+            self.data_s3_path,
+            None,
         )
-        self.assertTrue(result)
+        self.mock_runtime_manager.execute.return_value = "job-123"
 
-    def test_get_rft_verification_samples_no_validation_config(self):
-        """Test get_rft_verification_samples returns default when validation_config is None"""
-        result = get_rft_verification_samples(None)
-        self.assertEqual(result, 10)
+        with patch(
+            "amzn_nova_forge.model.nova_model_customizer.validate_rft_lambda_name"
+        ) as mock_validate_name:
+            self.customizer.method = TrainingMethod.RFT_LORA
+            self.customizer.train(job_name="test-rft-job", rft_lambda_arn=arn)
+            mock_validate_name.assert_called_once_with(
+                arn.split(":")[-1], self.customizer.platform
+            )
 
-    def test_get_rft_verification_samples_empty_validation_config(self):
-        """Test get_rft_verification_samples returns default when validation_config is empty"""
-        result = get_rft_verification_samples({})
-        self.assertEqual(result, 10)
+    # ------------------------------------------------------------------
+    # evaluate() rl_env / processor lambda_arn resolution
+    # ------------------------------------------------------------------
 
-    def test_get_rft_verification_samples_boolean_config(self):
-        """Test get_rft_verification_samples returns default when rft_lambda is boolean"""
-        result = get_rft_verification_samples({"rft_lambda": True})
-        self.assertEqual(result, 10)
+    @patch("amzn_nova_forge.model.nova_model_customizer.SMTJEvaluationResult")
+    @patch("amzn_nova_forge.model.nova_model_customizer.RecipeBuilder")
+    @patch("amzn_nova_forge.model.nova_model_customizer.Validator")
+    def test_evaluate_auto_populates_rl_env_from_infra_lambda_arn(
+        self, mock_validator, mock_rb, mock_eval_result
+    ):
+        """evaluate() sets rl_env.reward_lambda_arn from infra.rft_lambda_arn when not provided."""
+        arn = "arn:aws:lambda:us-east-1:123456789012:function:my-SageMaker-fn"
+        self.mock_runtime_manager.rft_lambda_arn = arn
 
-    def test_get_rft_verification_samples_dict_with_samples(self):
-        """Test get_rft_verification_samples returns specified samples from dict config"""
-        result = get_rft_verification_samples(
-            {"rft_lambda": {"enabled": True, "samples": 5}}
+        mock_rb_instance = MagicMock()
+        mock_rb.return_value = mock_rb_instance
+        mock_rb_instance.build_and_validate.return_value = (
+            "recipe.yaml",
+            self.output_s3_path,
+            self.data_s3_path,
+            None,
         )
-        self.assertEqual(result, 5)
+        self.mock_runtime_manager.execute.return_value = "eval-job-123"
 
-    def test_get_rft_verification_samples_dict_without_samples(self):
-        """Test get_rft_verification_samples returns default when dict has no samples key"""
-        result = get_rft_verification_samples({"rft_lambda": {"enabled": True}})
-        self.assertEqual(result, 10)
-
-    def test_get_rft_verification_samples_dict_with_custom_samples(self):
-        """Test get_rft_verification_samples returns custom sample count"""
-        result = get_rft_verification_samples(
-            {"rft_lambda": {"enabled": True, "samples": 20}}
+        self.customizer.method = TrainingMethod.EVALUATION
+        self.customizer.evaluate(
+            job_name="test-eval-job",
+            eval_task=EvaluationTask.RFT_EVAL,
+            data_s3_path=self.data_s3_path,
         )
-        self.assertEqual(result, 20)
+
+        call_kwargs = mock_rb.call_args.kwargs
+        self.assertEqual(call_kwargs["rl_env_config"], {"reward_lambda_arn": arn})
+        self.assertIsNone(call_kwargs["processor_config"])
+
+    @patch("amzn_nova_forge.model.nova_model_customizer.SMTJEvaluationResult")
+    @patch("amzn_nova_forge.model.nova_model_customizer.RecipeBuilder")
+    @patch("amzn_nova_forge.model.nova_model_customizer.Validator")
+    def test_evaluate_migrates_processor_lambda_arn_to_rl_env(
+        self, mock_validator, mock_rb, mock_eval_result
+    ):
+        """evaluate() migrates processor.lambda_arn to rl_env.reward_lambda_arn for RFT_EVAL."""
+        arn = "arn:aws:lambda:us-east-1:123456789012:function:my-SageMaker-fn"
+        self.mock_runtime_manager.rft_lambda_arn = None
+
+        mock_rb_instance = MagicMock()
+        mock_rb.return_value = mock_rb_instance
+        mock_rb_instance.build_and_validate.return_value = (
+            "recipe.yaml",
+            self.output_s3_path,
+            self.data_s3_path,
+            None,
+        )
+        self.mock_runtime_manager.execute.return_value = "eval-job-123"
+
+        self.customizer.method = TrainingMethod.EVALUATION
+        self.customizer.evaluate(
+            job_name="test-eval-job",
+            eval_task=EvaluationTask.RFT_EVAL,
+            data_s3_path=self.data_s3_path,
+            processor={"lambda_arn": arn},
+        )
+
+        call_kwargs = mock_rb.call_args.kwargs
+        self.assertEqual(call_kwargs["rl_env_config"], {"reward_lambda_arn": arn})
+        self.assertIsNone(call_kwargs["processor_config"])
+
+    @patch("amzn_nova_forge.model.nova_model_customizer.SMTJEvaluationResult")
+    @patch("amzn_nova_forge.model.nova_model_customizer.RecipeBuilder")
+    @patch("amzn_nova_forge.model.nova_model_customizer.Validator")
+    def test_evaluate_does_not_overwrite_existing_rl_env(
+        self, mock_validator, mock_rb, mock_eval_result
+    ):
+        """evaluate() does not overwrite rl_env when it is already provided."""
+        infra_arn = "arn:aws:lambda:us-east-1:123456789012:function:infra-fn"
+        explicit_arn = "arn:aws:lambda:us-east-1:123456789012:function:explicit-fn"
+        self.mock_runtime_manager.rft_lambda_arn = infra_arn
+
+        mock_rb_instance = MagicMock()
+        mock_rb.return_value = mock_rb_instance
+        mock_rb_instance.build_and_validate.return_value = (
+            "recipe.yaml",
+            self.output_s3_path,
+            self.data_s3_path,
+            None,
+        )
+        self.mock_runtime_manager.execute.return_value = "eval-job-123"
+
+        self.customizer.method = TrainingMethod.EVALUATION
+        self.customizer.evaluate(
+            job_name="test-eval-job",
+            eval_task=EvaluationTask.RFT_EVAL,
+            data_s3_path=self.data_s3_path,
+            rl_env={"reward_lambda_arn": explicit_arn},
+        )
+
+        call_kwargs = mock_rb.call_args.kwargs
+        # Explicit rl_env must not be overwritten by infra_arn
+        self.assertEqual(
+            call_kwargs["rl_env_config"], {"reward_lambda_arn": explicit_arn}
+        )
 
     def test_verify_rft_lambda_no_data_s3_path(self):
         """Test verify_rft_lambda raises error when data_s3_path is not set"""

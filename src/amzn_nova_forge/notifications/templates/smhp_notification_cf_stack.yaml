@@ -1,0 +1,741 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Nova Forge SDK: SMHP (SageMaker HyperPod) Notifications Infrastructure'
+
+# ============================================================================
+# DEPLOYMENT MODES
+# ============================================================================
+# This template supports both SDK-driven and manual deployment:
+#
+# SDK Deployment (Recommended):
+#   - Use enable_job_notifications() method on your job result
+#   - SDK automatically populates all parameters
+#   - No manual configuration needed
+#
+# Manual Deployment:
+#   - Deploy via AWS Console or CLI
+#   - Uncomment the Default values below and replace placeholders
+#   - Follow post-deployment steps to complete setup
+#
+# Required Information for Manual Deployment:
+#   1. HyperPod cluster name
+#   2. EKS cluster ARN
+#   3. VPC ID where your HyperPod cluster runs
+#   4. Subnet IDs (private subnets with NAT gateway)
+#   5. Security group ID (must allow outbound HTTPS to EKS API)
+#   6. Route table IDs (associated with your Lambda subnets)
+#   7. kubectl Lambda layer ARN (see docs/job_notifications.md)
+#
+# Post-Deployment Steps:
+#   1. Create EKS access entry for Lambda role (see docs/job_notifications.md)
+#   2. Subscribe email addresses to SNS topic
+#   3. Use SDK to add job configurations to DynamoDB
+# ============================================================================
+
+Parameters:
+  ClusterName:
+    Type: String
+    # Default: '<YOUR-HYPERPOD-CLUSTER-NAME>'  # Uncomment for manual deployment
+    Description: 'HyperPod cluster name (used for stack naming)'
+  
+  EksClusterArn:
+    Type: String
+    # Default: 'arn:aws:eks:<REGION>:<ACCOUNT-ID>:cluster/<EKS-CLUSTER-NAME>'  # Uncomment for manual deployment
+    Description: 'EKS cluster ARN for the HyperPod cluster.'
+  
+  VpcId:
+    Type: String
+    # Default: 'vpc-<PLACEHOLDER>'  # Uncomment for manual deployment
+    Description: 'VPC ID where the HyperPod cluster is running (e.g., vpc-0123456789abcdef0)'
+  
+  SubnetIds:
+    Type: CommaDelimitedList
+    # Default: 'subnet-<PLACEHOLDER1>,subnet-<PLACEHOLDER2>'  # Uncomment for manual deployment
+    Description: 'Comma-separated list of private subnet IDs for Lambda function. Must have NAT gateway for internet access.'
+  
+  SecurityGroupId:
+    Type: String
+    # Default: 'sg-<PLACEHOLDER>'  # Uncomment for manual deployment
+    Description: 'Security group ID for Lambda function. Must allow outbound HTTPS (443) to EKS API server.'
+  
+  RouteTableIds:
+    Type: CommaDelimitedList
+    # Default: 'rtb-<PLACEHOLDER1>,rtb-<PLACEHOLDER2>'  # Uncomment for manual deployment
+    Description: 'Comma-separated list of route table IDs for Gateway VPC endpoints.'
+  
+  CreateDynamoDBEndpoint:
+    Type: String
+    Default: 'True'
+    AllowedValues: ['True', 'False']
+    Description: 'Whether to create a DynamoDB Gateway VPC endpoint. Set to False if one already exists.'
+  
+  CreateS3Endpoint:
+    Type: String
+    Default: 'True'
+    AllowedValues: ['True', 'False']
+    Description: 'Whether to create an S3 Gateway VPC endpoint. Set to False if one already exists.'
+  
+  KubectlLayerArn:
+    Type: String
+    # Default: 'arn:aws:lambda:<REGION>:<ACCOUNT-ID>:layer:kubectl:<VERSION>'  # Uncomment for manual deployment
+    Description: 'ARN of the lambda-kubectl layer. Deploy from: https://serverlessrepo.aws.amazon.com/applications/arn:aws:serverlessrepo:us-east-1:903779448426:applications~lambda-layer-kubectl'
+  
+  PollingIntervalMinutes:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 60
+    Description: 'How often (in minutes) to check job status. Default: 5 minutes. Increase for less frequent checks (lower Lambda costs).'
+  
+  KmsKeyId:
+    Type: String
+    Default: ''
+    Description: 'OPTIONAL: KMS key ID for SNS topic encryption (e.g., 1234abcd-12ab-34cd-56ef-1234567890ab). Provide only the key ID, not the full ARN. Leave empty to use default encryption.'
+
+Conditions:
+  UseKmsEncryption: !Not [!Equals [!Ref KmsKeyId, '']]
+  ShouldCreateDynamoDBEndpoint: !Equals [!Ref CreateDynamoDBEndpoint, 'True']
+  ShouldCreateS3Endpoint: !Equals [!Ref CreateS3Endpoint, 'True']
+
+Resources:
+  # VPC Endpoints for Lambda to access AWS services privately.
+  # Gateway endpoints are only created if they don't already exist.
+  DynamoDBVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateDynamoDBEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.dynamodb'
+      VpcEndpointType: Gateway
+      RouteTableIds: !Ref RouteTableIds
+      Tags:
+        - Key: Name
+          Value: !Sub 'NovaForgeSDK-SMHP-DynamoDB-${ClusterName}'
+        - Key: ManagedBy
+          Value: NovaForgeSDK
+
+  SNSVpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.sns'
+      VpcEndpointType: Interface
+      SubnetIds: !Ref SubnetIds
+      SecurityGroupIds:
+        - !Ref SecurityGroupId
+      PrivateDnsEnabled: false
+      Tags:
+        - Key: Name
+          Value: !Sub 'NovaForgeSDK-SMHP-SNS-${ClusterName}'
+        - Key: ManagedBy
+          Value: NovaForgeSDK
+
+  S3VpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: ShouldCreateS3Endpoint
+    Properties:
+      VpcId: !Ref VpcId
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcEndpointType: Gateway
+      RouteTableIds: !Ref RouteTableIds
+      Tags:
+        - Key: Name
+          Value: !Sub 'NovaForgeSDK-SMHP-S3-${ClusterName}'
+        - Key: ManagedBy
+          Value: NovaForgeSDK
+
+  # DynamoDB Table to track SMHP job notifications
+  SMHPJobNotificationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub 'NovaForgeSDK-SMHP-JobNotifications-${ClusterName}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: 
+        - AttributeName: job_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: job_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification: 
+        PointInTimeRecoveryEnabled: true
+
+  # SNS Topic for SMHP notifications
+  SMHPJobNotificationsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'NovaForgeSDK-SMHP-Notifications-${ClusterName}'
+      DisplayName: !Sub 'Nova Forge SDK SMHP Notifications (${ClusterName})'
+      KmsMasterKeyId: !If [UseKmsEncryption, !Ref KmsKeyId, !Ref 'AWS::NoValue']
+
+  # IAM Role for SMHP Notification Lambda
+  SMHPNotificationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'NovaForgeSDK-SMHP-NotifLambdaRole-${ClusterName}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource: !GetAtt SMHPJobNotificationsTable.Arn
+        - PolicyName: SNSPublishAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref SMHPJobNotificationsTopic
+        - PolicyName: S3ReadAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: "arn:aws:s3:::*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: "arn:aws:s3:::*/*"
+        - PolicyName: EKSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - eks:DescribeCluster
+                  - eks:ListClusters
+                Resource: !Ref EksClusterArn
+        - PolicyName: EC2NetworkAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                  - ec2:AssignPrivateIpAddresses
+                  - ec2:UnassignPrivateIpAddresses
+                Resource: '*'
+        - !If
+          - UseKmsEncryption
+          - PolicyName: KMSAccess
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - kms:Decrypt
+                    - kms:GenerateDataKey
+                  Resource: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/${KmsKeyId}'
+          - !Ref 'AWS::NoValue'
+
+  # Lambda Function to handle SMHP notifications
+  SMHPNotificationHandlerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'NovaForgeSDK-SMHP-NotificationHandler-${ClusterName}'
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt SMHPNotificationLambdaRole.Arn
+      Timeout: 300
+      MemorySize: 512
+      VpcConfig:
+        SubnetIds: !Ref SubnetIds
+        SecurityGroupIds:
+          - !Ref SecurityGroupId
+      Layers:
+        - !Ref KubectlLayerArn
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref SMHPJobNotificationsTable
+          SNS_TOPIC_ARN: !Ref SMHPJobNotificationsTopic
+          CLUSTER_NAME: !Ref ClusterName
+          EKS_CLUSTER_ARN: !Ref EksClusterArn
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+          import subprocess
+          import base64
+          from datetime import datetime
+          
+          dynamodb = boto3.client('dynamodb')
+          sns = boto3.client('sns')
+          s3 = boto3.client('s3')
+          eks = boto3.client('eks')
+          
+          TABLE_NAME = os.environ['DYNAMODB_TABLE_NAME']
+          TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
+          CLUSTER_NAME = os.environ['CLUSTER_NAME']  # HyperPod cluster name (for display)
+          EKS_CLUSTER_ARN = os.environ['EKS_CLUSTER_ARN']
+          
+          # Extract EKS cluster name from ARN (format: arn:aws:eks:region:account:cluster/cluster-name)
+          EKS_CLUSTER_NAME = EKS_CLUSTER_ARN.split('/')[-1]
+          
+          def get_kubectl_path():
+              """Find kubectl binary in the layer and copy it to /tmp."""
+              import shutil
+              
+              # Check if kubectl is already in /tmp
+              kubectl_path = '/tmp/kubectl'
+              if os.path.exists(kubectl_path):
+                  return kubectl_path
+              
+              # Find kubectl binary in the layer
+              kubectl_source = None
+              for possible_path in ['/opt/kubectl/kubectl', '/opt/bin/kubectl', '/opt/kubectl']:
+                  if os.path.isfile(possible_path):
+                      kubectl_source = possible_path
+                      break
+              
+              if not kubectl_source:
+                  raise Exception("kubectl binary not found in layer")
+              
+              # Copy kubectl to /tmp and make it executable
+              shutil.copy2(kubectl_source, kubectl_path)
+              os.chmod(kubectl_path, 0o755)
+              
+              return kubectl_path
+          
+          def check_pod_health(job_name, namespace):
+              """Check if master pod is in bad state."""
+              master_pod_name = f"{job_name}-master-0"
+              
+              kubectl_path = get_kubectl_path()
+              kubeconfig_path = get_kubeconfig()
+              
+              result = subprocess.run([
+                  kubectl_path, 'get', 'pod', master_pod_name,
+                  '-n', namespace, '-o', 'json'
+              ],
+              env={'KUBECONFIG': kubeconfig_path},
+              capture_output=True,
+              text=True,
+              check=True)
+              
+              pod_data = json.loads(result.stdout)
+              
+              container_statuses = pod_data.get('status', {}).get('containerStatuses', [])
+              if not container_statuses:
+                  return {'healthy': True, 'restarts': 0}  # Pod not yet running
+
+              container_status = container_statuses[0]
+              restart_count = container_status.get('restartCount', 0)
+              state = container_status.get('state', {})
+              
+              # Check for CrashLoopBackOff
+              if 'waiting' in state:
+                  reason = state['waiting'].get('reason', '')
+                  if reason == 'CrashLoopBackOff':
+                      return {'healthy': False, 'reason': 'CrashLoopBackOff', 'restarts': restart_count}
+              
+              # Check restart threshold
+              if restart_count > 5:
+                  return {'healthy': False, 'reason': 'ExcessiveRestarts', 'restarts': restart_count}
+              
+              return {'healthy': True, 'restarts': restart_count}
+
+          def get_kubeconfig():
+              """Get kubeconfig for the EKS cluster. Required for authenticating to the EKS cluster."""
+              try:
+                  # Get cluster info using the actual EKS cluster name
+                  response = eks.describe_cluster(name=EKS_CLUSTER_NAME)
+                  cluster = response['cluster']
+                  
+                  # Get authentication token
+                  import boto3
+                  from botocore.signers import RequestSigner
+                  
+                  session = boto3.Session()
+                  client = session.client('sts')
+                  service_id = client.meta.service_model.service_id
+                  
+                  signer = RequestSigner(
+                      service_id,
+                      session.region_name,
+                      'sts',
+                      'v4',
+                      session.get_credentials(),
+                      session.events
+                  )
+                  
+                  params = {
+                      'method': 'GET',
+                      'url': f'https://sts.{session.region_name}.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15',
+                      'body': {},
+                      'headers': {
+                          'x-k8s-aws-id': EKS_CLUSTER_NAME
+                      },
+                      'context': {}
+                  }
+                  
+                  signed_url = signer.generate_presigned_url(
+                      params,
+                      region_name=session.region_name,
+                      expires_in=60,
+                      operation_name='' # Required by method signature
+                  )
+                  
+                  token = 'k8s-aws-v1.' + base64.urlsafe_b64encode(
+                      signed_url.encode('utf-8')
+                  ).decode('utf-8').rstrip('=')
+                  
+                  # Create kubeconfig
+                  kubeconfig = {
+                      'apiVersion': 'v1',
+                      'kind': 'Config',
+                      'clusters': [{
+                          'cluster': {
+                              'server': cluster['endpoint'],
+                              'certificate-authority-data': cluster['certificateAuthority']['data']
+                          },
+                          'name': 'kubernetes'
+                      }],
+                      'contexts': [{
+                          'context': {
+                              'cluster': 'kubernetes',
+                              'user': 'aws'
+                          },
+                          'name': 'aws'
+                      }],
+                      'current-context': 'aws',
+                      'users': [{
+                          'name': 'aws',
+                          'user': {
+                              'token': token
+                          }
+                      }]
+                  }
+                  
+                  # Write kubeconfig to /tmp
+                  kubeconfig_path = '/tmp/kubeconfig'
+                  with open(kubeconfig_path, 'w') as f:
+                      json.dump(kubeconfig, f)
+                  
+                  return kubeconfig_path
+                  
+              except Exception as e:
+                  print(f"Error getting kubeconfig: {e}")
+                  raise
+          
+          def validate_manifest(output_s3_path, job_id):
+              """
+              Check if manifest.json exists for SMHP job at its expected location.
+              
+              Args:
+                  output_s3_path: Base S3 path (e.g., s3://bucket/path/)
+                  job_id: Job ID/name
+                  
+              Returns:
+                  dict: {
+                      'manifest_exists': bool,
+                      'error_message': str or None,
+                  }
+              """
+              result = {
+                  'manifest_exists': False,
+                  'error_message': None,
+              }
+              
+              try:
+                  # Construct the expected manifest path (Format: s3://{output_s3_path}/{job_id}/manifest.json)
+                  base_path = output_s3_path.rstrip('/')
+                  manifest_path = f"{base_path}/{job_id}/manifest.json"
+                  
+                  # Parse S3 URI
+                  if not manifest_path.startswith('s3://'):
+                      result['error_message'] = "Invalid S3 URI format"
+                      return result
+                  
+                  s3_path = manifest_path[5:]  # Remove 's3://'
+                  s3_path_parts = s3_path.split('/', 1)
+                  
+                  if len(s3_path_parts) != 2:
+                      result['error_message'] = "Could not parse S3 path"
+                      return result
+                  
+                  bucket = s3_path_parts[0]
+                  key = s3_path_parts[1]
+                  
+                  # Check if manifest exists
+                  try:
+                      s3.head_object(Bucket=bucket, Key=key)
+                      result['manifest_exists'] = True
+                  except s3.exceptions.NoSuchKey:
+                      result['error_message'] = "manifest.json not found. Please check your job logs for more details."
+                  except s3.exceptions.NoSuchBucket:
+                      result['error_message'] = "Bucket not found. Please check your job logs for more details."
+                  
+                  return result
+                  
+              except Exception as e:
+                  result['error_message'] = f"Unexpected error: {str(e)}"
+                  return result
+          
+          def get_job_status(job_name, namespace):
+              """Get PyTorchJob status using kubectl."""
+              try:
+                  kubeconfig_path = get_kubeconfig()
+                  kubectl_path = get_kubectl_path()
+                  
+                  # Use kubectl from /tmp
+                  result = subprocess.run(
+                      [
+                          kubectl_path,
+                          'get',
+                          'pytorchjob',
+                          job_name,
+                          '-n',
+                          namespace,
+                          '-o',
+                          'json'
+                      ],
+                      env={'KUBECONFIG': kubeconfig_path},
+                      capture_output=True,
+                      text=True,
+                      check=True
+                  )
+                  
+                  job_data = json.loads(result.stdout)
+                  status = job_data.get('status', {})
+                  conditions = status.get('conditions', [])
+                  
+                  if conditions:
+                      latest_condition = conditions[-1]
+                      return latest_condition.get('type', 'Unknown')
+                  
+                  return 'Pending'
+                  
+              except subprocess.CalledProcessError as e:
+                  # Catch if the job was deleted/can't be found
+                  if 'NotFound' in e.stderr: 
+                      return 'NotFound'
+                  else:    
+                      print(f"kubectl error for {job_name}: {e.stderr}")
+              except Exception as e:
+                  print(f"Error getting job status: {e}")
+                  return None
+          
+          def lambda_handler(event, context):
+              """
+              Periodically check for SMHP jobs that need notifications.
+              This function is triggered by EventBridge on a schedule.
+              """
+              print(f"Checking for SMHP jobs needing notifications...")
+              
+              try:
+                  # Scan DynamoDB for all jobs
+                  response = dynamodb.scan(TableName=TABLE_NAME)
+                  items = response.get('Items', [])
+                  
+                  # Handle pagination if there are more results
+                  while 'LastEvaluatedKey' in response:
+                      response = dynamodb.scan(
+                          TableName=TABLE_NAME,
+                          ExclusiveStartKey=response['LastEvaluatedKey']
+                      )
+                      items.extend(response.get('Items', []))
+
+                  print(f"Found {len(items)} jobs to check")
+                  
+                  for item in items:
+                      job_id = item.get('job_id', {}).get('S')
+                      output_s3_path = item.get('output_s3_path', {}).get('S')
+                      namespace = item.get('namespace', {}).get('S', 'kubeflow') 
+                      
+                      if not job_id:
+                          continue
+                      
+                      print(f"Checking job: {job_id} in namespace: {namespace}")
+                      
+                      # Get job status from Kubernetes
+                      status = get_job_status(job_id, namespace)
+                      
+                      if not status:
+                          print(f"Could not get status for job {job_id}")
+                          continue
+
+                      # Initialize pod_health
+                      pod_health = None
+                      
+                      # If job is running - check pod health.
+                      if status == 'Running':
+                        pod_health = check_pod_health(job_id, namespace)
+                        
+                        # If pod is unhealthy -- send a notification.
+                        if not pod_health['healthy']:
+                            print(f"Job {job_id} is running but master pod is unhealthy: {pod_health}")
+                            status = f"Running (Degraded - {pod_health['reason']})"
+                            
+                      
+                      # Check if job is in terminal state
+                      if status in ['Succeeded', 'Failed', 'Completed', 'NotFound'] or 'Degraded' in status:
+                          print(f"Job {job_id} is in terminal state: {status}")
+                          
+                          # For successful jobs, verify manifest.json exists
+                          manifest_result = {'manifest_exists': False, 'error_message': None}
+                          if status == 'Succeeded':
+                              if not output_s3_path:
+                                  manifest_result['error_message'] = "No output_s3_path provided, can't verify if manifest.json exists."
+                                  print(f"Warning: No output_s3_path for job {job_id}")
+                              else:
+                                  manifest_result = validate_manifest(output_s3_path, job_id)
+                                  if manifest_result['manifest_exists']:
+                                      print(f"Manifest found for job {job_id}")
+                                  else:
+                                      print(f"Warning: Manifest validation failed: {manifest_result['error_message']}")
+                          
+                          # Delete DynamoDB entry
+                          try:
+                              dynamodb.delete_item(
+                                  TableName=TABLE_NAME,
+                                  Key={'job_id': {'S': job_id}}
+                              )
+                              print(f"Deleted DynamoDB entry for job {job_id}")
+                          except Exception as e:
+                              print(f"Warning: Could not delete DynamoDB entry: {e}")
+                          
+                          # Build notification message                          
+                          subject = f"[SMHP] Job {status}: {job_id}"
+                          message = f"""SageMaker HyperPod Job Status Update
+
+                          Job ID: {job_id}
+                          Platform: SMHP
+                          Cluster: {CLUSTER_NAME}
+                          Namespace: {namespace}
+                          Status: {status}
+                          Timestamp: {datetime.utcnow().isoformat()}Z
+                          """
+                          
+                          # Add pod information to message.
+                          if pod_health and not pod_health['healthy']:
+                              message += f"\n- Master Pod Restarts: {pod_health['restarts']}"
+                              message += f"\n- Issue: {pod_health['reason']}"
+
+                          # Add manifest status for successful jobs
+                          if status == 'Succeeded':
+                              if not output_s3_path:
+                                  message += "\nNo output_s3_path was provided. Output artifact validation will be skipped."
+                              else:
+                                  if manifest_result['manifest_exists']:
+                                      message += "\n\nJob completed successfully. manifest.json found."
+                                  else:
+                                      message += f"\n\nJob completed. manifest.json was not found."
+                                      message += f"\nNote: This is expected for evaluation jobs."
+                                      message += f"\nFor training jobs, please check your logs for details."
+                                      if manifest_result['error_message']:
+                                          message += f"\nDetails: {manifest_result['error_message']}"
+                          elif status == 'NotFound':
+                              message += f"\nJob could not be found, please check if it was manually deleted."
+
+                          message += "\n\n---\nThis notification was sent by Nova Forge SDK Job Notifications."
+                          
+                          # Send notification
+                          try:
+                              sns.publish(
+                                  TopicArn=TOPIC_ARN,
+                                  Subject=subject,
+                                  Message=message,
+                                  MessageAttributes={
+                                      'job_id': {'DataType': 'String', 'StringValue': job_id},
+                                      'status': {'DataType': 'String', 'StringValue': status},
+                                      'cluster': {'DataType': 'String', 'StringValue': CLUSTER_NAME}
+                                  }
+                              )
+                              print(f"Notification sent for job {job_id}")
+                          except Exception as e:
+                              print(f"Error sending notification: {e}")
+                      else:
+                          print(f"Job {job_id} still running: {status}")
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': f'Checked {len(items)} jobs'
+                  }
+                  
+              except Exception as e:
+                  print(f"Error in lambda_handler: {e}")
+                  return {
+                      'statusCode': 500,
+                      'body': f'Error: {str(e)}'
+                  }
+
+  # EventBridge Rule to trigger Lambda periodically (every 5 minutes)
+  SMHPJobCheckScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub 'NovaForgeSDK-SMHP-Job-Check-${ClusterName}'
+      Description: !Sub 'Periodically checks SMHP job status for cluster ${ClusterName}'
+      ScheduleExpression: !Sub 'rate(${PollingIntervalMinutes} minutes)'
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt SMHPNotificationHandlerFunction.Arn
+          Id: SMHPNotificationHandlerTarget
+
+  # Permission for EventBridge to invoke Lambda
+  SMHPEventBridgeLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SMHPNotificationHandlerFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt SMHPJobCheckScheduleRule.Arn
+
+Outputs:
+  DynamoDBTableName:
+    Description: DynamoDB table name for SMHP job notifications
+    Value: !Ref SMHPJobNotificationsTable
+    Export:
+      Name: !Sub 'NovaForgeSDK-SMHP-JobNotifications-TableName-${ClusterName}'
+
+  SNSTopicArn:
+    Description: SNS Topic ARN for SMHP notifications
+    Value: !Ref SMHPJobNotificationsTopic
+    Export:
+      Name: !Sub 'NovaForgeSDK-SMHP-JobNotifications-TopicArn-${ClusterName}'
+
+  LambdaFunctionArn:
+    Description: Lambda function ARN for SMHP notification handler
+    Value: !GetAtt SMHPNotificationHandlerFunction.Arn
+    Export:
+      Name: !Sub 'NovaForgeSDK-SMHP-NotificationHandler-FunctionArn-${ClusterName}'
+
+  LambdaRoleArn:
+    Description: Lambda IAM role ARN (needed for EKS access setup)
+    Value: !GetAtt SMHPNotificationLambdaRole.Arn
+
+  EventBridgeRuleName:
+    Description: EventBridge rule name for SMHP job checking
+    Value: !Ref SMHPJobCheckScheduleRule
+    Export:
+      Name: !Sub 'NovaForgeSDK-SMHP-JobNotifications-RuleName-${ClusterName}'
+
+  ClusterName:
+    Description: HyperPod cluster name
+    Value: !Ref ClusterName
+
+  EksClusterName:
+    Description: EKS cluster name (extracted from ARN)
+    Value: !Select [1, !Split ['/', !Select [5, !Split [':', !Ref EksClusterArn]]]]

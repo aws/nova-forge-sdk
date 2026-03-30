@@ -16,6 +16,7 @@ from amzn_nova_forge.validation.validator import (
     JOB_NAME_REGEX,
     NAMESPACE_REGEX,
     Validator,
+    validate_rft_lambda_name,
 )
 
 
@@ -716,8 +717,29 @@ class TestValidationConfig(unittest.TestCase):
     def test_get_validation_config_defaults(self):
         """Test that default validation config is correct."""
         config = Validator._get_default_validation_config()
-        expected = {"iam": True, "infra": True}
+        expected = {"iam": True, "infra": True, "recipe": True}
         self.assertEqual(config, expected)
+
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
+    def test_validation_config_recipe_disabled(self, mock_boto3_client):
+        """Test that recipe validation is skipped when disabled."""
+        mock_infra = Mock(spec=SMTJRuntimeManager)
+        mock_infra.instance_type = "ml.g5.12xlarge"
+        mock_infra.region = "us-east-1"
+
+        # This overrides_template would normally trigger a recipe validation error
+        # (required field missing from recipe)
+        overrides_template = {"max_steps": {"required": True, "type": "int"}}
+
+        # Should not raise even though recipe is empty and max_steps is required
+        Validator.validate(
+            platform=Platform.SMTJ,
+            method=TrainingMethod.SFT_LORA,
+            infra=mock_infra,
+            recipe={},
+            overrides_template=overrides_template,
+            validation_config={"iam": False, "infra": False, "recipe": False},
+        )
 
     @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_validation_config_iam_disabled(self, mock_boto3_client):
@@ -847,7 +869,8 @@ class TestRFTValidation(unittest.TestCase):
             )
 
         self.assertIn(
-            "'rft_lambda_arn' is a required parameter", str(context.exception)
+            "Either 'rft_lambda_arn' or 'rft_lambda_source' is required",
+            str(context.exception),
         )
 
 
@@ -2717,6 +2740,26 @@ class TestBedrockRegionValidation(unittest.TestCase):
         error_message = str(context.exception)
         self.assertIn("eu-west-1", error_message)
         self.assertIn("not supported", error_message)
+
+    def test_smhp_name_without_sagemaker_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            validate_rft_lambda_name("my-reward-fn", Platform.SMHP)
+        self.assertIn("SageMaker", str(ctx.exception))
+
+    def test_smhp_name_with_sagemaker_passes(self):
+        # Should not raise
+        validate_rft_lambda_name("my-SageMaker-reward-fn", Platform.SMHP)
+
+    def test_smhp_name_lowercase_sagemaker_raises(self):
+        # 'sagemaker' without exact casing must fail
+        with self.assertRaises(ValueError):
+            validate_rft_lambda_name("my-sagemaker-reward-fn", Platform.SMHP)
+
+    def test_smtj_any_name_passes(self):
+        # SMTJ has no naming restriction
+        validate_rft_lambda_name("my-reward-fn", Platform.SMTJ)
+        validate_rft_lambda_name("sagemaker-reward", Platform.SMTJ)
+        validate_rft_lambda_name("SageMaker-reward", Platform.SMTJ)
 
 
 if __name__ == "__main__":

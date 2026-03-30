@@ -31,24 +31,21 @@ from .base_infra import (
     EnvType,
     StackOutputs,
 )
-from .common_infra_commands import BASE_PYTHON_COMMAND, CommonInfraCommands
+from .common_infra_commands import CommonInfraCommands
 from .constants import (
+    BASE_PYTHON_COMMAND,
+    EC2_BASE_PATH,
+    EC2_LOGS_PATH,
+    EC2_SCRIPTS_PATH,
+    EC2_STARTER_KIT_PATH,
     JOB_STATUS_KILLED,
     JOB_STATUS_RUNNING,
-    RFT_SAM_LOG,
     SAM_WAIT_TIME,
-    SDK_RFT_LOGS_DIR,
-    SDK_RFT_SCRIPTS_DIR,
     SSM_COMMAND_MAX_POLL_ATTEMPTS,
     SSM_COMMAND_POLL_INTERVAL,
     STARTER_KIT_S3,
 )
 from .utils import build_duplicate_job_error_message
-
-STARTER_KIT_PATH_EC2 = "/home/ec2-user/v1"
-EC2_BASE_PATH = "/home/ec2-user"
-EC2_LOGS_PATH = f"{EC2_BASE_PATH}/{SDK_RFT_LOGS_DIR}"
-EC2_SCRIPTS_PATH = f"{EC2_BASE_PATH}/{SDK_RFT_SCRIPTS_DIR}"
 
 
 class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
@@ -80,7 +77,7 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         self.ec2_client = boto3.client("ec2", region_name=region)
         self.ssm_client = boto3.client("ssm", region_name=region)
 
-        self.base_path = STARTER_KIT_PATH_EC2
+        self.base_path = EC2_STARTER_KIT_PATH
         self.starter_kit_s3 = STARTER_KIT_S3
         self.sam_base_dir = EC2_BASE_PATH
 
@@ -480,8 +477,19 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         # Ensure starter kit is available
         self._ensure_starter_kit_available(s3_bucket)
 
-        # Set log file for SAM deployment
-        self.sam_log_file = f"{EC2_BASE_PATH}/{RFT_SAM_LOG}"
+        # Set log file for SAM deployment using session-scoped path
+        # so get_logs(EnvType.SAM) can find it
+        session_id = getattr(self, "session_id", "default")
+        self.sam_log_file = self._get_log_file_path(session_id, EnvType.SAM)
+
+        # Ensure the logs directory exists on the EC2 instance before writing
+        logs_dir = EC2_LOGS_PATH
+        mkdir_response = self.ssm_client.send_command(
+            InstanceIds=[self.instance_id],
+            DocumentName="AWS-RunShellScript",
+            Parameters={"commands": [f"mkdir -p {logs_dir}"]},
+        )
+        self._wait_for_ssm_command(mkdir_response["Command"]["CommandId"])
 
         commands = self._build_sam_deploy_commands(
             custom_starter_kit_s3=self._starter_kit_s3_uri
@@ -753,7 +761,6 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
             if output.get("StandardOutputContent"):
                 logger.info(f"Kill output: {output['StandardOutputContent'].strip()}")
 
-            logger.info(f"All {env_type.value} jobs killed on EC2")
         else:
             session_id = getattr(self, "session_id", "default")
             script_path = self._get_script_file_path(session_id, env_type)
@@ -773,7 +780,6 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
                 DocumentName="AWS-RunShellScript",
                 Parameters={"commands": [cmd]},
             )
-            logger.info(f"{env_type.value} task killed on EC2")
 
     def cleanup(self, cleanup_environment: bool = False):
         """
@@ -788,11 +794,10 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         if cleanup_environment:
             # Remove virtual environment and starter kit
             commands = [
-                f"rm -rf {STARTER_KIT_PATH_EC2}/{self.python_venv_name}",
-                f"rm -rf {STARTER_KIT_PATH_EC2}",
+                f"rm -rf {EC2_STARTER_KIT_PATH}/{self.python_venv_name}",
+                f"rm -rf {EC2_STARTER_KIT_PATH}",
                 f"rm -rf {EC2_LOGS_PATH}",
                 f"rm -rf {EC2_SCRIPTS_PATH}",
-                f"rm -f {EC2_BASE_PATH}/{RFT_SAM_LOG}",
             ]
 
             # Also remove custom environment if it was used

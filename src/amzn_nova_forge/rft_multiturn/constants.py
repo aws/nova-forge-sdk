@@ -22,17 +22,9 @@ RFT_POLICY_NAME = (
 # Stack name suffix
 STACK_NAME_SUFFIX = "NovaForgeSDK"
 
-# ECR repository name
-ECR_REPO_NAME = "nova-rft-base"
-
 # Folder names for organizing RFT files
 SDK_RFT_LOGS_DIR = "sdk-rft-logs"
 SDK_RFT_SCRIPTS_DIR = "sdk-rft-scripts"
-
-# Log file names (legacy - kept for reference)
-RFT_TRAIN_LOG = "rft_train.log"
-RFT_EVAL_LOG = "rft_eval.log"
-RFT_SAM_LOG = "rft_sam.log"
 
 # Job status values
 JOB_STATUS_RUNNING = "running"
@@ -46,6 +38,24 @@ SAM_WAIT_TIME = 600
 
 # Starter kit S3 location
 STARTER_KIT_S3 = "s3://nova-rft-starter-kit-c7363-206080352451-us-east-1/v1"
+
+# ECS task container image and starter kit path
+ECS_IMAGE_URI = "public.ecr.aws/amazonlinux/amazonlinux:2023"
+ECS_STARTER_KIT_PATH = "/root/v1"
+
+# EC2 paths
+EC2_BASE_PATH = "/home/ec2-user"
+EC2_STARTER_KIT_PATH = f"{EC2_BASE_PATH}/v1"
+EC2_LOGS_PATH = f"{EC2_BASE_PATH}/{SDK_RFT_LOGS_DIR}"
+EC2_SCRIPTS_PATH = f"{EC2_BASE_PATH}/{SDK_RFT_SCRIPTS_DIR}"
+
+# Python command used on EC2/ECS platforms
+BASE_PYTHON_COMMAND = "python3.12"
+
+# CloudFormation stack states that are unrecoverable — treat as non-existent
+CFN_UNUSABLE_STACK_STATES = frozenset(
+    {"DELETE_FAILED", "ROLLBACK_COMPLETE", "ROLLBACK_FAILED"}
+)
 
 # SSM command polling interval in seconds
 SSM_COMMAND_POLL_INTERVAL = 0.5

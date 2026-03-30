@@ -19,7 +19,7 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 
 import boto3
 
@@ -61,6 +61,20 @@ class JobStatusManager(ABC):
         """
         pass
 
+    def resolve_start_time(self, job_id: str) -> datetime:
+        """
+        Resolve the start time of a job from the platform API.
+
+        Returns:
+            datetime: The job's start time
+
+        Raises:
+            ValueError: If start time cannot be resolved
+        """
+        raise ValueError(
+            f"Cannot resolve start time for job {job_id} on {self.__class__.__name__}"
+        )
+
 
 class SMTJStatusManager(JobStatusManager):
     def __init__(self, sagemaker_client=None):
@@ -84,6 +98,17 @@ class SMTJStatusManager(JobStatusManager):
         self._raw_status = raw_status
 
         return job_status, raw_status
+
+    def resolve_start_time(self, job_id: str) -> datetime:
+        response = self._sagemaker_client.describe_training_job(TrainingJobName=job_id)
+        start_time = response.get("TrainingStartTime") or response.get("CreationTime")
+        if start_time:
+            return (
+                start_time
+                if isinstance(start_time, datetime)
+                else datetime.fromisoformat(str(start_time))
+            )
+        raise ValueError(f"Cannot resolve start time for SMTJ job {job_id}")
 
 
 class SMHPStatusManager(JobStatusManager):
@@ -173,6 +198,32 @@ class SMHPStatusManager(JobStatusManager):
             logger.warning(f"Failed to get job status for {job_id}: {e}")
             return JobStatus.COMPLETED, "Unknown"
 
+    def resolve_start_time(self, job_id: str) -> datetime:
+        from amzn_nova_forge.validation.validator import Validator
+
+        Validator.validate_job_name(job_name=job_id)
+
+        try:
+            self._connect_cluster()
+            result = subprocess.run(
+                ["hyperpod", "get-job", "--job-name", job_id, "--verbose"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            response = json.loads(result.stdout)
+
+            # Try Status.startTime, then Metadata.CreationTimestamp
+            start_time_str = response.get("Status", {}).get(
+                "startTime"
+            ) or response.get("Metadata", {}).get("CreationTimestamp")
+            if start_time_str:
+                return datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
+        except Exception as e:
+            logger.error(f"Failed to resolve start time for SMHP job {job_id}: {e}")
+
+        raise ValueError(f"Cannot resolve start time for SMHP job {job_id}")
+
 
 class BedrockStatusManager(JobStatusManager):
     def __init__(self, bedrock_client=None):
@@ -232,9 +283,8 @@ class BaseJobResult(ABC):
     job_id: str
     started_time: datetime
 
-    def __init__(self, job_id: str, started_time: datetime):
+    def __init__(self, job_id: str, started_time: Optional[datetime] = None):
         self.job_id = job_id
-        self.started_time = started_time
         self._status_manager: JobStatusManager = self._create_status_manager()
         self._platform = (
             Platform.SMTJ
@@ -245,6 +295,14 @@ class BaseJobResult(ABC):
                 else Platform.SMHP
             )
         )
+
+        if started_time is not None:
+            self.started_time = started_time
+        else:
+            logger.info(
+                f"No started_time provided for job {job_id}, resolving from platform..."
+            )
+            self.started_time = self._status_manager.resolve_start_time(job_id)
 
     @property
     def status_manager(self):
@@ -286,6 +344,89 @@ class BaseJobResult(ABC):
         """
         pass
 
+    def enable_job_notifications(
+        self,
+        emails: list[str],
+        output_s3_path: Optional[str] = None,
+        region: Optional[str] = "us-east-1",
+        **platform_kwargs,  # Platform-specific optional parameters
+    ) -> None:
+        """
+        Enable email notifications for this job when the job reaches a terminal state:
+            - Completed, Stopped, Failed
+
+        Args:
+            emails: List of email addresses to notify
+            output_s3_path: S3 path where job outputs are stored. If not provided,
+                it will attempt to extract from model_artifacts. Required for manifest
+                validation when the job completes.
+            region: AWS region (defaults to us-east-1)
+            **platform_kwargs: Platform-specific parameters:
+                - For SMTJ: kms_key_id (optional KMS key for SNS encryption)
+                - For SMHP: eks_cluster_arn, vpc_id, subnet_ids, security_group_id (required),
+                           namespace, kubectl_layer_arn, kms_key_id (optional)
+
+        Raises:
+            ValueError: If inputs are invalid or output_s3_path cannot be determined
+            NotificationManagerInfraError: If infrastructure setup fails
+        """
+        from amzn_nova_forge.notifications import (
+            SMHPNotificationManager,
+            SMTJNotificationManager,
+        )
+
+        # Use default region if not provided
+        resolved_region = region if region is not None else "us-east-1"
+
+        # Determine output_s3_path
+        resolved_output_s3_path = output_s3_path
+
+        if resolved_output_s3_path is None:
+            # Try to extract from model_artifacts (for TrainingResult)
+            if hasattr(self, "model_artifacts") and self.model_artifacts:
+                resolved_output_s3_path = self.model_artifacts.output_s3_path
+            # Try to extract from eval_output_path (for EvaluationResult)
+            elif hasattr(self, "eval_output_path") and self.eval_output_path:
+                resolved_output_s3_path = self.eval_output_path
+            else:
+                raise ValueError(
+                    "Cannot enable notifications: output_s3_path is required but can't be found.\n"
+                    "Please provide output_s3_path explicitly:\n"
+                    f"  - result.enable_job_notifications(emails=[], output_s3_path='s3://path')"
+                )
+
+            if not resolved_output_s3_path:
+                raise ValueError(
+                    "Cannot enable notifications: output_s3_path is required but not set.\n"
+                    "Please provide output_s3_path explicitly:\n "
+                    f"  - result.enable_job_notifications(emails=[], output_s3_path='s3://path')\n"
+                )
+
+        # Create appropriate notification manager based on platform
+        manager: Union["SMTJNotificationManager", "SMHPNotificationManager"]
+        if self._platform == Platform.SMTJ:
+            manager = SMTJNotificationManager(region=resolved_region)
+        elif self._platform == Platform.SMHP:
+            # For SMHP, we need cluster_name from the status manager
+            if not hasattr(self._status_manager, "cluster_name"):
+                raise ValueError(
+                    "Cannot enable SMHP notifications: cluster_name not found in status manager"
+                )
+            cluster_name = self._status_manager.cluster_name
+            manager = SMHPNotificationManager(
+                cluster_name=cluster_name, region=resolved_region
+            )
+        else:
+            raise ValueError(f"Unsupported platform: {self._platform}")
+
+        # Enable notifications with platform-specific parameters
+        manager.enable_notifications(
+            job_name=self.job_id,
+            emails=emails,
+            output_s3_path=resolved_output_s3_path,
+            **platform_kwargs,
+        )
+
     def _to_dict(self):
         """
         Convert the job result to dict
@@ -308,7 +449,7 @@ class BaseJobResult(ABC):
         Save the job result to file_path path
         :param file_path: Directory path to save the result. Saves to current directory if not provided
         :param file_name: The file name of the result. Default to <job_id>_<platform>.json if not provided
-        :return The full result file path
+        :return: The full result file path
         """
         file_name = file_name or f"{self.job_id}_{self._platform.value}.json"
 
@@ -335,7 +476,7 @@ class BaseJobResult(ABC):
         """
         Load the job result from file_path path
         :param file_path: file_path to load the result
-        return The Job result object
+        :return: The Job result object
         """
         with open(file_path, "r") as f:
             data = json.load(f)

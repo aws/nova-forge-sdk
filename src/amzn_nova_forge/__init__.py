@@ -37,6 +37,12 @@ from .monitor import (
     CloudWatchLogMonitor,
     MLflowMonitor,
 )
+from .notifications import (
+    NotificationManager,
+    NotificationManagerInfraError,
+    SMHPNotificationManager,
+    SMTJNotificationManager,
+)
 from .recipe import (
     EvaluationTask,
 )
@@ -72,6 +78,10 @@ __all__ = [
     "JobStatus",
     "MLflowMonitor",
     "CloudWatchLogMonitor",
+    "NotificationManager",
+    "NotificationManagerInfraError",
+    "SMHPNotificationManager",
+    "SMTJNotificationManager",
     "EvaluationTask",
     "RFTMultiturnInfrastructure",
     "EnvType",

@@ -11,12 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import io
 import json
 import os
 import re
 import subprocess
 import tempfile
 import uuid
+import zipfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -40,7 +42,7 @@ from sagemaker.core.training.configs import (
 )
 from sagemaker.train.model_trainer import ModelTrainer
 
-from amzn_nova_forge.model.model_enums import Model, TrainingMethod
+from amzn_nova_forge.model.model_enums import Model, Platform, TrainingMethod
 from amzn_nova_forge.recipe.recipe_config import HYPERPOD_RECIPE_PATH
 from amzn_nova_forge.util.bedrock import (
     get_customization_type,
@@ -48,6 +50,7 @@ from amzn_nova_forge.util.bedrock import (
     resolve_base_model_identifier,
 )
 from amzn_nova_forge.util.logging import logger
+from amzn_nova_forge.util.reward_verifier import verify_reward_function
 
 # Maps TrainingMethod to (CustomizationTechnique, Peft|None) for ServerlessJobConfig
 _METHOD_TO_SERVERLESS_CONFIG: Dict[TrainingMethod, tuple[str, Optional[str]]] = {
@@ -86,10 +89,43 @@ class RuntimeManager(ABC):
         instance_type: Optional[str],
         instance_count: Optional[int],
         kms_key_id: Optional[str],
+        rft_lambda: Optional[str] = None,
     ):
         self._instance_type = instance_type
         self._instance_count = instance_count
         self._kms_key_id = kms_key_id
+        self._rft_lambda: Optional[str] = None
+        self._rft_lambda_arn: Optional[str] = None
+        # Use the property setter so _rft_lambda_arn is initialised correctly
+        self.rft_lambda = rft_lambda
+
+    @property
+    def rft_lambda(self) -> Optional[str]:
+        """Lambda ARN or local .py file path set on this manager."""
+        return self._rft_lambda
+
+    @rft_lambda.setter
+    def rft_lambda(self, value: Optional[str]) -> None:
+        self._rft_lambda = value
+        # Keep the resolved ARN in sync: set immediately when value is already an ARN,
+        # clear it when switching to a file path or None so stale ARNs aren't reused.
+        from amzn_nova_forge.validation.validator import (
+            is_lambda_arn,  # avoid circular import
+        )
+
+        if value and is_lambda_arn(value):
+            self._rft_lambda_arn = value
+        else:
+            self._rft_lambda_arn = None
+
+    @property
+    def rft_lambda_arn(self) -> Optional[str]:
+        """Resolved Lambda ARN. Set after deploy_lambda() is called, or immediately if rft_lambda is an ARN."""
+        return self._rft_lambda_arn
+
+    @rft_lambda_arn.setter
+    def rft_lambda_arn(self, value: Optional[str]) -> None:
+        self._rft_lambda_arn = value
 
     @property
     def instance_type(self) -> Optional[str]:
@@ -110,6 +146,12 @@ class RuntimeManager(ABC):
     def kms_key_id(self) -> Optional[str]:
         """Optional KMS Key Id to use in S3 Bucket encryption, training jobs and deployments."""
         return self._kms_key_id
+
+    @property
+    @abstractmethod
+    def platform(self) -> Platform:
+        """The execution platform for this runtime manager."""
+        pass
 
     @abstractmethod
     def setup(self) -> None:
@@ -187,6 +229,214 @@ class RuntimeManager(ABC):
 
         return permissions
 
+    def deploy_lambda(
+        self,
+        lambda_name: Optional[str] = None,
+        execution_role_arn: Optional[str] = None,
+    ) -> str:
+        """
+        Deploy the RFT reward lambda from a local Python file set on this manager.
+
+        Uses self.rft_lambda as the source file. If self.rft_lambda is a Lambda ARN
+        rather than a file path, raises ValueError — the lambda is already deployed.
+
+        Args:
+            lambda_name: Name for the Lambda function. Defaults to the source filename stem.
+            execution_role_arn: IAM role ARN for the Lambda. If not provided, falls
+                back to the runtime manager's execution_role attribute.
+
+        Returns:
+            The deployed Lambda function ARN.
+
+        Raises:
+            ValueError: If rft_lambda is not set, is already an ARN, file is not found,
+                or if no execution role can be resolved.
+        """
+        if not self.rft_lambda:
+            raise ValueError(
+                "rft_lambda must be set on the runtime manager to a local .py file path before calling deploy_lambda()."
+            )
+        from amzn_nova_forge.validation.validator import (
+            is_lambda_arn,
+            validate_rft_lambda_name,  # to avoid circular import error
+        )
+
+        if is_lambda_arn(self.rft_lambda):
+            raise ValueError(
+                f"rft_lambda is already a deployed Lambda ARN ('{self.rft_lambda}'). "
+                "deploy_lambda() deploys from a local .py file — there is nothing to deploy."
+            )
+
+        lambda_source = self.rft_lambda
+
+        if lambda_name is None:
+            lambda_name = os.path.splitext(os.path.basename(lambda_source))[0].replace(
+                "_", "-"
+            )
+
+        platform = self.platform
+
+        validate_rft_lambda_name(lambda_name, platform)
+
+        role_arn = execution_role_arn or getattr(self, "execution_role", None)
+        if not role_arn:
+            raise ValueError(
+                "An execution_role_arn must be provided to deploy_lambda(), or set as "
+                "execution_role on the runtime manager."
+            )
+
+        if not os.path.isfile(lambda_source):
+            raise ValueError(f"lambda_source file not found: {lambda_source}")
+
+        # Package the .py file into a zip in memory
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(lambda_source, arcname="lambda_function.py")
+        zip_bytes = zip_buffer.getvalue()
+
+        region = getattr(self, "region", None)
+        if not region:
+            logger.warning(
+                "region is not set on the runtime manager; falling back to 'us-east-1'. "
+                "This may deploy the Lambda to the wrong region."
+            )
+            region = "us-east-1"
+        lambda_client = boto3.client("lambda", region_name=region)
+
+        try:
+            lambda_client.get_function(FunctionName=lambda_name)
+            logger.info(
+                f"Lambda '{lambda_name}' already exists — updating function code."
+            )
+            response = lambda_client.update_function_code(
+                FunctionName=lambda_name,
+                ZipFile=zip_bytes,
+            )
+            lambda_arn = response["FunctionArn"]
+        except lambda_client.exceptions.ResourceNotFoundException:
+            logger.info(f"Creating Lambda function '{lambda_name}'...")
+            response = lambda_client.create_function(
+                FunctionName=lambda_name,
+                Runtime="python3.12",
+                Role=role_arn,
+                Handler="lambda_function.lambda_handler",
+                Code={"ZipFile": zip_bytes},
+                Timeout=300,
+            )
+            lambda_arn = response["FunctionArn"]
+
+        waiter = lambda_client.get_waiter("function_active_v2")
+        waiter.wait(FunctionName=lambda_name)
+        logger.info(f"Lambda '{lambda_name}' is active. ARN: {lambda_arn}")
+        self.rft_lambda_arn = lambda_arn
+
+        return lambda_arn
+
+    def validate_lambda(
+        self,
+        data_s3_path: str,
+        validation_samples: int = 10,
+    ) -> None:
+        """
+        Validate the RFT reward lambda with sample data.
+
+        Resolves the lambda to validate from self.rft_lambda / self.rft_lambda_arn:
+        - If self.rft_lambda is an ARN (or self.rft_lambda_arn is set), invokes the
+          deployed lambda with samples from data_s3_path.
+        - If self.rft_lambda is a local .py path, validates by executing lambda_handler
+          directly without deploying.
+
+        Args:
+            data_s3_path: S3 path to the training dataset for pulling sample data.
+            validation_samples: Number of samples to pull from data_s3_path (default: 10).
+
+        Raises:
+            ValueError: If rft_lambda is not set, or if validation fails.
+        """
+        lambda_arn = self.rft_lambda_arn
+        from amzn_nova_forge.validation.validator import (
+            is_lambda_arn,  # avoid circular import
+        )
+
+        lambda_source = (
+            self.rft_lambda
+            if self.rft_lambda and not is_lambda_arn(self.rft_lambda)
+            else None
+        )
+
+        if not lambda_arn and not lambda_source:
+            raise ValueError(
+                "Either lambda_arn or lambda_source must be provided to validate_lambda()."
+            )
+
+        region = getattr(self, "region", None)
+        if not region:
+            logger.warning(
+                "region is not set on the runtime manager; falling back to 'us-east-1'. "
+                "This may validate the Lambda in the wrong region."
+            )
+            region = "us-east-1"
+        platform = self.platform
+
+        if lambda_arn:
+            # Extract function name from ARN and validate naming requirements early
+            function_name = lambda_arn.split(":")[-1]
+            from amzn_nova_forge.validation.validator import (
+                validate_rft_lambda_name,
+                verify_rft_lambda,
+            )
+
+            validate_rft_lambda_name(function_name, platform)
+            verify_rft_lambda(
+                lambda_arn=lambda_arn,
+                sample_count=validation_samples,
+                data_s3_path=data_s3_path,
+                region=region,
+                platform=platform,
+            )
+        else:
+            # Validate local file without deploying — executes lambda_handler directly
+            logger.info(
+                f"Validating local lambda source '{lambda_source}' without deployment..."
+            )
+            sample_data = []
+            if data_s3_path:
+                from amzn_nova_forge.validation.validator import _parse_s3_uri
+
+                s3_parts = _parse_s3_uri(data_s3_path)
+                if not s3_parts:
+                    raise ValueError(
+                        f"Invalid S3 path: {data_s3_path}. Expected format: s3://bucket/key"
+                    )
+                bucket, key = s3_parts
+                logger.info(
+                    f"Loading up to {validation_samples} sample(s) from {data_s3_path}"
+                )
+                try:
+                    s3_client = boto3.client("s3", region_name=region)
+                    response = s3_client.get_object(Bucket=bucket, Key=key)
+                    for i, line in enumerate(response["Body"].iter_lines()):
+                        if i >= validation_samples:
+                            break
+                        try:
+                            sample_data.append(json.loads(line.decode("utf-8")))
+                        except json.JSONDecodeError as e:
+                            logger.warning(
+                                f"Skipping malformed JSON on line {i + 1}: {e}"
+                            )
+                    logger.info(f"Loaded {len(sample_data)} sample(s) from S3")
+                except Exception as e:
+                    raise ValueError(
+                        f"Failed to read samples from {data_s3_path}: {e}"
+                    ) from e
+
+            verify_reward_function(
+                reward_function=lambda_source or "",
+                sample_data=sample_data,
+                validate_format=len(sample_data) > 0,
+            )
+            logger.info("Local lambda source validation passed.")
+
 
 class SMTJRuntimeManager(RuntimeManager):
     def __init__(
@@ -199,6 +449,7 @@ class SMTJRuntimeManager(RuntimeManager):
         subnets: Optional[list[str]] = None,
         security_group_ids: Optional[list[str]] = None,
         max_job_runtime: Optional[int] = DEFAULT_SMTJ_JOB_MAX_RUNTIME,
+        rft_lambda: Optional[str] = None,
     ):
         # NOTE: Not setting execution_role directly due to issues with mypy type inference
         self._execution_role = execution_role
@@ -208,7 +459,7 @@ class SMTJRuntimeManager(RuntimeManager):
         self.encrypt_inter_container_traffic = encrypt_inter_container_traffic
         self.max_job_runtime = max_job_runtime
 
-        super().__init__(instance_type, instance_count, kms_key_id)
+        super().__init__(instance_type, instance_count, kms_key_id, rft_lambda)
         self.setup()
 
     @classmethod
@@ -235,6 +486,10 @@ class SMTJRuntimeManager(RuntimeManager):
         )
 
         return permissions
+
+    @property
+    def platform(self) -> Platform:
+        return Platform.SMTJ
 
     def setup(self) -> None:
         boto_session = boto3.session.Session()
@@ -342,6 +597,7 @@ class SMHPRuntimeManager(RuntimeManager):
         cluster_name: str,
         namespace: str,
         kms_key_id: Optional[str] = None,
+        rft_lambda: Optional[str] = None,
     ):
         from amzn_nova_forge.validation.validator import Validator
 
@@ -350,7 +606,8 @@ class SMHPRuntimeManager(RuntimeManager):
 
         self.cluster_name = cluster_name
         self.namespace = namespace
-        super().__init__(instance_type, instance_count, kms_key_id)
+        self.execution_role = None
+        super().__init__(instance_type, instance_count, kms_key_id, rft_lambda)
         self.setup()
 
     @classmethod
@@ -385,6 +642,10 @@ class SMHPRuntimeManager(RuntimeManager):
         )
 
         return permissions
+
+    @property
+    def platform(self) -> Platform:
+        return Platform.SMHP
 
     def setup(self) -> None:
         boto_session = boto3.session.Session()
@@ -483,6 +744,186 @@ class SMHPRuntimeManager(RuntimeManager):
             logger.error(f"Failed to cleanup HyperPod job '{job_name}': {str(e)}")
             raise
 
+    def scale_cluster(
+        self,
+        instance_group_name: str,
+        target_instance_count: int,
+    ) -> Dict[str, Any]:
+        """
+        Scale a HyperPod cluster RIG up or down. The scaling is asynchronous.
+        The cluster status will change to 'Updating' while scaling, and 'InService' when ready.
+
+        Args:
+            instance_group_name: Name of the instance group to scale (e.g., 'worker-group')
+            target_instance_count: Desired number of instances for the group
+
+        Returns:
+            dict: Response containing:
+                - ClusterArn: ARN of the updated cluster
+                - InstanceGroupName: Name of the scaled instance group
+                - InstanceType: Instance type being scaled
+                - PreviousCount: Current instance count
+                - TargetCount: Target instance count
+
+        Raises:
+            ValueError: If target_instance_count is negative
+            ClientError: If scaling fails due to insufficient quota, capacity, or cluster issues.
+        """
+        if target_instance_count < 0:
+            raise ValueError(
+                f"target_instance_count must be non-negative, got {target_instance_count}"
+            )
+
+        sagemaker_client = boto3.client("sagemaker", region_name=self.region)
+
+        # Get current cluster configuration
+        try:
+            describe_response = sagemaker_client.describe_cluster(
+                ClusterName=self.cluster_name
+            )
+        except ClientError as e:
+            logger.error(f"Failed to describe cluster '{self.cluster_name}': {e}")
+            raise
+
+        # Check if cluster is in InService state
+        cluster_status = describe_response.get("ClusterStatus")
+        if cluster_status != "InService":
+            error_msg = (
+                f"Cluster '{self.cluster_name}' is in '{cluster_status}' state. "
+                f"Scaling is only allowed when cluster is in 'InService' state."
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        # Find the Restricted Instance Group (RIG)
+        restricted_instance_groups = describe_response.get(
+            "RestrictedInstanceGroups", []
+        )
+        target_group = None
+
+        for group in restricted_instance_groups:
+            if group["InstanceGroupName"] == instance_group_name:
+                target_group = group
+                break
+
+        if not target_group:
+            error_msg = (
+                f"Instance group '{instance_group_name}' not found in cluster '{self.cluster_name}'. "
+                f"Available groups: {[g['InstanceGroupName'] for g in restricted_instance_groups]}"
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        instance_type = target_group["InstanceType"]
+        current_count = target_group["CurrentCount"]
+
+        logger.info(
+            f"Scaling instance group '{instance_group_name}' "
+            f"({instance_type}) from {current_count} to {target_instance_count} instances"
+        )
+
+        # Update the cluster with new instance count, preserves other RIG configurations
+        try:
+            all_groups = []
+            for group in restricted_instance_groups:
+                group_params = {
+                    "InstanceGroupName": group["InstanceGroupName"],
+                    "InstanceType": group["InstanceType"],
+                    "InstanceCount": (
+                        target_instance_count
+                        if group["InstanceGroupName"] == instance_group_name
+                        else group["CurrentCount"]
+                    ),
+                    "ExecutionRole": group["ExecutionRole"],
+                }
+
+                # Include OverrideVpcConfig if present (immutable field)
+                if "OverrideVpcConfig" in group:
+                    group_params["OverrideVpcConfig"] = group["OverrideVpcConfig"]
+
+                # Build EnvironmentConfig with only FSxLustreConfig if present
+                env_config = {}
+                if (
+                    "EnvironmentConfig" in group
+                    and "FSxLustreConfig" in group["EnvironmentConfig"]
+                ):
+                    env_config["FSxLustreConfig"] = group["EnvironmentConfig"][
+                        "FSxLustreConfig"
+                    ]
+                group_params["EnvironmentConfig"] = env_config
+
+                all_groups.append(group_params)
+
+            update_response = sagemaker_client.update_cluster(
+                ClusterName=self.cluster_name,
+                RestrictedInstanceGroups=all_groups,
+            )
+
+            logger.info(
+                f"Successfully initiated scaling for cluster '{self.cluster_name}'. "
+            )
+
+            return {
+                "ClusterArn": update_response["ClusterArn"],
+                "InstanceGroupName": instance_group_name,
+                "InstanceType": instance_type,
+                "PreviousCount": current_count,
+                "TargetCount": target_instance_count,
+            }
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "Unknown")
+            error_message = e.response.get("Error", {}).get("Message", str(e))
+            logger.error(f"Failed to scale cluster: {error_code} - {error_message}")
+            raise
+
+    def get_instance_groups(self) -> List[Dict[str, Any]]:
+        """
+        Get a list of available Restricted Instance Groups (RIGs) in the cluster.
+
+        Returns:
+            list: List of dicts containing instance group information:
+                - InstanceGroupName: Name of the instance group
+                - InstanceType: EC2 instance type (e.g., 'ml.p5.48xlarge')
+                - CurrentCount: Current number of instances in the group
+
+        Raises:
+            ClientError: If unable to describe the cluster
+        """
+        sagemaker_client = boto3.client("sagemaker", region_name=self.region)
+
+        # Get current cluster configuration
+        try:
+            describe_response = sagemaker_client.describe_cluster(
+                ClusterName=self.cluster_name
+            )
+        except ClientError as e:
+            logger.error(f"Failed to describe cluster '{self.cluster_name}': {e}")
+            raise
+
+        # Get the RIGs and extract necessary information
+        instance_groups = describe_response.get("RestrictedInstanceGroups", [])
+
+        rig_output = [
+            {
+                "InstanceGroupName": group["InstanceGroupName"],
+                "InstanceType": group["InstanceType"],
+                "CurrentCount": group["CurrentCount"],
+            }
+            for group in instance_groups
+        ]
+
+        # Log output to terminal
+        logger.info(
+            f"Found {len(rig_output)} instance group(s) in cluster '{self.cluster_name}':"
+        )
+        for group in rig_output:
+            logger.info(
+                f"  - {group['InstanceGroupName']}: {group['InstanceType']} "
+                f"(Current: {group['CurrentCount']} instances)"
+            )
+
+        return rig_output
+
 
 class BedrockRuntimeManager(RuntimeManager):
     """
@@ -495,6 +936,7 @@ class BedrockRuntimeManager(RuntimeManager):
         base_model_identifier: Optional[str] = None,
         kms_key_id: Optional[str] = None,
         vpc_config: Optional[Dict[str, list[str]]] = None,
+        rft_lambda: Optional[str] = None,
     ):
         # Store Bedrock-specific configuration
         self.execution_role = execution_role
@@ -503,9 +945,18 @@ class BedrockRuntimeManager(RuntimeManager):
 
         # Calls constructor with None for instance_type and instance_count
         # since Bedrock manages compute resources automatically
-        super().__init__(instance_type=None, instance_count=None, kms_key_id=kms_key_id)
+        super().__init__(
+            instance_type=None,
+            instance_count=None,
+            kms_key_id=kms_key_id,
+            rft_lambda=rft_lambda,
+        )
 
         self.setup()
+
+    @property
+    def platform(self) -> Platform:
+        return Platform.BEDROCK
 
     def setup(self) -> None:
         """Initialize Bedrock client and session.
@@ -849,6 +1300,7 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
         subnets: Optional[list[str]] = None,
         security_group_ids: Optional[list[str]] = None,
         max_job_runtime: Optional[int] = DEFAULT_SMTJ_JOB_MAX_RUNTIME,  # 1 day
+        rft_lambda: Optional[str] = None,
     ):
         # NOTE: Not setting execution_role directly due to issues with mypy type inference
         self._execution_role = execution_role
@@ -858,7 +1310,7 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
         self.encrypt_inter_container_traffic = encrypt_inter_container_traffic
         self.max_job_runtime = max_job_runtime
 
-        super().__init__(None, None, kms_key_id=kms_key_id)
+        super().__init__(None, None, kms_key_id=kms_key_id, rft_lambda=rft_lambda)
         self.setup()
 
     @classmethod
@@ -885,6 +1337,10 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
         )
 
         return permissions
+
+    @property
+    def platform(self) -> Platform:
+        return Platform.SMTJServerless
 
     def setup(self) -> None:
         boto_session = boto3.session.Session()

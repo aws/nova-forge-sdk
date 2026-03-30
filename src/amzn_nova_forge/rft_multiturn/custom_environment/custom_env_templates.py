@@ -53,6 +53,7 @@ def load_environment(**kwargs) -> vf.Environment:
 
 MULTI_TURN_TEMPLATE = """from datasets import load_dataset, Dataset
 import verifiers as vf
+from typing import Any
 
 def load_environment(**kwargs) -> vf.Environment:
     # TODO: Replace with your own dataset loading logic
@@ -79,9 +80,22 @@ def load_environment(**kwargs) -> vf.Environment:
         weights=[1.0, 0.2],
     )
     
+    # MultiTurnEnv is abstract — subclass it and implement env_response.
+    # env_response receives the conversation so far and must return the full
+    # updated messages list (messages + your new response) and updated state.
+    # Return (messages, state) with no new message appended to end the conversation early.
+    class CustomMultiTurnEnv(vf.MultiTurnEnv):
+        def env_response(
+            self, messages: list, state: dict[str, Any], **kwargs
+        ) -> tuple[list, dict[str, Any]]:
+            # TODO: Implement your environment logic here.
+            # Must return (updated_messages_list, state) — append your response to messages.
+            last_content = messages[-1].get("content", "") if messages else ""
+            response = {"role": "user", "content": f"Environment response to: {last_content}"}
+            return messages + [response], state
+
     # TODO: Adjust max_turns based on your multi-turn task requirements
-    #TODO: Replace vf.MultiTurnEnv with custom env if required
-    return vf.MultiTurnEnv(
+    return CustomMultiTurnEnv(
         eval_dataset=dataset,
         system_prompt=system_prompt,
         parser=parser,

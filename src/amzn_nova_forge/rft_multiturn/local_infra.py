@@ -37,7 +37,6 @@ from .common_infra_commands import CommonInfraCommands
 from .constants import (
     JOB_STATUS_KILLED,
     JOB_STATUS_RUNNING,
-    RFT_SAM_LOG,
     SDK_RFT_LOGS_DIR,
     STARTER_KIT_S3,
 )
@@ -288,7 +287,11 @@ class LocalRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
 
         # Set attributes for _build_sam_deploy_commands
         self.sam_base_dir = os.path.dirname(self.starter_kit_path)
-        self.sam_log_file = os.path.join(self.workspace_dir, RFT_SAM_LOG)
+        session_id = getattr(self, "session_id", "default")
+        self.sam_log_file = self._get_log_file_path(session_id, EnvType.SAM)
+
+        # Ensure logs directory exists
+        os.makedirs(self._get_base_logs_dir(), exist_ok=True)
 
         venv_path = os.path.join(self.sam_base_dir, "v1", self.python_venv_name)
         if os.path.exists(venv_path):

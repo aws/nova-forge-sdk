@@ -1,0 +1,350 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Nova Forge SDK: SMTJ (SageMaker Training Job) Notifications Infrastructure'
+
+Parameters:
+  KmsKeyId:
+    Type: String
+    Default: ''
+    Description: 'Optional KMS key ID for SNS topic encryption (e.g., 1234abcd-12ab-34cd-56ef-1234567890ab). Leave empty to use default encryption. Note: Provide only the key ID, not the full ARN.'
+
+Conditions:
+  UseKmsEncryption: !Not [!Equals [!Ref KmsKeyId, '']]
+
+Resources:
+  # DynamoDB Table to track SMTJ job notifications
+  SMTJJobNotificationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: NovaForgeSDK-SMTJ-JobNotifications
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: 
+        - AttributeName: job_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: job_id
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      PointInTimeRecoverySpecification: 
+        PointInTimeRecoveryEnabled: true
+
+  # SNS Topic for SMTJ notifications
+  SMTJJobNotificationsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: NovaForgeSDK-SMTJ-Notifications
+      DisplayName: Nova Forge SDK SMTJ Notifications
+      KmsMasterKeyId: !If [UseKmsEncryption, !Ref KmsKeyId, !Ref 'AWS::NoValue']
+
+  # IAM Role for SMTJ Notification Lambda
+  SMTJNotificationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: NovaForgeSDK-SMTJ-NotificationLambda-Role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBReadAndDeleteAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                Resource: !GetAtt SMTJJobNotificationsTable.Arn
+        - PolicyName: SNSPublishAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref SMTJJobNotificationsTopic
+        - PolicyName: S3ReadAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - "arn:aws:s3:::*" # Can be specified by the user
+                  - "arn:aws:s3:::*/*"
+        - !If
+          - UseKmsEncryption
+          - PolicyName: KMSAccess
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - kms:Decrypt
+                    - kms:GenerateDataKey
+                  Resource: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/${KmsKeyId}'
+          - !Ref 'AWS::NoValue'
+
+  # Lambda Function to handle SMTJ notifications
+  SMTJNotificationHandlerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: NovaForgeSDK-SMTJ-NotificationHandler
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt SMTJNotificationLambdaRole.Arn
+      Timeout: 180
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref SMTJJobNotificationsTable
+          SNS_TOPIC_ARN: !Ref SMTJJobNotificationsTopic
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+          import tempfile
+          import tarfile
+          from datetime import datetime
+
+          dynamodb = boto3.client('dynamodb')
+          sns = boto3.client('sns')
+          s3 = boto3.client('s3')
+
+          TABLE_NAME = os.environ['DYNAMODB_TABLE_NAME']
+          TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
+
+          def validate_manifest_in_tar(output_s3_path, job_id):
+              """
+              Check if manifest.json exists inside the output.tar.gz file for SMTJ at its expected location within the output.tar.gz file. 
+              
+              Args:
+                  output_s3_path: Base S3 path (e.g., s3://bucket/path/)
+                  job_id: Job ID/name
+                  
+              Returns:
+                  dict: {
+                      'manifest_exists': bool,
+                      'error_message': str or None,
+                  }
+              """
+              result = {
+                  'manifest_exists': False,
+                  'error_message': None,
+              }
+              
+              try:
+                  # Construct the expected tar file path (Format: s3://{output_s3_path}/{job_id}/output/output.tar.gz)
+                  base_path = output_s3_path.rstrip('/')
+                  tar_file_path = f"{base_path}/{job_id}/output/output.tar.gz"
+                  
+                  # Parse S3 URI
+                  if not tar_file_path.startswith('s3://'):
+                      result['error_message'] = "Invalid S3 URI format"
+                      return result
+                  
+                  s3_path = tar_file_path[5:]  # Remove 's3://'
+                  bucket, key = s3_path.split('/', 1)
+                  
+                  # Check if tar file exists
+                  try:
+                      s3.head_object(Bucket=bucket, Key=key)
+                  except s3.exceptions.NoSuchKey:
+                      result['error_message'] = "Tar file not found"
+                      return result
+                  except s3.exceptions.NoSuchBucket:
+                      result['error_message'] = "Bucket not found"
+                      return result
+                  
+                  # Download and extract manifest.json from tar.gz
+                  with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+                      try:
+                          s3.download_file(bucket, key, tmp_file.name)
+                          
+                          # Open tar file and check that the manifest file exists.
+                          with tarfile.open(tmp_file.name, "r:gz") as tar:
+                              try:
+                                  manifest_file = tar.extractfile("manifest.json")
+                                  if manifest_file is None:
+                                      result['error_message'] = "manifest.json not found in tar file"
+                                      return result
+                                  
+                                  result['manifest_exists'] = True
+                                  
+                              except KeyError:
+                                  result['error_message'] = "manifest.json not found in tar file"
+                              except json.JSONDecodeError as e:
+                                  result['error_message'] = f"Invalid JSON in manifest.json: {str(e)}"
+                      finally:
+                          # Cleanup temp if created
+                          try:
+                              os.unlink(tmp_file.name) 
+                          except:
+                              pass
+                  
+                  return result
+                  
+              except Exception as e:
+                  result['error_message'] = f"Unexpected error: {str(e)}"
+                  return result
+
+          def lambda_handler(event, context):
+              print(f"Received event: {json.dumps(event)}")
+              
+              # Extract job details from EventBridge event
+              detail = event.get('detail', {})
+              job_id = detail.get('TrainingJobName')
+              status = detail.get('TrainingJobStatus')
+              
+              if not job_id or not status:
+                  print("Missing job_id or status in event")
+                  return {'statusCode': 400, 'body': 'Invalid event'}
+              
+              print(f"Processing job {job_id} with status {status}")
+              
+              # Check if notifications are configured for this job
+              try:
+                  response = dynamodb.get_item(
+                      TableName=TABLE_NAME,
+                      Key={'job_id': {'S': job_id}}
+                  )
+              except Exception as e:
+                  print(f"Error querying DynamoDB: {e}")
+                  return {'statusCode': 500, 'body': f'DynamoDB error: {str(e)}'}
+              
+              if 'Item' not in response:
+                  print(f"No notifications configured for job {job_id} (already processed or not configured)")
+                  return {'statusCode': 200, 'body': 'No notifications configured'}
+              
+              item = response['Item']
+              emails = item.get('emails', {}).get('SS', [])
+              output_s3_path = item.get('output_s3_path', {}).get('S')
+              
+              # Delete the DynamoDB entry
+              try:
+                  dynamodb.delete_item(
+                      TableName=TABLE_NAME,
+                      Key={'job_id': {'S': job_id}}
+                  )
+                  print(f"Deleted DynamoDB entry for job {job_id}.")
+              except Exception as e:
+                  print(f"Warning: Could not delete DynamoDB entry: {e}")
+              
+              # Build notification message.
+              region = context.invoked_function_arn.split(':')[3]
+              console_url = f"https://console.aws.amazon.com/sagemaker/home?region={region}#/jobs/{job_id}"
+              
+              subject = f"[SMTJ] Job {status}: {job_id}"
+              message = f"""SageMaker Training Job Status Update
+                
+              Job ID: {job_id}
+              Platform: SMTJ
+              Status: {status}
+              Timestamp: {datetime.utcnow().isoformat()}Z
+              View in Console: {console_url}
+              """
+
+              # Added completed messaging based on whether output artifacts were found.
+              if status == 'Completed':
+                  if not output_s3_path:
+                      message += "\nNo output_s3_path was provided. Output artifact validation will be skipped."
+                  else:
+                      val_result = validate_manifest_in_tar(output_s3_path, job_id)
+                      if val_result['manifest_exists']:
+                          message += "\n\nJob completed successfully. manifest.json found in output.tar.gz."
+                      else:
+                          message += f"\n\nJob completed. manifest.json was not found in output.tar.gz."
+                          message += f"\nNote: This is expected for evaluation jobs."
+                          message += f"\nFor training jobs, please check your logs for details."
+                          if val_result['error_message']:
+                              message += f"\nDetails: {val_result['error_message']}"
+              
+              # Add failure reason if available. 
+              if status == 'Failed' and 'FailureReason' in detail:
+                  message += f"\nFailure Reason: {detail['FailureReason']}"
+              
+              message += "\n\n---\nThis notification was sent by Nova Forge SDK Job Notifications."
+              
+              # Send notification to SNS topic
+              try:
+                  sns.publish(
+                      TopicArn=TOPIC_ARN,
+                      Subject=subject,
+                      Message=message,
+                      MessageAttributes={
+                          'job_id': {'DataType': 'String', 'StringValue': job_id},
+                          'status': {'DataType': 'String', 'StringValue': status}
+                      }
+                  )
+                  print(f"Notification published to SNS topic for {len(emails)} subscriber(s)")
+              except Exception as e:
+                  print(f"Error publishing notification: {e}")
+              
+              return {
+                  'statusCode': 200,
+                  'body': f'Notification sent to SNS topic with {len(emails)} subscriber(s).'
+              }
+
+  # EventBridge Rule for SMTJ State Changes
+  SMTJJobStateChangeRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: NovaForgeSDK-SMTJ-Job-State-Change
+      Description: Captures SMTJ (SageMaker Training Job) state changes for notifications
+      EventPattern:
+        source:
+          - aws.sagemaker
+        detail-type:
+          - SageMaker Training Job State Change
+        detail:
+          TrainingJobStatus:
+            - Completed
+            - Failed
+            - Stopped
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt SMTJNotificationHandlerFunction.Arn
+          Id: SMTJNotificationHandlerTarget
+
+  # Permission for EventBridge to invoke SMTJ Lambda
+  SMTJEventBridgeLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SMTJNotificationHandlerFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt SMTJJobStateChangeRule.Arn
+
+Outputs:
+  DynamoDBTableName:
+    Description: DynamoDB table name for SMTJ job notifications
+    Value: !Ref SMTJJobNotificationsTable
+    Export:
+      Name: NovaForgeSDK-SMTJ-JobNotifications-TableName
+
+  SNSTopicArn:
+    Description: SNS Topic ARN for SMTJ notifications
+    Value: !Ref SMTJJobNotificationsTopic
+    Export:
+      Name: NovaForgeSDK-SMTJ-JobNotifications-TopicArn
+
+  LambdaFunctionArn:
+    Description: Lambda function ARN for SMTJ notification handler
+    Value: !GetAtt SMTJNotificationHandlerFunction.Arn
+    Export:
+      Name: NovaForgeSDK-SMTJ-NotificationHandler-FunctionArn
+
+  EventBridgeRuleName:
+    Description: EventBridge rule name for SMTJ
+    Value: !Ref SMTJJobStateChangeRule
+    Export:
+      Name: NovaForgeSDK-SMTJ-JobNotifications-RuleName
