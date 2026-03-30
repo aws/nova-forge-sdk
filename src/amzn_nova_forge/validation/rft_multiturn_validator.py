@@ -112,14 +112,14 @@ def validate_stack_name(stack_name: str) -> None:
             "Must start with a letter and contain only alphanumeric characters and hyphens."
         )
 
-    # Validate AGIModelLens Lambda ARN compatibility
+    # Validate Lambda ARN compatibility
     # Lambda function name will be: {stack_name}-SageMaker-rollout
-    # AGIModelLens requires: [a-zA-Z0-9._-]{0,32}[Ss]age[Mm]aker[a-zA-Z0-9._-]{0,32}
+    # Lambda requires: [a-zA-Z0-9._-]{0,32}[Ss]age[Mm]aker[a-zA-Z0-9._-]{0,32}
     # This means the part before "-SageMaker" must be <= 32 characters
     if len(stack_name) > 32:
         raise ValueError(
             f"Stack name '{stack_name}' is too long ({len(stack_name)} characters). "
-            f"Maximum length is 32 characters to ensure compatibility with AGIModelLens Lambda ARN validation. "
+            f"Maximum length is 32 characters to ensure compatibility with Lambda ARN validation. "
             f"The Lambda function name will be '{stack_name}-SageMaker-rollout'."
         )
 

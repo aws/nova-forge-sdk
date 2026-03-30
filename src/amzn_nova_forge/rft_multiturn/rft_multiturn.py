@@ -39,7 +39,11 @@ from .base_infra import (
     VFEnvId,
     create_rft_execution_role,
 )
-from .constants import RFT_EXECUTION_ROLE_NAME, STACK_NAME_SUFFIX
+from .constants import (
+    CFN_UNUSABLE_STACK_STATES,
+    RFT_EXECUTION_ROLE_NAME,
+    STACK_NAME_SUFFIX,
+)
 from .custom_environment import CustomEnvironment
 from .ec2_infra import EC2RFTInfrastructure
 from .ecs_infra import ECSRFTInfrastructure
@@ -588,8 +592,6 @@ class RFTMultiturnInfrastructure:
             config_path=config_path,
         )
 
-        logger.info(f"Environment started on {self.platform}")
-
     def start_training_environment(
         self,
         vf_env_args: Optional[Dict] = None,
@@ -850,10 +852,23 @@ class RFTMultiturnInfrastructure:
         }
 
     def _check_stack_exists(self, stack_name: str) -> bool:
-        """Check if CloudFormation stack exists"""
+        """Check if CloudFormation stack exists and is in a usable state.
+
+        Stacks in DELETE_FAILED / ROLLBACK_COMPLETE / ROLLBACK_FAILED are treated as
+        non-existent because they have no Outputs and cannot be updated. The user must
+        manually delete them from the CloudFormation console before re-running setup().
+        """
         cfn_client = boto3.client("cloudformation", region_name=self.region)
         try:
-            cfn_client.describe_stacks(StackName=stack_name)
+            response = cfn_client.describe_stacks(StackName=stack_name)
+            stack = response["Stacks"][0]
+            status = stack.get("StackStatus", "")
+            if status in CFN_UNUSABLE_STACK_STATES:
+                raise RuntimeError(
+                    f"CloudFormation stack '{stack_name}' is in an unrecoverable state: {status}. "
+                    f"Please delete it manually from the CloudFormation console (or via CLI: "
+                    f"`aws cloudformation delete-stack --stack-name {stack_name}`) and re-run setup()."
+                )
             return True
         except cfn_client.exceptions.ClientError:
             return False
@@ -862,7 +877,7 @@ class RFTMultiturnInfrastructure:
         """Load outputs from existing stack"""
         cfn_client = boto3.client("cloudformation", region_name=self.region)
         response = cfn_client.describe_stacks(StackName=stack_name)
-        outputs = response["Stacks"][0]["Outputs"]
+        outputs = response["Stacks"][0].get("Outputs", [])
 
         sts_client = boto3.client("sts")
         account_id = sts_client.get_caller_identity()["Account"]

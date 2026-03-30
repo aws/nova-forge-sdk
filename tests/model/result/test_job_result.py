@@ -379,5 +379,136 @@ class TestSMHPStatusManager(unittest.TestCase):
         self.assertEqual(mock_run.call_count, 2)
 
 
+class TestResolveStartTime(unittest.TestCase):
+    """Test that job results can resolve start_time from the platform when not provided."""
+
+    def test_smtj_resolve_start_time(self):
+        """SMTJStatusManager resolves start time from describe_training_job."""
+        mock_client = Mock()
+        training_start = datetime(2026, 3, 13, 12, 0, 0)
+        mock_client.describe_training_job.return_value = {
+            "TrainingJobStatus": "Completed",
+            "TrainingStartTime": training_start,
+        }
+        manager = SMTJStatusManager(mock_client)
+        result = manager.resolve_start_time("test-job")
+        self.assertEqual(result, training_start)
+
+    def test_smtj_resolve_start_time_falls_back_to_creation_time(self):
+        """Falls back to CreationTime when TrainingStartTime is absent."""
+        mock_client = Mock()
+        creation_time = datetime(2026, 3, 13, 11, 59, 0)
+        mock_client.describe_training_job.return_value = {
+            "TrainingJobStatus": "InProgress",
+            "CreationTime": creation_time,
+        }
+        manager = SMTJStatusManager(mock_client)
+        result = manager.resolve_start_time("test-job")
+        self.assertEqual(result, creation_time)
+
+    def test_smtj_resolve_start_time_raises_on_missing(self):
+        """Raises ValueError when neither timestamp is available."""
+        mock_client = Mock()
+        mock_client.describe_training_job.return_value = {
+            "TrainingJobStatus": "InProgress",
+        }
+        manager = SMTJStatusManager(mock_client)
+        with self.assertRaises(ValueError):
+            manager.resolve_start_time("test-job")
+
+    @patch("subprocess.run")
+    def test_smhp_resolve_start_time(self, mock_run):
+        """SMHPStatusManager resolves start time from hyperpod get-job --verbose."""
+        connect_result = Mock()
+        connect_result.stderr = ""
+
+        get_job_result = Mock()
+        get_job_result.stdout = json.dumps(
+            {
+                "Status": {"startTime": "2026-03-13T12:00:00Z"},
+                "CreationTimestamp": "2026-03-13T11:59:00Z",
+            }
+        )
+
+        mock_run.side_effect = [connect_result, get_job_result]
+
+        manager = SMHPStatusManager("test-cluster", "test-namespace")
+        result = manager.resolve_start_time("test-job")
+
+        self.assertEqual(
+            result,
+            datetime(2026, 3, 13, 12, 0, 0, tzinfo=__import__("datetime").timezone.utc),
+        )
+        mock_run.assert_any_call(
+            ["hyperpod", "get-job", "--job-name", "test-job", "--verbose"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    @patch("subprocess.run")
+    def test_smhp_resolve_start_time_falls_back_to_creation(self, mock_run):
+        """Falls back to CreationTimestamp when Status.startTime is absent."""
+        connect_result = Mock()
+        connect_result.stderr = ""
+
+        get_job_result = Mock()
+        get_job_result.stdout = json.dumps(
+            {
+                "Status": {},
+                "Metadata": {"CreationTimestamp": "2026-03-13T11:59:00Z"},
+            }
+        )
+
+        mock_run.side_effect = [connect_result, get_job_result]
+
+        manager = SMHPStatusManager("test-cluster", "test-namespace")
+        result = manager.resolve_start_time("test-job")
+
+        self.assertEqual(
+            result,
+            datetime(
+                2026, 3, 13, 11, 59, 0, tzinfo=__import__("datetime").timezone.utc
+            ),
+        )
+
+    @patch("subprocess.run")
+    def test_smhp_resolve_start_time_raises_on_failure(self, mock_run):
+        """Raises ValueError when hyperpod get-job fails."""
+        mock_run.side_effect = subprocess.CalledProcessError(1, "hyperpod")
+
+        manager = SMHPStatusManager("test-cluster", "test-namespace")
+        with self.assertRaises(ValueError):
+            manager.resolve_start_time("test-job")
+
+    def test_smtj_result_without_started_time(self):
+        """SMTJTrainingResult resolves start_time when constructed with only job_id."""
+        from amzn_nova_forge.model.model_config import ModelArtifacts
+        from amzn_nova_forge.model.model_enums import Model, TrainingMethod
+        from amzn_nova_forge.model.result.training_result import SMTJTrainingResult
+
+        mock_client = Mock()
+        training_start = datetime(2026, 3, 13, 12, 0, 0)
+        mock_client.describe_training_job.return_value = {
+            "TrainingJobStatus": "Completed",
+            "TrainingStartTime": training_start,
+        }
+
+        result = SMTJTrainingResult(
+            job_id="resolve-test-123",
+            started_time=None,
+            method=TrainingMethod.SFT_LORA,
+            model_type=Model.NOVA_LITE_2,
+            model_artifacts=ModelArtifacts(
+                checkpoint_s3_path="s3://test/checkpoint",
+                output_s3_path="s3://test/output",
+            ),
+            sagemaker_client=mock_client,
+        )
+
+        self.assertEqual(result.started_time, training_start)
+        self.assertEqual(result.job_id, "resolve-test-123")
+
+
 if __name__ == "__main__":
     unittest.main()

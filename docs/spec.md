@@ -42,9 +42,10 @@ def __init__(
 - `data_s3_path` (Optional[str]): S3 path to the training dataset
 - `output_s3_path` (Optional[str]): S3 path for output artifacts. If not provided, will be auto-generated
 - `model_path` (Optional[str]): S3 path for model path
-- `validation_config` (Optional[Dict[str, Union[bool, Dict]]]): Optional dict to control validation. Defaults to `{'iam': True, 'infra': True, 'rft_lambda': True}`. For RFT training, you can enable automatic Lambda verification:
-  - Simple: `{'rft_lambda': True}` (uses default 200 samples)
-  - Advanced: `{'rft_lambda': {'enabled': True, 'samples': 20}}` (custom sample count)
+- `validation_config` (Optional[Dict[str, bool]]): Optional dict to control validation. Defaults to `{'iam': True, 'infra': True, 'recipe': True}`.
+  - `iam` (bool): Enable IAM permission validation (default: True)
+  - `infra` (bool): Enable infrastructure validation (default: True)
+  - `recipe` (bool): Enable recipe constraint validation (default: True)
 - `generated_recipe_dir` (Optional[str]): Optional local path to save the generated recipe
 - `mlflow_monitor` (Optional[MLflowMonitor]): Optional MLflow monitoring configuration for experiment tracking (SageMaker only, not supported on Bedrock)
 - `deployment_mode` (DeploymentMode): Behavior when deploying to existing endpoint name. Options: FAIL_IF_EXISTS (default), UPDATE_IF_EXISTS
@@ -195,7 +196,7 @@ def train(
   - `global_batch_size` (int): Global batch size
   - `max_length` (int): Maximum sequence length
   - A full list of available overrides can be found via the [Nova Customization public documentation](https://docs.aws.amazon.com/nova/latest/userguide/customize-fine-tune-sagemaker.html) or by referencing the training recipes [here](https://docs.aws.amazon.com/sagemaker/latest/dg/nova-model-recipes.html).
-- `rft_lambda_arn` (Optional[str]): Rewards Lambda ARN (only used for RFT training methods)
+- `rft_lambda_arn` (Optional[str]): Rewards Lambda ARN (only used for RFT training methods). If passed, takes priority over `rft_lambda_arn` set on the `RuntimeManager`.
 - `validation_data_s3_path` (Optional[str]): Validation S3 path, only applicable for CPT (but is still optional for CPT)
 - `dry_run` (Optional[bool]): Actually starts a job if False, otherwise just performs validation.
 
@@ -264,7 +265,7 @@ def evaluate(
   - `top_p` (float): Top-p (nucleus) sampling parameter
   - `temperature` (float): Temperature for sampling
 - `processor` (Optional[Dict[str, Any]]): Optional, Bring Your Own Metrics/RFT lambda Configuration
-- `rl_env` (Optional[Dict[str, Any]]): Optional, Bring your own reinforcement learning environment config
+- `rl_env` (Optional[Dict[str, Any]]): Optional, Bring your own reinforcement learning environment config. For `RFT_EVAL`, if either `processor` or `rl_env` is explicitly passed, it takes priority over `rft_lambda_arn` set on the `RuntimeManager`.
 - `dry_run` (Optional[bool]): Actually starts a job if False, otherwise just performs validation.
 - `job_result` (Optional[TrainingResult]): Optional TrainingResult object to extract checkpoint path from. If provided and `model_path` is None, will automatically extract the checkpoint path from the training job's output and validate platform compatibility.
 
@@ -300,7 +301,7 @@ byom_eval_result = customizer.evaluate(
     eval_task=EvaluationTask.GEN_QA,
     data_s3_path="s3://bucket/data",
     processor={
-        "lambda_arn": "arn:aws:lambda:us-east-1:123456789012:function:byom-lambda"
+        "lambda_arn": "arn:aws:lambda:<region>:123456789012:function:byom-lambda"
     }
 )
 ```
@@ -537,6 +538,98 @@ class JobConfig:
 * The specific instance types that can be used with the runtime managers (SMTJ, SMHP) can be found in `docs/instance_type_spec.md`.
 * This file also defines which instance types can be used with a specific model and method.
 * Bedrock is fully managed and does not require instance type configuration.
+
+### Shared RuntimeManager Methods
+
+The following methods are available on all `RuntimeManager` subclasses.
+
+#### Properties (shared)
+- `rft_lambda` (Optional[str]): Lambda ARN or local `.py` file path. Assigning a new value automatically updates `rft_lambda_arn` — if the value is an ARN it is resolved immediately; if it is a file path, `rft_lambda_arn` is cleared until `deploy_lambda()` is called.
+- `rft_lambda_arn` (Optional[str]): Resolved Lambda ARN. Set immediately when `rft_lambda` is assigned an ARN, or populated by `deploy_lambda()` when `rft_lambda` is a file path.
+
+**Example:**
+```python
+# Set an ARN directly — rft_lambda_arn is updated immediately
+runtime.rft_lambda = 'arn:aws:lambda:us-east-1:123456789012:function:my-reward-fn'
+print(runtime.rft_lambda_arn)  # 'arn:aws:lambda:us-east-1:123456789012:function:my-reward-fn'
+
+# Set a file path — rft_lambda_arn is cleared until deploy_lambda() is called
+runtime.rft_lambda = 'reward.py'
+print(runtime.rft_lambda_arn)  # None
+runtime.deploy_lambda(lambda_name='my-reward-fn')
+print(runtime.rft_lambda_arn)
+#'arn:aws:lambda:us-east-1:123456789012:function:my-reward-fn'
+```
+
+---
+
+#### `deploy_lambda()`
+
+Packages a local Python file into a zip and creates or updates a Lambda function. The source file is read from `self.rft_lambda`, which must be set to a local `.py` file path before calling this method.
+
+**Signature:**
+```python
+def deploy_lambda(
+    self,
+    lambda_name: Optional[str] = None,
+    execution_role_arn: Optional[str] = None,
+) -> str
+```
+
+**Parameters:**
+- `lambda_name` (Optional[str]): Name for the Lambda function. Defaults to the source filename stem (underscores replaced with hyphens).
+- `execution_role_arn` (Optional[str]): IAM role ARN for the Lambda. Falls back to the runtime manager's `execution_role` attribute if not provided.
+
+**Returns:**
+- `str`: The deployed Lambda function ARN. Also sets `self.rft_lambda_arn` on the manager.
+
+**Raises:**
+- `ValueError`: If `rft_lambda` is not set, is already an ARN (nothing to deploy), the source file is not found, or no execution role can be resolved.
+
+**Example:**
+```python
+runtime.rft_lambda = 'rft_training_reward.py'
+lambda_arn = runtime.deploy_lambda(lambda_name='my-reward-fn')
+# runtime.rft_lambda_arn is now set automatically
+```
+
+---
+
+#### `validate_lambda()`
+
+Validates the RFT reward lambda with sample data from S3. Reads the lambda to validate from `self.rft_lambda` / `self.rft_lambda_arn`:
+- If `rft_lambda` is an ARN (or `rft_lambda_arn` is set), invokes the deployed Lambda with samples from `data_s3_path`.
+- If `rft_lambda` is a local `.py` path, validates by executing `lambda_handler` directly without deploying.
+
+**Signature:**
+```python
+def validate_lambda(
+    self,
+    data_s3_path: str,
+    validation_samples: int = 10,
+) -> None
+```
+
+**Parameters:**
+- `data_s3_path` (str): S3 path to the training dataset for pulling sample data.
+- `validation_samples` (int): Number of samples to load from `data_s3_path` (default: 10).
+
+**Raises:**
+- `ValueError`: If `rft_lambda` is not set, or if validation fails.
+
+**Example:**
+```python
+# Validate a local file without deploying
+runtime.rft_lambda = 'rft_training_reward.py'
+runtime.validate_lambda(data_s3_path='s3://bucket/data.jsonl')
+
+# Validate a deployed lambda
+runtime.rft_lambda = 'arn:aws:lambda:us-east-1:123456789012:function:my-reward-fn'
+runtime.validate_lambda(data_s3_path='s3://bucket/data.jsonl', validation_samples=20)
+```
+
+---
+
 ### SMTJRuntimeManager
 Manages SageMaker Training Jobs.
 
@@ -553,6 +646,7 @@ def __init__(
     encrypt_inter_container_traffic: bool = False,
     subnets: Optional[list[str]] = None,
     security_group_ids: Optional[list[str]] = None,
+    rft_lambda: Optional[str] = None,
 )
 ```
 
@@ -564,6 +658,7 @@ def __init__(
 - `encrypt_inter_container_traffic` (bool): Boolean that determines whether to encrypt inter-container traffic. Default value is False.
 - `subnets` (Optional[list[str]]): Optional list of strings representing subnets. Default value is None.
 - `security_group_ids` (Optional[list[str]]): Optional list of strings representing security group IDs. Default value is None.
+- `rft_lambda` (Optional[str]): Lambda ARN or local `.py` file path for RFT reward function. Can also be set or updated after construction.
 
 **Example:**
 ```python
@@ -618,6 +713,7 @@ def __init__(
  cluster_name: str,
  namespace: str,
  kms_key_id: Optional[str] = None,
+ rft_lambda: Optional[str] = None,
 )
 ```
 
@@ -627,6 +723,7 @@ def __init__(
 - `cluster_name` (str): HyperPod cluster name
 - `namespace` (str): Kubernetes namespace
 - `kms_key_id` (Optional[str]): Optional KMS Key Id to use in S3 Bucket encryption
+- `rft_lambda` (Optional[str]): Lambda ARN or local `.py` file path for RFT reward function. Can also be set or updated after construction.
 
 **Example:**
 ```python
@@ -667,6 +764,103 @@ def cleanup(
  job_name: str
 ) -> None
 ```
+
+##### `scale_cluster()`
+Scale a HyperPod cluster instance group up or down. 
+The scaling operation is asynchronous - the cluster status will change to 'Updating' while scaling, and 'InService' when ready.
+
+**Signature:**
+```python
+def scale_cluster(
+ self,
+ instance_group_name: str,
+ target_instance_count: int,
+) -> Dict[str, Any]
+```
+
+**Parameters:**
+- `instance_group_name` (str): Name of the instance group to scale (e.g., 'worker-group')
+- `target_instance_count` (int): Desired number of instances for the group (must be non-negative)
+
+**Returns:**
+- `Dict[str, Any]`: Response containing:
+  - `ClusterArn` (str): ARN of the updated cluster
+  - `InstanceGroupName` (str): Name of the scaled instance group
+  - `InstanceType` (str): Instance type being scaled
+  - `PreviousCount` (int): Current instance count before scaling
+  - `TargetCount` (int): Target instance count after scaling
+
+**Raises:**
+- `ValueError`: If target_instance_count is negative or instance group name is invalid
+- `ClientError`: If scaling fails due to insufficient quota, capacity or other cluster issues.
+
+**Example:**
+```python
+from amzn_nova_forge.manager import *
+
+# Create a runtime manager for your cluster
+manager = SMHPRuntimeManager(
+    instance_type="ml.p4d.24xlarge",
+    instance_count=4,
+    cluster_name="my-hyperpod-cluster",
+    namespace="default"
+)
+
+# Scale up the worker group from 4 to 8 instances
+result = manager.scale_cluster(
+    instance_group_name="worker-group",
+    target_instance_count=8
+)
+
+# Scale down to 2 instances
+result = manager.scale_cluster(
+    instance_group_name="worker-group",
+    target_instance_count=2
+)
+```
+**Notes:**
+- This method only works with Restricted Instance Groups (RIGs) in HyperPod clusters. The cluster must be in 'InService' state before scaling can be initiated.
+- This method can only scale up a SMHP cluster when there is sufficient Service Quota available.
+You will need to request a quota increase **before** scaling up a RIG in your HyperPod cluster.
+You can learn more [here](https://docs.aws.amazon.com/servicequotas/latest/userguide/request-quota-increase.html).
+  - Specifically, you will need to request a service quota increase for "INSTANCE_TYPE for cluster usage".
+
+##### `get_instance_groups()`
+Gets the RIGs associated with the current cluster defined in the SMHPRuntimeManager.
+Prints the values to the terminal and returns it as a list of dictionary entries.
+
+**Signature:**
+```python
+def get_instance_groups(
+ self
+) -> List[Dict[str, Any]]
+```
+
+**Returns:**
+- `List[Dict[str, Any]]`: Response containing:
+  - InstanceGroupName: Name of the instance group
+  - InstanceType: EC2 instance type (e.g., 'ml.p5.48xlarge')
+  - CurrentCount: Current number of instances in the group
+
+**Raises:**
+- `ClientError`: If unable to describe the cluster
+
+**Example:**
+```python
+from amzn_nova_forge.manager import *
+
+# Create a runtime manager for your cluster
+manager = SMHPRuntimeManager(
+    instance_type="ml.p4d.24xlarge",
+    instance_count=4,
+    cluster_name="my-hyperpod-cluster",
+    namespace="default"
+)
+
+# Get the instance groups available on the current cluster.
+instance_groups = manager.get_instance_groups()
+```
+
 ---
 ### BedrockRuntimeManager
 Manages Amazon Bedrock model customization jobs.
@@ -680,6 +874,7 @@ def __init__(
  execution_role: str,
  base_model_identifier: Optional[str] = None,
  kms_key_id: Optional[str] = None,
+ rft_lambda: Optional[str] = None,
 )
 ```
 
@@ -687,6 +882,7 @@ def __init__(
 - `execution_role` (str): IAM role ARN for Bedrock job execution
 - `base_model_identifier` (Optional[str]): Base model ARN (e.g., "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-2-lite-v1:0:256k")
 - `kms_key_id` (Optional[str]): Optional KMS Key Id for encryption
+- `rft_lambda` (Optional[str]): Lambda ARN or local `.py` file path for RFT reward function. Can also be set or updated after construction.
 
 **Example:**
 ```python
@@ -739,6 +935,8 @@ def __init__(
     subnets: Optional[list[str]] = None,
     security_group_ids: Optional[list[str]] = None,
     max_job_runtime: Optional[int] = 86400, 
+    rft_lambda: Optional[str] = None,
+
 )
 ```
 
@@ -750,6 +948,7 @@ def __init__(
 - `subnets` (Optional[list[str]]): Optional list of strings representing subnets. Default value is None.
 - `security_group_ids` (Optional[list[str]]): Optional list of strings representing security group IDs. Default value is None.
 - `max_job_runtime` (Optional[int]): Max Job Runtime in seconds (default: 1 day)
+- `rft_lambda` (Optional[str]): Lambda ARN or local `.py` file path for RFT reward function. Can also be set or updated after construction.
 **Example:**
 ```python
 from amzn_nova_forge.manager import *
@@ -1156,6 +1355,121 @@ def load(
 ```python
 job_result = BaseJobResult.load('./my_job_result.json')
 ```
+
+---
+
+##### `enable_job_notifications()`
+Enable email notifications for when a job reaches a terminal state (Completed, Failed, or Stopped).
+
+**Signature:**
+```python
+def enable_job_notifications(
+    self,
+    emails: list[str],
+    output_s3_path: Optional[str] = None,
+    region: Optional[str] = "us-east-1",
+    **platform_kwargs
+) -> None
+```
+
+**Parameters:**
+- `emails` (list[str]): List of email addresses to notify
+- `output_s3_path` (Optional[str]): S3 path where job outputs are stored. 
+  - Only required if the SDK cannot automatically extract it from the job result's `model_artifacts` attribute.
+  - For most training jobs, this parameter is automatically populated and does not need to be provided explicitly.
+- `region` (Optional[str]): AWS region for notification infrastructure (default: "us-east-1")
+- `**platform_kwargs`: Platform-specific parameters:
+  - **For SMTJ:**
+    - `kms_key_id` (Optional[str]): Customer KMS key ID (not full ARN) for SNS topic encryption
+  - **For SMHP:**
+    - `namespace` (str): Kubernetes namespace where the PyTorchJob runs (e.g., "kubeflow", "default") (Required)
+    - `kubectl_layer_arn` (str): ARN of the lambda-kubectl layer (Required)
+    - `eks_cluster_arn` (Optional[str]): EKS cluster ARN (auto-detected if not provided)
+    - `vpc_id` (Optional[str]): VPC ID (auto-detected if not provided)
+    - `subnet_ids` (Optional[list[str]]): List of subnet IDs for Lambda (auto-detected if not provided)
+    - `security_group_id` (Optional[str]): Security group ID for Lambda (auto-detected if not provided)
+    - `polling_interval_minutes` (Optional[int]): How often to check job status in minutes (default: 5)
+    - `kms_key_id` (Optional[str]): Customer KMS key ID (not full ARN) for SNS topic encryption
+
+**Returns:**
+- None
+
+**Raises:**
+- `ValueError`: If required parameters are missing or invalid
+- `NotificationManagerInfraError`: If infrastructure setup fails
+
+**How It Works:**
+1. Creates AWS infrastructure (CloudFormation stack) if it doesn't exist:
+   - DynamoDB table to store job notification configurations
+   - SNS topic for email notifications
+   - Lambda function to monitor job status
+   - EventBridge rule (SMTJ) or scheduled rule (SMHP) to trigger Lambda
+   - (SMHP only) VPC endpoints for DynamoDB and S3 if needed
+2. Stores job configuration in DynamoDB (including namespace for SMHP)
+3. Subscribes email addresses to SNS topic (users must confirm subscription)
+4. Monitors job status and sends email when job completes, fails, is stopped, or becomes degraded (SMHP only)
+
+**Email Confirmation:**
+Users will receive a confirmation email from AWS SNS and must click the confirmation link before receiving job notifications.
+
+**Examples:**
+
+SMTJ (SageMaker Training Jobs):
+```python
+# Basic usage - output_s3_path is automatically extracted
+result = customizer.train(job_name="my-job")
+result.enable_job_notifications(
+    emails=["user@example.com", "team@example.com"]
+)
+
+# With customer KMS encryption
+result.enable_job_notifications(
+    emails=["user@example.com"],
+    kms_key_id="abc-123-def-456"  # Just the key ID, not full ARN
+)
+
+# With custom region
+result.enable_job_notifications(
+    emails=["user@example.com"],
+    region="us-west-2"
+)
+```
+
+SMHP (SageMaker HyperPod):
+```python
+# Basic usage (with auto-detection)
+result = customizer.train(job_name="my-job")
+result.enable_job_notifications(
+    emails=["user@example.com"],
+    namespace="kubeflow",  # Required
+    kubectl_layer_arn="arn:aws:lambda:<region>:123456789012:layer:kubectl:1"  # Required
+)
+
+# With custom polling interval
+result.enable_job_notifications(
+    emails=["user@example.com"],
+    namespace="kubeflow",
+    kubectl_layer_arn="arn:aws:lambda:<region>:123456789012:layer:kubectl:1",
+    polling_interval_minutes=10  # Check every 10 minutes instead of default 5
+)
+
+# With explicit VPC configuration of the cluster where jobs are being monitored.
+result.enable_job_notifications(
+    emails=["user@example.com"],
+    namespace="kubeflow",
+    kubectl_layer_arn="arn:aws:lambda:<region>:123456789012:layer:kubectl:1",
+    eks_cluster_arn="arn:aws:eks:<region>:123456789012:cluster/my-cluster",
+    vpc_id="vpc-12345",
+    subnet_ids=["subnet-1", "subnet-2"],
+    security_group_id="sg-12345"
+)
+```
+
+**Important Notes:**
+- For SMHP, requires deploying a kubectl Lambda layer from AWS Serverless Application Repository
+- For SMHP, the user will need to manually grant the Lambda function access to your EKS cluster (access-entry).
+    - Please refer to [`docs/job_notifications.md`](job_notifications.md) for the commands to run to set this up. 
+- See [`docs/job_notifications.md`](job_notifications.md) for detailed setup instructions, troubleshooting, and advanced usage
 
 ---
 ### EvaluationResult (ABC)
@@ -2111,7 +2425,6 @@ def __init__(
 
 **Methods:**
 - `create(overwrite: bool = False)`: Create environment structure
-- `validate()`: Validate environment
 - `package_and_upload(bucket: Optional[str] = None)`: Upload to S3
 
 **Example:**
@@ -2153,6 +2466,214 @@ print(f"Uploaded to: {custom_env.s3_uri}")
 **Note:** RFT multiturn only supports SageMaker HyperPod (SMHP) platform and Nova 2.0 models (NOVA_LITE_2).
 
 ---
+## Job Notifications
+
+The Nova Forge SDK provides automated email notifications for training jobs when they reach terminal states (Completed, Failed, or Stopped). This feature helps you monitor long-running jobs without constantly checking their status.
+
+### Overview
+
+Job notifications are managed through platform-specific notification managers that automatically set up and manage the required AWS infrastructure:
+
+- **SMTJNotificationManager**: For SageMaker Training Jobs (SMTJ)
+- **SMHPNotificationManager**: For SageMaker HyperPod (SMHP)
+
+### How It Works
+
+When you enable notifications for a job, the SDK automatically:
+
+1. **Creates AWS Infrastructure** (if it doesn't exist):
+   - CloudFormation stack with all required resources
+   - DynamoDB table to store job notification configurations
+   - SNS topic for email notifications
+   - Lambda function to handle job state changes
+   - EventBridge rule to monitor job status
+   - IAM roles and policies with appropriate permissions
+
+2. **Configures Job Monitoring**:
+   - Stores job configuration in DynamoDB
+   - Subscribes email addresses to SNS topic
+   - Monitors job status via EventBridge
+
+3. **Sends Notifications**:
+   - Detects when job reaches terminal state
+   - Validates output artifacts (for SMTJ, checks for manifest.json in output.tar.gz)
+   - Sends email notification with job details and console link
+
+### Using Job Notifications
+
+The simplest way to enable notifications is through the job result object:
+
+```python
+from amzn_nova_forge_sdk import *
+
+# Start a training job
+customizer = NovaModelCustomizer(
+    model=Model.NOVA_MICRO,
+    method=TrainingMethod.SFT_LORA,
+    infra=SMTJRuntimeManager(instance_type="ml.p5.48xlarge", instance_count=2),
+    data_s3_path="s3://my-bucket/training-data/",
+    output_s3_path="s3://my-bucket/output/"
+)
+
+result = customizer.train(job_name="my-training-job")
+
+# Enable notifications
+result.enable_job_notifications(
+    emails=["user@example.com", "team@example.com"],
+    region="us-west-2", # Optional
+    kms_key_id="1234abcd-12ab-34cd-56ef-1234567890ab", # Optional customer KMS key
+    output_s3_path="s3://my-bucket/custom-output-path/" # Optional output path
+)
+```
+**Note:** Only provide `output_s3_path` if the 'JobResult' object doesn't have 'model_artifacts' (will be called out when you run the function).
+
+### Email Confirmation
+
+When you enable notifications:
+1. Each email address receives a confirmation email from AWS SNS
+2. Users must click the confirmation link in the email
+3. After confirmation, they'll receive notifications for all jobs using that SNS topic
+4. Confirmation is only needed once per email address per region
+
+### Notification Content
+
+Email notifications include:
+- Job ID and platform (SMTJ/SMHP)
+- Job status (Completed, Failed, or Stopped)
+- Timestamp
+- Link to AWS Console for the job
+- For completed jobs: Validation status of output artifacts
+- For failed jobs: Failure reason (if available)
+
+### Infrastructure Details (SMTJ)
+
+#### CloudFormation Stack
+
+The notification infrastructure is managed as a CloudFormation stack:
+- **Stack Name**: `NovaForgeSDK-SMTJ-JobNotifications`
+- **Region**: Specified when enabling notifications (default: us-east-1)
+- **Resources**: DynamoDB table, SNS topic, Lambda function, EventBridge rule, IAM roles
+
+#### DynamoDB Table
+
+Stores job notification configurations:
+- **Table Name**: `NovaForgeSDK-SMTJ-JobNotifications`
+- **Primary Key**: `job_id` (String)
+- **Attributes**: `emails` (String Set), `output_s3_path` (String), `created_at` (String), `ttl` (Number)
+- **TTL**: Automatically deletes entries after 30 days
+
+#### SNS Topic
+
+Manages email subscriptions:
+- **Topic Name**: `NovaForgeSDK-SMTJ-Notifications`
+- **Encryption**: Optional KMS encryption
+- **Subscriptions**: Email protocol with confirmation required
+
+#### Lambda Function
+
+Handles job state change events:
+- **Function Name**: `NovaForgeSDK-SMTJ-NotificationHandler`
+- **Runtime**: Python 3.12
+- **Timeout**: 180 seconds
+- **Triggers**: EventBridge rule for SageMaker Training Job state changes
+
+#### EventBridge Rule
+
+Monitors job status:
+- **Rule Name**: `NovaForgeSDK-SMTJ-Job-State-Change`
+- **Event Pattern**: SageMaker Training Job State Change events
+- **States Monitored**: Completed, Failed, Stopped
+
+### Infrastructure Details (SMHP)
+
+#### CloudFormation Stack
+
+The notification infrastructure is managed as a CloudFormation stack:
+- **Stack Name**: `NovaForgeSDK-SMHP-JobNotifications-{ClusterName}`
+- **Region**: Specified when enabling notifications (default: us-east-1)
+- **Resources**: DynamoDB table, SNS topic, Lambda function, EventBridge rule, IAM roles, VPC endpoints
+
+#### DynamoDB Table
+
+Stores job notification configurations:
+- **Table Name**: `NovaForgeSDK-SMHP-JobNotifications-{ClusterName}`
+- **Primary Key**: `job_id` (String)
+- **Attributes**: `output_s3_path` (String), `namespace` (String), `ttl` (Number)
+- **TTL**: Automatically deletes entries after 30 days
+- **Point-in-Time Recovery**: Enabled
+
+#### SNS Topic
+
+Manages email subscriptions:
+- **Topic Name**: `NovaForgeSDK-SMHP-Notifications-{ClusterName}`
+- **Encryption**: Optional KMS encryption
+- **Subscriptions**: Email protocol with confirmation required
+
+#### Lambda Function
+
+Handles job status polling:
+- **Function Name**: `NovaForgeSDK-SMHP-NotificationHandler-{ClusterName}`
+- **Runtime**: Python 3.12
+- **Timeout**: 300 seconds
+- **Memory**: 512 MB
+- **VPC Configuration**: Deployed in VPC with access to EKS cluster
+- **Layers**: kubectl layer for Kubernetes API access
+- **Triggers**: EventBridge scheduled rule (default: every 5 minutes)
+
+#### EventBridge Rule
+
+Periodically checks job status:
+- **Rule Name**: `NovaForgeSDK-SMHP-Job-Check-{ClusterName}`
+- **Schedule**: Rate-based (default: every 5 minutes, configurable)
+- **Target**: Lambda function for polling PyTorchJob status
+
+#### VPC Endpoints
+
+Enable private AWS service access for Lambda:
+- **DynamoDB Gateway Endpoint**: `NovaForgeSDK-SMHP-DynamoDB-{ClusterName}`
+- **SNS Interface Endpoint**: `NovaForgeSDK-SMHP-SNS-{ClusterName}`
+- **S3 Gateway Endpoint**: `NovaForgeSDK-SMHP-S3-{ClusterName}`
+
+### Limitations and Notes
+
+1. **Email Confirmation**: Users must confirm their email subscription before receiving notifications.
+
+2. **Region-Specific**: Notification infrastructure is created per region. Jobs in different regions require separate infrastructure.
+
+3. **Stack Creation Restrictions**: For SMTJ, one notification stack is created per region. 
+For SMHP, one notification stack is created per cluster per region.
+
+4. **KMS Key Requirements**: If using KMS encryption:
+   - Provide only the key ID, not the full ARN
+   - The Lambda function automatically receives permissions to use the key
+   - The key must be in the same region as the notification infrastructure
+
+5. **Output Path Required**: The `output_s3_path` is required for manifest validation. The SDK will attempt to extract it from `model_artifacts` if not provided explicitly.
+
+6. **Hard-coded CloudFormation Stack Names**: When the CF stack is created, it will have one of the following names: `NovaForgeSDK-SMTJ-JobNotifications` or `NovaForgeSDK-SMHP-JobNotifications-{HP-Cluster}`. 
+
+### Troubleshooting
+
+#### Notifications Not Received
+
+1. **Check email confirmation**: Ensure you clicked the confirmation link in the AWS SNS email
+2. **Check spam folder**: SNS emails may be filtered as spam
+3. **Verify job status**: Notifications only sent for terminal states (Completed, Failed, Stopped)
+4. **Check CloudWatch Logs**: View Lambda function logs for errors
+
+#### Stack Creation Failures
+
+If CloudFormation stack creation fails:
+1. Check IAM permissions for CloudFormation, DynamoDB, SNS, Lambda, EventBridge, and IAM
+2. Verify no resource name conflicts exist
+3. Check CloudFormation console for detailed error messages
+
+### API Reference
+
+See the [BaseJobResult.enable_job_notifications()](#enable_job_notifications) method documentation for detailed parameter information.
+
+
+---
 ## Error Handling
 All SDK functions may raise exceptions. It's recommended to wrap calls in try-except blocks:
 ```python
@@ -2184,4 +2705,3 @@ Common exceptions:
 - SDK GitHub Repository: Check for updates and examples
 - Support: Use AWS Support for technical assistance
 ---
-_Last Updated: February 16, 2026_

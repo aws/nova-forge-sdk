@@ -433,7 +433,7 @@ class TestValidateStackName:
                 validate_stack_name(name)
 
     def test_rejects_stack_names_exceeding_32_characters(self):
-        """Test that stack names longer than 32 characters are rejected for AGIModelLens compatibility."""
+        """Test that stack names longer than 32 characters are rejected for compatibility."""
         # Stack names > 32 characters should be rejected
         invalid_names = [
             "a" * 33,  # 33 characters

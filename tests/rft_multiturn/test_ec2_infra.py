@@ -398,7 +398,8 @@ class TestEC2RFTInfrastructure:
 
         infra.deploy_sam_stack()
 
-        mock_ssm.send_command.assert_called_once()
+        # send_command is called twice: once for mkdir -p logs dir, once for SAM deploy
+        assert mock_ssm.send_command.call_count == 2
         assert mock_ssm.get_command_invocation.called
 
     @patch("boto3.client")

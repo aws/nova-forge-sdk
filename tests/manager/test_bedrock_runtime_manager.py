@@ -6,7 +6,7 @@ and RFT hyperparameter handling.
 """
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from amzn_nova_forge.manager.runtime_manager import (
     BedrockRuntimeManager,
@@ -1687,6 +1687,245 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
         # Verify method field is excluded
         self.assertNotIn("method", sft_hyperparams)
+
+    # ------------------------------------------------------------------
+    # rft_lambda / rft_lambda_arn
+    # ------------------------------------------------------------------
+
+    @patch.object(BedrockRuntimeManager, "setup", return_value=None)
+    def test_rft_lambda_arn_set_immediately_when_arn_passed(self, mock_setup):
+        arn = "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
+        mgr = BedrockRuntimeManager(
+            execution_role="arn:aws:iam::123456789012:role/BedrockRole",
+            rft_lambda=arn,
+        )
+        self.assertEqual(mgr.rft_lambda_arn, arn)
+        self.assertEqual(mgr.rft_lambda, arn)
+
+    @patch.object(BedrockRuntimeManager, "setup", return_value=None)
+    def test_rft_lambda_arn_none_when_file_path_passed(self, mock_setup):
+        mgr = BedrockRuntimeManager(
+            execution_role="arn:aws:iam::123456789012:role/BedrockRole",
+            rft_lambda="reward.py",
+        )
+        self.assertIsNone(mgr.rft_lambda_arn)
+        self.assertEqual(mgr.rft_lambda, "reward.py")
+
+    @patch.object(BedrockRuntimeManager, "setup", return_value=None)
+    def test_rft_lambda_arn_none_when_not_set(self, mock_setup):
+        mgr = BedrockRuntimeManager(
+            execution_role="arn:aws:iam::123456789012:role/BedrockRole",
+        )
+        self.assertIsNone(mgr.rft_lambda_arn)
+        self.assertIsNone(mgr.rft_lambda)
+
+    @patch.object(BedrockRuntimeManager, "setup", return_value=None)
+    def test_rft_lambda_arn_setter(self, mock_setup):
+        arn = "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
+        mgr = BedrockRuntimeManager(
+            execution_role="arn:aws:iam::123456789012:role/BedrockRole",
+        )
+        mgr.rft_lambda_arn = arn
+        self.assertEqual(mgr.rft_lambda_arn, arn)
+
+    # ------------------------------------------------------------------
+    # deploy_lambda
+    # ------------------------------------------------------------------
+
+    def _make_bedrock_mgr(self, rft_lambda=None):
+        with patch.object(BedrockRuntimeManager, "setup", return_value=None):
+            mgr = BedrockRuntimeManager(
+                execution_role="arn:aws:iam::123456789012:role/BedrockRole",
+                rft_lambda=rft_lambda,
+            )
+            mgr.region = "us-east-1"
+            return mgr
+
+    def _mock_lambda_client(self, exists=False):
+        arn = "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
+        client = MagicMock()
+        # Make exceptions.ResourceNotFoundException a real exception class so
+        # `except lambda_client.exceptions.ResourceNotFoundException` works
+        client.exceptions.ResourceNotFoundException = type(
+            "ResourceNotFoundException", (Exception,), {}
+        )
+        if exists:
+            client.get_function.return_value = {"Configuration": {"FunctionArn": arn}}
+            client.update_function_code.return_value = {"FunctionArn": arn}
+        else:
+            client.get_function.side_effect = (
+                client.exceptions.ResourceNotFoundException()
+            )
+            client.create_function.return_value = {"FunctionArn": arn}
+        client.get_waiter.return_value = MagicMock()
+        return client
+
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    def test_deploy_lambda_creates_new_function(self, mock_boto_client):
+        import io
+        import os
+        import tempfile
+        import zipfile
+
+        mock_lambda = self._mock_lambda_client(exists=False)
+        mock_boto_client.return_value = mock_lambda
+
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+            f.write(b"def lambda_handler(event, context): return {'reward': 1.0}")
+            src = f.name
+
+        try:
+            mgr = self._make_bedrock_mgr(rft_lambda=src)
+            returned_arn = mgr.deploy_lambda(lambda_name="SageMaker-my-reward")
+
+            mock_lambda.create_function.assert_called_once()
+            call_kwargs = mock_lambda.create_function.call_args.kwargs
+            self.assertEqual(call_kwargs["FunctionName"], "SageMaker-my-reward")
+            self.assertEqual(
+                call_kwargs["Role"], "arn:aws:iam::123456789012:role/BedrockRole"
+            )
+            self.assertEqual(
+                returned_arn, "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
+            )
+            self.assertEqual(mgr.rft_lambda_arn, returned_arn)
+        finally:
+            os.unlink(src)
+
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    def test_deploy_lambda_updates_existing_function(self, mock_boto_client):
+        import os
+        import tempfile
+
+        mock_lambda = self._mock_lambda_client(exists=True)
+        mock_boto_client.return_value = mock_lambda
+
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+            f.write(b"def lambda_handler(event, context): return {'reward': 1.0}")
+            src = f.name
+
+        try:
+            mgr = self._make_bedrock_mgr(rft_lambda=src)
+            mgr.deploy_lambda(lambda_name="SageMaker-my-reward")
+
+            mock_lambda.update_function_code.assert_called_once()
+            mock_lambda.create_function.assert_not_called()
+        finally:
+            os.unlink(src)
+
+    def test_deploy_lambda_raises_when_no_source_resolvable(self):
+        mgr = self._make_bedrock_mgr()
+        with self.assertRaises(ValueError) as ctx:
+            mgr.deploy_lambda()
+        self.assertIn("rft_lambda must be set", str(ctx.exception))
+
+    def test_deploy_lambda_raises_when_rft_lambda_is_arn(self):
+        arn = "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
+        mgr = self._make_bedrock_mgr(rft_lambda=arn)
+        with self.assertRaises(ValueError) as ctx:
+            mgr.deploy_lambda()
+        self.assertIn("already a deployed Lambda ARN", str(ctx.exception))
+
+    def test_deploy_lambda_raises_when_file_not_found(self):
+        mgr = self._make_bedrock_mgr(rft_lambda="/nonexistent/reward.py")
+        with self.assertRaises(ValueError) as ctx:
+            mgr.deploy_lambda(lambda_name="SageMaker-reward")
+        self.assertIn("file not found", str(ctx.exception))
+
+    def test_deploy_lambda_raises_when_no_execution_role(self):
+        import os
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+            f.write(b"def lambda_handler(event, context): return {'reward': 1.0}")
+            src = f.name
+
+        try:
+            mgr = self._make_bedrock_mgr(rft_lambda=src)
+            mgr.execution_role = None
+            with self.assertRaises(ValueError) as ctx:
+                mgr.deploy_lambda(lambda_name="SageMaker-reward")
+            self.assertIn("execution_role_arn", str(ctx.exception))
+        finally:
+            os.unlink(src)
+
+    # ------------------------------------------------------------------
+    # validate_lambda
+    # ------------------------------------------------------------------
+
+    @patch("amzn_nova_forge.validation.validator.verify_rft_lambda")
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    def test_validate_lambda_uses_rft_lambda_arn_property(
+        self, mock_boto_client, mock_verify
+    ):
+        arn = "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
+        mgr = self._make_bedrock_mgr(rft_lambda=arn)
+        mgr.validate_lambda(data_s3_path="s3://bucket/data.jsonl")
+
+        mock_verify.assert_called_once()
+        call_kwargs = mock_verify.call_args.kwargs
+        self.assertEqual(call_kwargs["lambda_arn"], arn)
+        self.assertEqual(call_kwargs["data_s3_path"], "s3://bucket/data.jsonl")
+
+    @patch("amzn_nova_forge.validation.validator.verify_rft_lambda")
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    def test_validate_lambda_uses_rft_lambda_when_arn(
+        self, mock_boto_client, mock_verify
+    ):
+        arn = "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
+        mgr = self._make_bedrock_mgr(rft_lambda=arn)
+        mgr.validate_lambda(data_s3_path="s3://bucket/data.jsonl")
+
+        self.assertEqual(mock_verify.call_args.kwargs["lambda_arn"], arn)
+
+    @patch("amzn_nova_forge.validation.validator.verify_rft_lambda")
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    def test_validate_lambda_passes_sample_count(self, mock_boto_client, mock_verify):
+        arn = "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
+        mgr = self._make_bedrock_mgr(rft_lambda=arn)
+        mgr.validate_lambda(data_s3_path="s3://bucket/data.jsonl", validation_samples=5)
+
+        self.assertEqual(mock_verify.call_args.kwargs["sample_count"], 5)
+
+    def test_validate_lambda_raises_when_nothing_resolvable(self):
+        mgr = self._make_bedrock_mgr()
+        with self.assertRaises(ValueError) as ctx:
+            mgr.validate_lambda(data_s3_path="s3://bucket/data.jsonl")
+        self.assertIn(
+            "Either lambda_arn or lambda_source must be provided", str(ctx.exception)
+        )
+
+    @patch("amzn_nova_forge.manager.runtime_manager.verify_reward_function")
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    def test_validate_lambda_local_source_calls_verify_reward_function(
+        self, mock_boto_client, mock_verify_reward
+    ):
+        import os
+        import tempfile
+
+        mock_s3 = MagicMock()
+        mock_s3.get_object.return_value = {
+            "Body": MagicMock(
+                iter_lines=lambda: [
+                    b'{"id": "1", "messages": [{"role": "user", "content": "hi"}]}'
+                ]
+            )
+        }
+        mock_boto_client.return_value = mock_s3
+
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+            f.write(b"def lambda_handler(event, context): return {'reward': 1.0}")
+            src = f.name
+
+        try:
+            mgr = self._make_bedrock_mgr(rft_lambda=src)
+            mgr.validate_lambda(data_s3_path="s3://bucket/data.jsonl")
+
+            mock_verify_reward.assert_called_once()
+            self.assertEqual(
+                mock_verify_reward.call_args.kwargs["reward_function"], src
+            )
+        finally:
+            os.unlink(src)
 
 
 if __name__ == "__main__":

@@ -44,6 +44,29 @@ LAMBDA_ARN_REGEX = re.compile(
     r"^arn:aws:lambda:[a-z0-9-]+:\d{12}:function:[A-Za-z0-9-_]+$"
 )
 
+
+def validate_lambda_arn(arn: str) -> None:
+    """
+    Validate that a string is a well-formed Lambda function ARN.
+
+    Args:
+        arn: The ARN string to validate.
+
+    Raises:
+        ValueError: If the ARN does not match the expected Lambda ARN format.
+    """
+    if not LAMBDA_ARN_REGEX.match(arn):
+        raise ValueError(
+            f"'{arn}' is not a valid Lambda function ARN. "
+            "Expected format: arn:aws:lambda:<region>:<account_id>:function:<function-name>"
+        )
+
+
+def is_lambda_arn(value: str) -> bool:
+    """Return True if value looks like a Lambda ARN, False if it's a file path."""
+    return bool(LAMBDA_ARN_REGEX.match(value))
+
+
 # ECR image URI pattern: account.dkr.ecr.region.amazonaws.com/repository:tag
 ECR_IMAGE_URI_REGEX = re.compile(
     r"^\d{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/[a-zA-Z0-9][a-zA-Z0-9._/-]*:[a-zA-Z0-9._-]+$"
@@ -78,7 +101,7 @@ class Validator:
     @staticmethod
     def _get_default_validation_config() -> Dict[str, bool]:
         """Get default validation configuration."""
-        return {"iam": True, "infra": True}.copy()
+        return {"iam": True, "infra": True, "recipe": True}.copy()
 
     @staticmethod
     def _resolve_execution_role(infra: Optional[RuntimeManager]) -> str:
@@ -815,6 +838,7 @@ class Validator:
         method: TrainingMethod,
         platform: Platform = Platform.SMTJ,  # Default for backward compatibility with tests
         rft_lambda_arn: Optional[str] = None,
+        rft_lambda_source: Optional[str] = None,
         eval_task: Optional[EvaluationTask] = None,
         data_s3_path: Optional[str] = None,
         subtask: Optional[str] = None,
@@ -832,6 +856,7 @@ class Validator:
             method: The training method being performed
             platform: Training platform (SMTJ / SMHP / BEDROCK)
             rft_lambda_arn: The Lambda ARN to validate for RFT training
+            rft_lambda_source: Local path to lambda source file (alternative to rft_lambda_arn)
             eval_task: Evaluation task
             data_s3_path: Input data s3 Path
             subtask: Evaluation subtask
@@ -839,18 +864,23 @@ class Validator:
             rl_env_config: BYO RFT evaluation configuration
         """
 
-        def validate_rft(rft_lambda_arn: Optional[str] = None):
+        def validate_rft(
+            rft_lambda_arn: Optional[str] = None,
+            rft_lambda_source: Optional[str] = None,
+        ):
             """
             Validate RFT-related parameters
 
             Args:
                 rft_lambda_arn: Optional RFT Lambda ARN
+                rft_lambda_source: Optional local path to lambda source (alternative to arn)
             """
-            if rft_lambda_arn is None:
+            if rft_lambda_arn is None and rft_lambda_source is None:
                 errors.append(
-                    "'rft_lambda_arn' is a required parameter when calling train() for RFT"
+                    "Either 'rft_lambda_arn' or 'rft_lambda_source' is required when calling train() for RFT. "
+                    "Set rft_lambda on the RuntimeManager to a Lambda ARN or a .py file path, then call deploy_lambda()."
                 )
-            elif not LAMBDA_ARN_REGEX.match(rft_lambda_arn):
+            elif rft_lambda_arn is not None and not is_lambda_arn(rft_lambda_arn):
                 errors.append("'rft_lambda_arn' must be a valid Lambda function ARN")
 
         def validate_eval(
@@ -904,9 +934,9 @@ class Validator:
                         errors.append("processor_config must contain a lambda_arn")
                     else:
                         lambda_arn = processor_config.get("lambda_arn")
-                        if not isinstance(
-                            lambda_arn, str
-                        ) or not LAMBDA_ARN_REGEX.match(lambda_arn):
+                        if not isinstance(lambda_arn, str) or not is_lambda_arn(
+                            lambda_arn
+                        ):
                             errors.append(
                                 "'lambda_arn' must be a valid Lambda function ARN"
                             )
@@ -924,9 +954,9 @@ class Validator:
                     errors.append("rl_env must contain a reward_lambda_arn")
                 else:
                     reward_lambda_arn = rl_env_config.get("reward_lambda_arn")
-                    if not isinstance(
-                        reward_lambda_arn, str
-                    ) or not LAMBDA_ARN_REGEX.match(reward_lambda_arn):
+                    if not isinstance(reward_lambda_arn, str) or not is_lambda_arn(
+                        reward_lambda_arn
+                    ):
                         errors.append(
                             "'reward_lambda_arn' must be a valid Lambda function ARN"
                         )
@@ -953,7 +983,9 @@ class Validator:
             raise Exception("Unable to find override key in recipe.")
 
         if method in [TrainingMethod.RFT_LORA, TrainingMethod.RFT_FULL]:
-            validate_rft(rft_lambda_arn=rft_lambda_arn)
+            validate_rft(
+                rft_lambda_arn=rft_lambda_arn, rft_lambda_source=rft_lambda_source
+            )
         elif method in [TrainingMethod.EVALUATION]:
             assert eval_task is not None
             validate_eval(
@@ -1192,73 +1224,48 @@ class Validator:
             cls._validate_infrastructure(infra, errors)
 
         # Recipe validation
-        cls._validate_recipe(
-            recipe=recipe,
-            overrides_template=overrides_template,
-            instance_type=infra.instance_type,
-            errors=errors,
-            method=method,
-            platform=platform,
-            rft_lambda_arn=rft_lambda_arn,
-            eval_task=eval_task,
-            data_s3_path=data_s3_path,
-            subtask=subtask,
-            processor_config=processor_config,
-            rl_env_config=rl_env_config,
-        )
+        if validation_config.get("recipe", True):
+            cls._validate_recipe(
+                recipe=recipe,
+                overrides_template=overrides_template,
+                instance_type=infra.instance_type,
+                errors=errors,
+                method=method,
+                platform=platform,
+                rft_lambda_arn=rft_lambda_arn,
+                rft_lambda_source=getattr(infra, "rft_lambda", None)
+                if infra
+                and not (getattr(infra, "rft_lambda", None) or "").startswith("arn:")
+                else None,
+                eval_task=eval_task,
+                data_s3_path=data_s3_path,
+                subtask=subtask,
+                processor_config=processor_config,
+                rl_env_config=rl_env_config,
+            )
 
         if errors:
             raise ValueError("\n".join(errors))
 
 
-def should_verify_rft_lambda(validation_config: Optional[dict]) -> bool:
+def validate_rft_lambda_name(lambda_name: str, platform) -> None:
     """
-    Check if RFT lambda verification is enabled in validation config.
+    Validate that the lambda function name meets platform-specific requirements.
+
+    For SMHP, the function name must contain 'SageMaker' (case-insensitive).
 
     Args:
-        validation_config: Optional validation configuration dictionary
+        lambda_name: The Lambda function name (not ARN).
+        platform: Platform enum (Platform.SMHP or Platform.SMTJ).
 
-    Returns:
-        True if RFT lambda verification is enabled, False otherwise
+    Raises:
+        ValueError: If the name does not meet platform requirements.
     """
-    if not validation_config:
-        return False
-
-    rft_lambda_config = validation_config.get("rft_lambda", False)
-
-    # Support both boolean and dict configuration
-    if isinstance(rft_lambda_config, bool):
-        return rft_lambda_config
-    elif isinstance(rft_lambda_config, dict):
-        return rft_lambda_config.get("enabled", False)
-
-    return False
-
-
-def get_rft_verification_samples(validation_config: Optional[dict]) -> int:
-    """
-    Get number of samples for RFT lambda verification from validation config.
-
-    Args:
-        validation_config: Optional validation configuration dictionary
-
-    Returns:
-        Number of samples to use for verification (default: 10)
-    """
-    if not validation_config:
-        return 10
-
-    rft_lambda_config = validation_config.get("rft_lambda", False)
-
-    # If boolean, use default
-    if isinstance(rft_lambda_config, bool):
-        return 10
-
-    # If dict, get samples or use default
-    if isinstance(rft_lambda_config, dict):
-        return rft_lambda_config.get("samples", 10)
-
-    return 10
+    if platform == Platform.SMHP and "SageMaker" not in lambda_name:
+        raise ValueError(
+            f"Lambda function name '{lambda_name}' must contain 'SageMaker' (exact casing) when using SMHP. "
+            f"Rename your Lambda to include 'SageMaker', e.g. 'my-SageMaker-reward-fn'."
+        )
 
 
 def verify_rft_lambda(

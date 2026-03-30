@@ -23,6 +23,7 @@ from amzn_nova_forge.model.model_enums import Platform, TrainingMethod
 from amzn_nova_forge.model.result.job_result import (
     BaseJobResult,
     JobStatus,
+    JobStatusManager,
     SMHPStatusManager,
     SMTJStatusManager,
 )
@@ -344,12 +345,48 @@ class CloudWatchLogMonitor:
         started_time: Optional[datetime] = None,
         **kwargs,
     ):
+        resolved_ms = None
+        if started_time:
+            resolved_ms = int(started_time.timestamp() * 1000)
+        else:
+            resolved_ms = cls._resolve_start_time_ms(job_id, platform, **kwargs)
+
         return cls(
             job_id=job_id,
             platform=platform,
-            started_time=int(started_time.timestamp() * 1000) if started_time else None,
+            started_time=resolved_ms,
             **kwargs,
         )
+
+    @staticmethod
+    def _resolve_start_time_ms(
+        job_id: str, platform: Platform, **kwargs
+    ) -> Optional[int]:
+        """Try to resolve start time from the platform API. Returns epoch ms or None."""
+        try:
+            manager: JobStatusManager
+            if platform == Platform.SMTJ:
+                sagemaker_client = kwargs.get("sagemaker_client")
+                manager = SMTJStatusManager(sagemaker_client)
+            elif platform == Platform.SMHP:
+                cluster_name = kwargs.get("cluster_name")
+                namespace = kwargs.get("namespace", DEFAULT_SMHP_NAMESPACE)
+                if not cluster_name:
+                    return None
+                manager = SMHPStatusManager(cluster_name, namespace)
+            else:
+                return None
+
+            dt = manager.resolve_start_time(job_id)
+            resolved_ms = int(dt.timestamp() * 1000)
+            logger.info(f"Resolved start time for job {job_id}: {dt}")
+            return resolved_ms
+        except Exception as e:
+            logger.warning(
+                f"Could not resolve start time for job {job_id}: {e}. "
+                f"Log retrieval may be slow without a start time filter."
+            )
+            return None
 
     @classmethod
     def from_job_result(cls, job_result: BaseJobResult, cloudwatch_logs_client=None):

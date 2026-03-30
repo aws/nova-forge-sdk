@@ -3,17 +3,21 @@
 import pytest
 
 from amzn_nova_forge.rft_multiturn.constants import (
-    ECR_REPO_NAME,
+    BASE_PYTHON_COMMAND,
+    CFN_UNUSABLE_STACK_STATES,
+    EC2_BASE_PATH,
+    EC2_LOGS_PATH,
+    EC2_SCRIPTS_PATH,
+    EC2_STARTER_KIT_PATH,
+    ECS_IMAGE_URI,
+    ECS_STARTER_KIT_PATH,
     IAM_PROPAGATION_WAIT_TIME,
     JOB_STATUS_COMPLETED,
     JOB_STATUS_FAILED,
     JOB_STATUS_KILLED,
     JOB_STATUS_RUNNING,
-    RFT_EVAL_LOG,
     RFT_EXECUTION_ROLE_NAME,
     RFT_POLICY_NAME,
-    RFT_SAM_LOG,
-    RFT_TRAIN_LOG,
     SAM_WAIT_TIME,
     SDK_RFT_LOGS_DIR,
     SDK_RFT_SCRIPTS_DIR,
@@ -39,26 +43,12 @@ class TestConstants:
         assert STACK_NAME_SUFFIX == "NovaForgeSDK"
         assert isinstance(STACK_NAME_SUFFIX, str)
 
-    def test_ecr_repo_name(self):
-        """Test ECR repository name constant."""
-        assert ECR_REPO_NAME == "nova-rft-base"
-        assert isinstance(ECR_REPO_NAME, str)
-
     def test_directory_names(self):
         """Test directory name constants."""
         assert SDK_RFT_LOGS_DIR == "sdk-rft-logs"
         assert SDK_RFT_SCRIPTS_DIR == "sdk-rft-scripts"
         assert isinstance(SDK_RFT_LOGS_DIR, str)
         assert isinstance(SDK_RFT_SCRIPTS_DIR, str)
-
-    def test_log_file_names(self):
-        """Test log file name constants."""
-        assert RFT_TRAIN_LOG == "rft_train.log"
-        assert RFT_EVAL_LOG == "rft_eval.log"
-        assert RFT_SAM_LOG == "rft_sam.log"
-        assert isinstance(RFT_TRAIN_LOG, str)
-        assert isinstance(RFT_EVAL_LOG, str)
-        assert isinstance(RFT_SAM_LOG, str)
 
     def test_job_status_values(self):
         """Test job status constants."""
@@ -95,18 +85,44 @@ class TestConstants:
         assert SSM_COMMAND_POLL_INTERVAL > 0
         assert SSM_COMMAND_MAX_POLL_ATTEMPTS > 0
 
+    def test_ecs_constants(self):
+        """Test ECS platform constants."""
+        assert ECS_IMAGE_URI.startswith("public.ecr.aws/")
+        assert isinstance(ECS_IMAGE_URI, str)
+        assert ECS_STARTER_KIT_PATH.startswith("/")
+        assert isinstance(ECS_STARTER_KIT_PATH, str)
+
+    def test_ec2_constants(self):
+        """Test EC2 platform constants."""
+        assert EC2_BASE_PATH.startswith("/")
+        assert EC2_STARTER_KIT_PATH.startswith(EC2_BASE_PATH)
+        assert EC2_LOGS_PATH.startswith(EC2_BASE_PATH)
+        assert EC2_SCRIPTS_PATH.startswith(EC2_BASE_PATH)
+        assert isinstance(EC2_BASE_PATH, str)
+        assert isinstance(EC2_STARTER_KIT_PATH, str)
+        assert isinstance(EC2_LOGS_PATH, str)
+        assert isinstance(EC2_SCRIPTS_PATH, str)
+
+    def test_base_python_command(self):
+        """Test Python command constant."""
+        assert BASE_PYTHON_COMMAND == "python3.12"
+        assert isinstance(BASE_PYTHON_COMMAND, str)
+
+    def test_cfn_unusable_stack_states(self):
+        """Test CloudFormation unusable stack states constant is a frozenset."""
+        assert isinstance(CFN_UNUSABLE_STACK_STATES, frozenset)
+        assert "DELETE_FAILED" in CFN_UNUSABLE_STACK_STATES
+        assert "ROLLBACK_COMPLETE" in CFN_UNUSABLE_STACK_STATES
+        assert "ROLLBACK_FAILED" in CFN_UNUSABLE_STACK_STATES
+
     def test_all_constants_are_immutable_types(self):
-        """Test that all constants are immutable types (str, int, float)."""
-        constants = [
+        """Test that all constants are immutable types (str, int, float, or frozenset)."""
+        str_int_float_constants = [
             RFT_EXECUTION_ROLE_NAME,
             RFT_POLICY_NAME,
             STACK_NAME_SUFFIX,
-            ECR_REPO_NAME,
             SDK_RFT_LOGS_DIR,
             SDK_RFT_SCRIPTS_DIR,
-            RFT_TRAIN_LOG,
-            RFT_EVAL_LOG,
-            RFT_SAM_LOG,
             JOB_STATUS_RUNNING,
             JOB_STATUS_COMPLETED,
             JOB_STATUS_KILLED,
@@ -116,12 +132,22 @@ class TestConstants:
             STARTER_KIT_S3,
             SSM_COMMAND_POLL_INTERVAL,
             SSM_COMMAND_MAX_POLL_ATTEMPTS,
+            ECS_IMAGE_URI,
+            ECS_STARTER_KIT_PATH,
+            EC2_BASE_PATH,
+            EC2_STARTER_KIT_PATH,
+            EC2_LOGS_PATH,
+            EC2_SCRIPTS_PATH,
+            BASE_PYTHON_COMMAND,
         ]
 
-        for constant in constants:
+        for constant in str_int_float_constants:
             assert isinstance(constant, (str, int, float)), (
                 f"Constant {constant} is not an immutable type"
             )
+
+        # frozenset is also immutable
+        assert isinstance(CFN_UNUSABLE_STACK_STATES, frozenset)
 
     def test_constants_are_not_empty(self):
         """Test that string constants are not empty."""
@@ -129,17 +155,20 @@ class TestConstants:
             RFT_EXECUTION_ROLE_NAME,
             RFT_POLICY_NAME,
             STACK_NAME_SUFFIX,
-            ECR_REPO_NAME,
             SDK_RFT_LOGS_DIR,
             SDK_RFT_SCRIPTS_DIR,
-            RFT_TRAIN_LOG,
-            RFT_EVAL_LOG,
-            RFT_SAM_LOG,
             JOB_STATUS_RUNNING,
             JOB_STATUS_COMPLETED,
             JOB_STATUS_KILLED,
             JOB_STATUS_FAILED,
             STARTER_KIT_S3,
+            ECS_IMAGE_URI,
+            ECS_STARTER_KIT_PATH,
+            EC2_BASE_PATH,
+            EC2_STARTER_KIT_PATH,
+            EC2_LOGS_PATH,
+            EC2_SCRIPTS_PATH,
+            BASE_PYTHON_COMMAND,
         ]
 
         for constant in string_constants:

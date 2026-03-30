@@ -1,5 +1,9 @@
+import io
 import json
+import os
+import tempfile
 import unittest
+import zipfile
 from unittest.mock import MagicMock, patch
 
 from amzn_nova_forge.manager.runtime_manager import (
@@ -8,6 +12,7 @@ from amzn_nova_forge.manager.runtime_manager import (
     SMTJRuntimeManager,
 )
 from amzn_nova_forge.recipe.recipe_builder import HYPERPOD_RECIPE_PATH
+from amzn_nova_forge.validation.validator import is_lambda_arn, validate_lambda_arn
 
 
 class TestSMTJRuntimeManager(unittest.TestCase):
@@ -207,6 +212,344 @@ class TestSMTJRuntimeManager(unittest.TestCase):
         mock_model_trainer_cls.from_recipe.assert_called_once()
         mock_model_trainer.train.assert_called_once()
 
+    # ------------------------------------------------------------------
+    # rft_lambda / rft_lambda_arn
+    # ------------------------------------------------------------------
+
+    def test_is_lambda_arn_true_for_valid_arn(self):
+        self.assertTrue(
+            is_lambda_arn("arn:aws:lambda:us-east-1:123456789012:function:my-fn")
+        )
+
+    def test_is_lambda_arn_false_for_file_path(self):
+        self.assertFalse(is_lambda_arn("reward.py"))
+        self.assertFalse(is_lambda_arn("/path/to/reward_fn.py"))
+
+    def test_validate_lambda_arn_passes_for_valid_arn(self):
+        validate_lambda_arn("arn:aws:lambda:us-east-1:123456789012:function:my-fn")
+
+    def test_validate_lambda_arn_raises_for_invalid(self):
+        with self.assertRaises(ValueError) as ctx:
+            validate_lambda_arn("not-an-arn")
+        self.assertIn("not a valid Lambda function ARN", str(ctx.exception))
+
+    @patch.object(SMTJRuntimeManager, "setup", return_value=None)
+    def test_rft_lambda_arn_set_immediately_when_arn_passed(self, mock_setup):
+        arn = "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
+        mgr = SMTJRuntimeManager("ml.m5.xlarge", 1, rft_lambda=arn)
+        self.assertEqual(mgr.rft_lambda_arn, arn)
+        self.assertEqual(mgr.rft_lambda, arn)
+
+    @patch.object(SMTJRuntimeManager, "setup", return_value=None)
+    def test_rft_lambda_arn_none_when_file_path_passed(self, mock_setup):
+        mgr = SMTJRuntimeManager("ml.m5.xlarge", 1, rft_lambda="reward.py")
+        self.assertIsNone(mgr.rft_lambda_arn)
+        self.assertEqual(mgr.rft_lambda, "reward.py")
+
+    @patch.object(SMTJRuntimeManager, "setup", return_value=None)
+    def test_rft_lambda_arn_none_when_not_set(self, mock_setup):
+        mgr = SMTJRuntimeManager("ml.m5.xlarge", 1)
+        self.assertIsNone(mgr.rft_lambda_arn)
+        self.assertIsNone(mgr.rft_lambda)
+
+    @patch.object(SMTJRuntimeManager, "setup", return_value=None)
+    def test_rft_lambda_arn_setter(self, mock_setup):
+        arn = "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
+        mgr = SMTJRuntimeManager("ml.m5.xlarge", 1)
+        mgr.rft_lambda_arn = arn
+        self.assertEqual(mgr.rft_lambda_arn, arn)
+
+    # ------------------------------------------------------------------
+    # deploy_lambda
+    # ------------------------------------------------------------------
+
+    def _mock_lambda_client(self, exists=False):
+        arn = "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
+        client = MagicMock()
+        # Make exceptions.ResourceNotFoundException a real exception class so
+        # `except lambda_client.exceptions.ResourceNotFoundException` works
+        client.exceptions.ResourceNotFoundException = type(
+            "ResourceNotFoundException", (Exception,), {}
+        )
+        if exists:
+            client.get_function.return_value = {"Configuration": {"FunctionArn": arn}}
+            client.update_function_code.return_value = {"FunctionArn": arn}
+        else:
+            client.get_function.side_effect = (
+                client.exceptions.ResourceNotFoundException()
+            )
+            client.create_function.return_value = {"FunctionArn": arn}
+        client.get_waiter.return_value = MagicMock()
+        return client
+
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    def test_deploy_lambda_creates_new_function(self, mock_boto_client):
+        mock_lambda = self._mock_lambda_client(exists=False)
+        mock_boto_client.return_value = mock_lambda
+
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+            f.write(b"def lambda_handler(event, context): return {'reward': 1.0}")
+            src = f.name
+
+        try:
+            mgr = self._create_manager()
+            mgr.rft_lambda = src
+            returned_arn = mgr.deploy_lambda(lambda_name="SageMaker-my-reward")
+
+            mock_lambda.create_function.assert_called_once()
+            call_kwargs = mock_lambda.create_function.call_args.kwargs
+            self.assertEqual(call_kwargs["FunctionName"], "SageMaker-my-reward")
+            self.assertEqual(call_kwargs["Role"], self.mock_role)
+            self.assertEqual(
+                returned_arn, "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
+            )
+            self.assertEqual(mgr.rft_lambda_arn, returned_arn)
+        finally:
+            os.unlink(src)
+
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    def test_deploy_lambda_updates_existing_function(self, mock_boto_client):
+        mock_lambda = self._mock_lambda_client(exists=True)
+        mock_boto_client.return_value = mock_lambda
+
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+            f.write(b"def lambda_handler(event, context): return {'reward': 1.0}")
+            src = f.name
+
+        try:
+            mgr = self._create_manager()
+            mgr.rft_lambda = src
+            mgr.deploy_lambda(lambda_name="SageMaker-my-reward")
+
+            mock_lambda.update_function_code.assert_called_once()
+            mock_lambda.create_function.assert_not_called()
+        finally:
+            os.unlink(src)
+
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    def test_deploy_lambda_derives_name_from_filename(self, mock_boto_client):
+        mock_lambda = self._mock_lambda_client(exists=False)
+        mock_boto_client.return_value = mock_lambda
+
+        with tempfile.NamedTemporaryFile(
+            suffix=".py", prefix="my_reward_fn_", delete=False
+        ) as f:
+            f.write(b"def lambda_handler(event, context): return {'reward': 1.0}")
+            src = f.name
+
+        try:
+            mgr = self._create_manager()
+            mgr.rft_lambda = src
+            mgr.deploy_lambda()
+
+            call_kwargs = mock_lambda.create_function.call_args.kwargs
+            self.assertNotIn("_", call_kwargs["FunctionName"])
+            self.assertNotIn(".py", call_kwargs["FunctionName"])
+        finally:
+            os.unlink(src)
+
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    def test_deploy_lambda_packages_file_as_zip(self, mock_boto_client):
+        mock_lambda = self._mock_lambda_client(exists=False)
+        mock_boto_client.return_value = mock_lambda
+
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+            f.write(b"def lambda_handler(event, context): return {'reward': 1.0}")
+            src = f.name
+
+        try:
+            mgr = self._create_manager()
+            mgr.rft_lambda = src
+            mgr.deploy_lambda(lambda_name="SageMaker-reward")
+
+            zip_bytes = mock_lambda.create_function.call_args.kwargs["Code"]["ZipFile"]
+            with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+                self.assertIn("lambda_function.py", zf.namelist())
+        finally:
+            os.unlink(src)
+
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    def test_deploy_lambda_explicit_role_overrides_manager_role(self, mock_boto_client):
+        mock_lambda = self._mock_lambda_client(exists=False)
+        mock_boto_client.return_value = mock_lambda
+
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+            f.write(b"def lambda_handler(event, context): return {'reward': 1.0}")
+            src = f.name
+
+        try:
+            mgr = self._create_manager()
+            mgr.rft_lambda = src
+            override_role = "arn:aws:iam::123456789012:role/OtherRole"
+            mgr.deploy_lambda(
+                lambda_name="SageMaker-reward", execution_role_arn=override_role
+            )
+            self.assertEqual(
+                mock_lambda.create_function.call_args.kwargs["Role"], override_role
+            )
+        finally:
+            os.unlink(src)
+
+    def test_deploy_lambda_raises_when_no_source_resolvable(self):
+        mgr = self._create_manager()
+        mgr.rft_lambda = None
+        with self.assertRaises(ValueError) as ctx:
+            mgr.deploy_lambda()
+        self.assertIn("rft_lambda must be set", str(ctx.exception))
+
+    def test_deploy_lambda_raises_when_rft_lambda_is_arn(self):
+        arn = "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
+        mgr = self._create_manager()
+        mgr.rft_lambda = arn
+        with self.assertRaises(ValueError) as ctx:
+            mgr.deploy_lambda()
+        self.assertIn("already a deployed Lambda ARN", str(ctx.exception))
+
+    def test_deploy_lambda_raises_when_file_not_found(self):
+        mgr = self._create_manager()
+        mgr.rft_lambda = "/nonexistent/reward.py"
+        with self.assertRaises(ValueError) as ctx:
+            mgr.deploy_lambda(lambda_name="SageMaker-reward")
+        self.assertIn("file not found", str(ctx.exception))
+
+    def test_deploy_lambda_raises_when_no_execution_role(self):
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+            f.write(b"def lambda_handler(event, context): return {'reward': 1.0}")
+            src = f.name
+
+        try:
+            mgr = self._create_manager()
+            mgr.execution_role = None
+            mgr.rft_lambda = src
+            with self.assertRaises(ValueError) as ctx:
+                mgr.deploy_lambda(lambda_name="SageMaker-reward")
+            self.assertIn("execution_role_arn", str(ctx.exception))
+        finally:
+            os.unlink(src)
+
+    # ------------------------------------------------------------------
+    # validate_lambda
+    # ------------------------------------------------------------------
+
+    @patch("amzn_nova_forge.validation.validator.verify_rft_lambda")
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    def test_validate_lambda_uses_rft_lambda_arn_property(
+        self, mock_boto_client, mock_verify
+    ):
+        arn = "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
+        mgr = self._create_manager()
+        mgr.rft_lambda_arn = arn
+        mgr.validate_lambda(data_s3_path="s3://bucket/data.jsonl")
+
+        mock_verify.assert_called_once()
+        call_kwargs = mock_verify.call_args.kwargs
+        self.assertEqual(call_kwargs["lambda_arn"], arn)
+        self.assertEqual(call_kwargs["data_s3_path"], "s3://bucket/data.jsonl")
+
+    @patch("amzn_nova_forge.validation.validator.verify_rft_lambda")
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    def test_validate_lambda_uses_rft_lambda_when_arn(
+        self, mock_boto_client, mock_verify
+    ):
+        arn = "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
+        # Pass ARN via constructor so rft_lambda_arn is resolved immediately
+        with patch.object(SMTJRuntimeManager, "setup", return_value=None):
+            mgr = SMTJRuntimeManager("ml.m5.xlarge", 1, rft_lambda=arn)
+            mgr.region = "us-east-1"
+        mgr.validate_lambda(data_s3_path="s3://bucket/data.jsonl")
+
+        self.assertEqual(mock_verify.call_args.kwargs["lambda_arn"], arn)
+
+    @patch("amzn_nova_forge.validation.validator.verify_rft_lambda")
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    def test_validate_lambda_passes_sample_count(self, mock_boto_client, mock_verify):
+        arn = "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
+        mgr = self._create_manager()
+        mgr.rft_lambda_arn = arn
+        mgr.validate_lambda(data_s3_path="s3://bucket/data.jsonl", validation_samples=5)
+
+        self.assertEqual(mock_verify.call_args.kwargs["sample_count"], 5)
+
+    @patch("amzn_nova_forge.manager.runtime_manager.verify_reward_function")
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    def test_validate_lambda_local_source_calls_verify_reward_function(
+        self, mock_boto_client, mock_verify_reward
+    ):
+        mock_s3 = MagicMock()
+        mock_s3.get_object.return_value = {
+            "Body": MagicMock(
+                iter_lines=lambda: [
+                    b'{"id": "1", "messages": [{"role": "user", "content": "hi"}]}'
+                ]
+            )
+        }
+        mock_boto_client.return_value = mock_s3
+
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+            f.write(b"def lambda_handler(event, context): return {'reward': 1.0}")
+            src = f.name
+
+        try:
+            mgr = self._create_manager()
+            mgr.rft_lambda = src
+            mgr.validate_lambda(data_s3_path="s3://bucket/data.jsonl")
+
+            mock_verify_reward.assert_called_once()
+            self.assertEqual(
+                mock_verify_reward.call_args.kwargs["reward_function"], src
+            )
+        finally:
+            os.unlink(src)
+
+    def test_validate_lambda_raises_when_nothing_resolvable(self):
+        mgr = self._create_manager()
+        mgr.rft_lambda = None
+        with self.assertRaises(ValueError) as ctx:
+            mgr.validate_lambda(data_s3_path="s3://bucket/data.jsonl")
+        self.assertIn(
+            "Either lambda_arn or lambda_source must be provided", str(ctx.exception)
+        )
+
+    @patch("amzn_nova_forge.manager.runtime_manager.verify_reward_function")
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    def test_validate_lambda_local_raises_on_invalid_s3_path(
+        self, mock_boto_client, mock_verify_reward
+    ):
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+            f.write(b"def lambda_handler(event, context): return {'reward': 1.0}")
+            src = f.name
+
+        try:
+            mgr = self._create_manager()
+            mgr.rft_lambda = src
+            with self.assertRaises(ValueError) as ctx:
+                mgr.validate_lambda(data_s3_path="not-an-s3-path")
+            self.assertIn("Invalid S3 path", str(ctx.exception))
+        finally:
+            os.unlink(src)
+
+    @patch("amzn_nova_forge.manager.runtime_manager.verify_reward_function")
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    def test_validate_lambda_local_raises_on_s3_read_failure(
+        self, mock_boto_client, mock_verify_reward
+    ):
+        mock_s3 = MagicMock()
+        mock_s3.get_object.side_effect = Exception("Access Denied")
+        mock_boto_client.return_value = mock_s3
+
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+            f.write(b"def lambda_handler(event, context): return {'reward': 1.0}")
+            src = f.name
+
+        try:
+            mgr = self._create_manager()
+            mgr.rft_lambda = src
+            with self.assertRaises(ValueError) as ctx:
+                mgr.validate_lambda(data_s3_path="s3://bucket/data.jsonl")
+            self.assertIn("Failed to read samples", str(ctx.exception))
+        finally:
+            os.unlink(src)
+
 
 class TestSMHPRuntimeManager(unittest.TestCase):
     def setUp(self):
@@ -215,8 +558,12 @@ class TestSMHPRuntimeManager(unittest.TestCase):
         self.cluster_name = "test-cluster"
         self.namespace = "test-namespace"
 
+    @patch(
+        "amzn_nova_forge.manager.runtime_manager.get_execution_role",
+        return_value="arn:aws:iam::123456789012:role/MockRole",
+    )
     @patch("subprocess.run")
-    def test_initialization(self, mock_run):
+    def test_initialization(self, mock_run, mock_get_role):
         mock_run.return_value.stdout = ""
         mock_run.return_value.stderr = ""
 
@@ -254,8 +601,12 @@ class TestSMHPRuntimeManager(unittest.TestCase):
 
         self.assertEqual(manager.instance_count, new_instance_count)
 
+    @patch(
+        "amzn_nova_forge.manager.runtime_manager.get_execution_role",
+        return_value="arn:aws:iam::123456789012:role/MockRole",
+    )
     @patch("subprocess.run")
-    def test_initialization_fails(self, mock_run):
+    def test_initialization_fails(self, mock_run, mock_get_role):
         mock_run.return_value.stderr = "Connection failed"
 
         with self.assertRaises(Exception):
@@ -266,8 +617,12 @@ class TestSMHPRuntimeManager(unittest.TestCase):
                 self.namespace,
             )
 
+    @patch(
+        "amzn_nova_forge.manager.runtime_manager.get_execution_role",
+        return_value="arn:aws:iam::123456789012:role/MockRole",
+    )
     @patch("subprocess.run")
-    def test_execute_success(self, mock_run):
+    def test_execute_success(self, mock_run, mock_get_role):
         mock_run.return_value.stdout = "NAME: test-job-123"
         mock_run.return_value.stderr = ""
 
@@ -312,8 +667,12 @@ class TestSMHPRuntimeManager(unittest.TestCase):
         )
         self.assertEqual(job_id, "test-job-123")
 
+    @patch(
+        "amzn_nova_forge.manager.runtime_manager.get_execution_role",
+        return_value="arn:aws:iam::123456789012:role/MockRole",
+    )
     @patch("subprocess.run")
-    def test_execute_missing_parameters(self, mock_run):
+    def test_execute_missing_parameters(self, mock_run, mock_get_role):
         mock_run.return_value = MagicMock(stdout="", stderr="")
 
         manager = SMHPRuntimeManager(
@@ -331,8 +690,12 @@ class TestSMHPRuntimeManager(unittest.TestCase):
         with self.assertRaises(ValueError):
             manager.execute(job_config)
 
+    @patch(
+        "amzn_nova_forge.manager.runtime_manager.get_execution_role",
+        return_value="arn:aws:iam::123456789012:role/MockRole",
+    )
     @patch("subprocess.run")
-    def test_execute_handles_error(self, mock_run):
+    def test_execute_handles_error(self, mock_run, mock_get_role):
         mock_run.side_effect = [
             MagicMock(stdout="", stderr=""),
             Exception("Failed to start job"),
@@ -355,8 +718,12 @@ class TestSMHPRuntimeManager(unittest.TestCase):
 
         self.assertEqual(str(context.exception), "Failed to start job")
 
+    @patch(
+        "amzn_nova_forge.manager.runtime_manager.get_execution_role",
+        return_value="arn:aws:iam::123456789012:role/MockRole",
+    )
     @patch("subprocess.run")
-    def test_cleanup_success(self, mock_run):
+    def test_cleanup_success(self, mock_run, mock_get_role):
         mock_run.return_value.stdout = ""
         mock_run.return_value.stderr = ""
 
@@ -381,8 +748,12 @@ class TestSMHPRuntimeManager(unittest.TestCase):
             check=True,
         )
 
+    @patch(
+        "amzn_nova_forge.manager.runtime_manager.get_execution_role",
+        return_value="arn:aws:iam::123456789012:role/MockRole",
+    )
     @patch("subprocess.run")
-    def test_cleanup_handles_error(self, mock_run):
+    def test_cleanup_handles_error(self, mock_run, mock_get_role):
         mock_run.side_effect = [
             MagicMock(stdout="", stderr=""),
             Exception("Cleanup failed"),
@@ -396,6 +767,510 @@ class TestSMHPRuntimeManager(unittest.TestCase):
             manager.cleanup("test-job")
 
         self.assertEqual(str(context.exception), "Cleanup failed")
+
+    # ------------------------------------------------------------------
+    # rft_lambda / deploy_lambda (SMHP-specific)
+    # ------------------------------------------------------------------
+
+    @patch.object(SMHPRuntimeManager, "setup", return_value=None)
+    def test_rft_lambda_arn_set_immediately_when_arn_passed(self, mock_setup):
+        arn = "arn:aws:lambda:us-east-1:123456789012:function:SageMaker-reward"
+        mgr = SMHPRuntimeManager(
+            self.instance_type,
+            self.instance_count,
+            self.cluster_name,
+            self.namespace,
+            rft_lambda=arn,
+        )
+        self.assertEqual(mgr.rft_lambda_arn, arn)
+
+    @patch.object(SMHPRuntimeManager, "setup", return_value=None)
+    def test_rft_lambda_arn_none_when_file_path_passed(self, mock_setup):
+        mgr = SMHPRuntimeManager(
+            self.instance_type,
+            self.instance_count,
+            self.cluster_name,
+            self.namespace,
+            rft_lambda="reward.py",
+        )
+        self.assertIsNone(mgr.rft_lambda_arn)
+        self.assertEqual(mgr.rft_lambda, "reward.py")
+
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    @patch.object(SMHPRuntimeManager, "setup", return_value=None)
+    def test_deploy_lambda_smhp_requires_sagemaker_prefix(
+        self, mock_setup, mock_boto_client
+    ):
+        """SMHP platform validation requires 'SageMaker' prefix in lambda name."""
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
+            f.write(b"def lambda_handler(event, context): return {'reward': 1.0}")
+            src = f.name
+
+        try:
+            mgr = SMHPRuntimeManager(
+                self.instance_type,
+                self.instance_count,
+                self.cluster_name,
+                self.namespace,
+                rft_lambda=src,
+            )
+            mgr.execution_role = "arn:aws:iam::123456789012:role/SageMakerExecutionRole"
+            mgr.region = "us-east-1"
+            with self.assertRaises(ValueError):
+                mgr.deploy_lambda(lambda_name="my-reward-fn")
+        finally:
+            os.unlink(src)
+
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    @patch.object(SMHPRuntimeManager, "setup", return_value=None)
+    def test_scale_cluster_success(self, mock_setup, mock_boto_client):
+        """Test successful cluster scaling with valid RIG and positive value."""
+        mock_sagemaker = MagicMock()
+        mock_boto_client.return_value = mock_sagemaker
+
+        # Mock describe_cluster response
+        mock_sagemaker.describe_cluster.return_value = {
+            "ClusterName": self.cluster_name,
+            "ClusterStatus": "InService",
+            "RestrictedInstanceGroups": [
+                {
+                    "InstanceGroupName": "worker-group",
+                    "InstanceType": "ml.p4d.24xlarge",
+                    "CurrentCount": 4,
+                    "TargetCount": 4,
+                    "ExecutionRole": "arn:aws:iam::123456789012:role/ExecutionRole",
+                    "OverrideVpcConfig": {
+                        "SecurityGroupIds": ["sg-123"],
+                        "Subnets": ["subnet-123"],
+                    },
+                    "EnvironmentConfig": {
+                        "FSxLustreConfig": {
+                            "SizeInGiB": 1200,
+                            "PerUnitStorageThroughput": 125,
+                        }
+                    },
+                }
+            ],
+        }
+
+        # Mock update_cluster response
+        mock_sagemaker.update_cluster.return_value = {
+            "ClusterArn": "arn:aws:sagemaker:us-west-2:123456789012:cluster/test-cluster"
+        }
+
+        manager = SMHPRuntimeManager(
+            self.instance_type,
+            self.instance_count,
+            self.cluster_name,
+            self.namespace,
+        )
+        manager.region = "us-west-2"
+
+        result = manager.scale_cluster(
+            instance_group_name="worker-group", target_instance_count=8
+        )
+
+        # Verify the result
+        self.assertEqual(result["InstanceGroupName"], "worker-group")
+        self.assertEqual(result["InstanceType"], "ml.p4d.24xlarge")
+        self.assertEqual(result["PreviousCount"], 4)
+        self.assertEqual(result["TargetCount"], 8)
+        self.assertIn("ClusterArn", result)
+
+        # Verify update_cluster was called with correct parameters
+        mock_sagemaker.update_cluster.assert_called_once()
+        call_kwargs = mock_sagemaker.update_cluster.call_args.kwargs
+        self.assertEqual(call_kwargs["ClusterName"], self.cluster_name)
+        self.assertIn("RestrictedInstanceGroups", call_kwargs)
+
+        rig_params = call_kwargs["RestrictedInstanceGroups"][0]
+        self.assertEqual(rig_params["InstanceGroupName"], "worker-group")
+        self.assertEqual(rig_params["InstanceCount"], 8)
+        self.assertEqual(rig_params["InstanceType"], "ml.p4d.24xlarge")
+        self.assertIn("OverrideVpcConfig", rig_params)
+        self.assertIn("EnvironmentConfig", rig_params)
+
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    @patch.object(SMHPRuntimeManager, "setup", return_value=None)
+    def test_scale_cluster_invalid_instance_group(self, mock_setup, mock_boto_client):
+        """Test scaling with invalid instance group name raises ValueError."""
+        mock_sagemaker = MagicMock()
+        mock_boto_client.return_value = mock_sagemaker
+
+        # Mock describe_cluster response with different group names
+        mock_sagemaker.describe_cluster.return_value = {
+            "ClusterName": self.cluster_name,
+            "ClusterStatus": "InService",
+            "RestrictedInstanceGroups": [
+                {
+                    "InstanceGroupName": "worker-group",
+                    "InstanceType": "ml.p4d.24xlarge",
+                    "CurrentCount": 4,
+                    "TargetCount": 4,
+                    "ExecutionRole": "arn:aws:iam::123456789012:role/ExecutionRole",
+                    "OverrideVpcConfig": {
+                        "SecurityGroupIds": ["sg-123"],
+                        "Subnets": ["subnet-123"],
+                    },
+                    "EnvironmentConfig": {
+                        "FSxLustreConfig": {
+                            "SizeInGiB": 1200,
+                            "PerUnitStorageThroughput": 125,
+                        }
+                    },
+                }
+            ],
+        }
+
+        manager = SMHPRuntimeManager(
+            self.instance_type,
+            self.instance_count,
+            self.cluster_name,
+            self.namespace,
+        )
+        manager.region = "us-west-2"
+
+        # Try to scale non-existent group
+        with self.assertRaises(ValueError) as context:
+            manager.scale_cluster(
+                instance_group_name="invalid-group", target_instance_count=8
+            )
+
+        error_msg = str(context.exception)
+        self.assertIn("not found", error_msg)
+        self.assertIn("invalid-group", error_msg)
+        self.assertIn("worker-group", error_msg)  # Should list available groups
+
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    @patch.object(SMHPRuntimeManager, "setup", return_value=None)
+    def test_scale_cluster_negative_count(self, mock_setup, mock_boto_client):
+        """Test scaling with negative instance count raises ValueError."""
+        manager = SMHPRuntimeManager(
+            self.instance_type,
+            self.instance_count,
+            self.cluster_name,
+            self.namespace,
+        )
+        manager.region = "us-west-2"
+
+        with self.assertRaises(ValueError) as context:
+            manager.scale_cluster(
+                instance_group_name="worker-group", target_instance_count=-1
+            )
+
+        error_msg = str(context.exception)
+        self.assertIn("non-negative", error_msg)
+
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    @patch.object(SMHPRuntimeManager, "setup", return_value=None)
+    def test_scale_cluster_without_fsx_config(self, mock_setup, mock_boto_client):
+        """Test scaling cluster without FSxLustreConfig in EnvironmentConfig."""
+        mock_sagemaker = MagicMock()
+        mock_boto_client.return_value = mock_sagemaker
+
+        # Mock describe_cluster response without FSxLustreConfig (EnvironmentConfig)
+        mock_sagemaker.describe_cluster.return_value = {
+            "ClusterName": self.cluster_name,
+            "ClusterStatus": "InService",
+            "RestrictedInstanceGroups": [
+                {
+                    "InstanceGroupName": "worker-group",
+                    "InstanceType": "ml.p4d.24xlarge",
+                    "CurrentCount": 2,
+                    "TargetCount": 2,
+                    "ExecutionRole": "arn:aws:iam::123456789012:role/ExecutionRole",
+                    "OverrideVpcConfig": {
+                        "SecurityGroupIds": ["sg-123"],
+                        "Subnets": ["subnet-123"],
+                    },
+                    "EnvironmentConfig": {},
+                }
+            ],
+        }
+
+        mock_sagemaker.update_cluster.return_value = {
+            "ClusterArn": "arn:aws:sagemaker:us-west-2:123456789012:cluster/test-cluster"
+        }
+
+        manager = SMHPRuntimeManager(
+            self.instance_type,
+            self.instance_count,
+            self.cluster_name,
+            self.namespace,
+        )
+        manager.region = "us-west-2"
+
+        result = manager.scale_cluster(
+            instance_group_name="worker-group", target_instance_count=5
+        )
+
+        self.assertEqual(result["TargetCount"], 5)
+
+        # Verify EnvironmentConfig is empty in the update call
+        call_kwargs = mock_sagemaker.update_cluster.call_args.kwargs
+        rig_params = call_kwargs["RestrictedInstanceGroups"][0]
+        self.assertEqual(rig_params["EnvironmentConfig"], {})
+
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    @patch.object(SMHPRuntimeManager, "setup", return_value=None)
+    def test_scale_cluster_preserves_all_instance_groups(
+        self, mock_setup, mock_boto_client
+    ):
+        """Test that all instance groups are preserved when scaling one group."""
+        mock_sagemaker = MagicMock()
+        mock_boto_client.return_value = mock_sagemaker
+        # Mock describe_cluster response with multiple instance groups
+        mock_sagemaker.describe_cluster.return_value = {
+            "ClusterName": self.cluster_name,
+            "ClusterStatus": "InService",
+            "RestrictedInstanceGroups": [
+                {
+                    "InstanceGroupName": "worker-group",
+                    "InstanceType": "ml.p4d.24xlarge",
+                    "CurrentCount": 4,
+                    "TargetCount": 4,
+                    "ExecutionRole": "arn:aws:iam::123456789012:role/ExecutionRole",
+                    "OverrideVpcConfig": {
+                        "SecurityGroupIds": ["sg-123"],
+                        "Subnets": ["subnet-123"],
+                    },
+                    "EnvironmentConfig": {
+                        "FSxLustreConfig": {
+                            "SizeInGiB": 1200,
+                            "PerUnitStorageThroughput": 125,
+                        }
+                    },
+                },
+                {
+                    "InstanceGroupName": "controller-group",
+                    "InstanceType": "ml.m5.xlarge",
+                    "CurrentCount": 1,
+                    "TargetCount": 1,
+                    "ExecutionRole": "arn:aws:iam::123456789012:role/ExecutionRole",
+                    "OverrideVpcConfig": {
+                        "SecurityGroupIds": ["sg-456"],
+                        "Subnets": ["subnet-456"],
+                    },
+                    "EnvironmentConfig": {},
+                },
+            ],
+        }
+
+        mock_sagemaker.update_cluster.return_value = {
+            "ClusterArn": "arn:aws:sagemaker:us-west-2:123456789012:cluster/test-cluster"
+        }
+
+        manager = SMHPRuntimeManager(
+            self.instance_type,
+            self.instance_count,
+            self.cluster_name,
+            self.namespace,
+        )
+        manager.region = "us-west-2"
+
+        result = manager.scale_cluster(
+            instance_group_name="worker-group", target_instance_count=8
+        )
+
+        # Verify both instance groups are included in the update call
+        call_kwargs = mock_sagemaker.update_cluster.call_args.kwargs
+        all_groups = call_kwargs["RestrictedInstanceGroups"]
+
+        self.assertEqual(len(all_groups), 2, "All instance groups should be included")
+
+        # Find the worker group and controller group
+        worker_group = next(
+            g for g in all_groups if g["InstanceGroupName"] == "worker-group"
+        )
+        controller_group = next(
+            g for g in all_groups if g["InstanceGroupName"] == "controller-group"
+        )
+
+        # Verify worker group was scaled
+        self.assertEqual(worker_group["InstanceCount"], 8)
+        self.assertEqual(worker_group["InstanceType"], "ml.p4d.24xlarge")
+
+        # Verify controller group was NOT modified
+        self.assertEqual(controller_group["InstanceCount"], 1)
+        self.assertEqual(controller_group["InstanceType"], "ml.m5.xlarge")
+
+        # Verify both have their OverrideVpcConfig preserved
+        self.assertIn("OverrideVpcConfig", worker_group)
+        self.assertIn("OverrideVpcConfig", controller_group)
+
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    @patch.object(SMHPRuntimeManager, "setup", return_value=None)
+    def test_scale_cluster_not_in_service_state(self, mock_setup, mock_boto_client):
+        """Test that scaling fails when cluster is not in InService state."""
+        mock_sagemaker = MagicMock()
+        mock_boto_client.return_value = mock_sagemaker
+
+        # Mock describe_cluster response with cluster in Updating state
+        mock_sagemaker.describe_cluster.return_value = {
+            "ClusterName": self.cluster_name,
+            "ClusterStatus": "Updating",
+            "RestrictedInstanceGroups": [
+                {
+                    "InstanceGroupName": "worker-group",
+                    "InstanceType": "ml.p4d.24xlarge",
+                    "CurrentCount": 4,
+                    "TargetCount": 4,
+                    "ExecutionRole": "arn:aws:iam::123456789012:role/ExecutionRole",
+                    "OverrideVpcConfig": {
+                        "SecurityGroupIds": ["sg-123"],
+                        "Subnets": ["subnet-123"],
+                    },
+                    "EnvironmentConfig": {
+                        "FSxLustreConfig": {
+                            "SizeInGiB": 1200,
+                            "PerUnitStorageThroughput": 125,
+                        }
+                    },
+                }
+            ],
+        }
+
+        manager = SMHPRuntimeManager(
+            self.instance_type,
+            self.instance_count,
+            self.cluster_name,
+            self.namespace,
+        )
+        manager.region = "us-west-2"
+
+        # Try to scale cluster that's not in InService state
+        with self.assertRaises(ValueError) as context:
+            manager.scale_cluster(
+                instance_group_name="worker-group", target_instance_count=8
+            )
+
+        error_msg = str(context.exception)
+        self.assertIn("Updating", error_msg)
+        self.assertIn("InService", error_msg)
+
+        # Verify update_cluster was NOT called
+        mock_sagemaker.update_cluster.assert_not_called()
+
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    @patch.object(SMHPRuntimeManager, "setup", return_value=None)
+    def test_get_instance_groups_success(self, mock_setup, mock_boto_client):
+        """Test successfully retrieving instance groups from cluster."""
+        mock_sagemaker = MagicMock()
+        mock_boto_client.return_value = mock_sagemaker
+
+        # Mock describe_cluster response with multiple instance groups
+        mock_sagemaker.describe_cluster.return_value = {
+            "ClusterName": self.cluster_name,
+            "ClusterStatus": "InService",
+            "RestrictedInstanceGroups": [
+                {
+                    "InstanceGroupName": "worker-group",
+                    "InstanceType": "ml.p4d.24xlarge",
+                    "CurrentCount": 4,
+                    "TargetCount": 4,
+                    "ExecutionRole": "arn:aws:iam::123456789012:role/ExecutionRole",
+                    "OverrideVpcConfig": {
+                        "SecurityGroupIds": ["sg-123"],
+                        "Subnets": ["subnet-123"],
+                    },
+                    "EnvironmentConfig": {
+                        "FSxLustreConfig": {
+                            "SizeInGiB": 1200,
+                            "PerUnitStorageThroughput": 125,
+                        }
+                    },
+                },
+                {
+                    "InstanceGroupName": "controller-group",
+                    "InstanceType": "ml.m5.xlarge",
+                    "CurrentCount": 1,
+                    "TargetCount": 1,
+                    "ExecutionRole": "arn:aws:iam::123456789012:role/ExecutionRole",
+                    "OverrideVpcConfig": {
+                        "SecurityGroupIds": ["sg-456"],
+                        "Subnets": ["subnet-456"],
+                    },
+                    "EnvironmentConfig": {},
+                },
+                {
+                    "InstanceGroupName": "test-group",
+                    "InstanceType": "ml.c5.xlarge",
+                    "CurrentCount": 0,
+                    "TargetCount": 0,
+                    "ExecutionRole": "arn:aws:iam::123456789012:role/ExecutionRole",
+                    "OverrideVpcConfig": {
+                        "SecurityGroupIds": ["sg-789"],
+                        "Subnets": ["subnet-789"],
+                    },
+                    "EnvironmentConfig": {},
+                },
+            ],
+        }
+
+        manager = SMHPRuntimeManager(
+            self.instance_type,
+            self.instance_count,
+            self.cluster_name,
+            self.namespace,
+        )
+        manager.region = "us-west-2"
+
+        result = manager.get_instance_groups()
+
+        # Verify the result contains only essential fields
+        self.assertEqual(len(result), 3)
+
+        # Check first group
+        self.assertEqual(result[0]["InstanceGroupName"], "worker-group")
+        self.assertEqual(result[0]["InstanceType"], "ml.p4d.24xlarge")
+        self.assertEqual(result[0]["CurrentCount"], 4)
+        self.assertEqual(len(result[0]), 3, "Should only have 3 fields")
+
+        # Check second group
+        self.assertEqual(result[1]["InstanceGroupName"], "controller-group")
+        self.assertEqual(result[1]["InstanceType"], "ml.m5.xlarge")
+        self.assertEqual(result[1]["CurrentCount"], 1)
+
+        # Check third group (with 0 instances)
+        self.assertEqual(result[2]["InstanceGroupName"], "test-group")
+        self.assertEqual(result[2]["InstanceType"], "ml.c5.xlarge")
+        self.assertEqual(result[2]["CurrentCount"], 0)
+
+        # Verify no extra fields are included
+        for group in result:
+            self.assertNotIn("ExecutionRole", group)
+            self.assertNotIn("OverrideVpcConfig", group)
+            self.assertNotIn("EnvironmentConfig", group)
+            self.assertNotIn("TargetCount", group)
+            self.assertNotIn("Status", group)
+
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    @patch.object(SMHPRuntimeManager, "setup", return_value=None)
+    def test_get_instance_groups_empty_cluster(self, mock_setup, mock_boto_client):
+        """Test retrieving instance groups from cluster with no RIGs."""
+        mock_sagemaker = MagicMock()
+        mock_boto_client.return_value = mock_sagemaker
+
+        # Mock describe_cluster response with no instance groups
+        mock_sagemaker.describe_cluster.return_value = {
+            "ClusterName": self.cluster_name,
+            "ClusterStatus": "InService",
+            "RestrictedInstanceGroups": [],
+        }
+
+        manager = SMHPRuntimeManager(
+            self.instance_type,
+            self.instance_count,
+            self.cluster_name,
+            self.namespace,
+        )
+        manager.region = "us-west-2"
+
+        result = manager.get_instance_groups()
+
+        # Verify empty list is returned
+        self.assertEqual(result, [])
+        self.assertEqual(len(result), 0)
 
 
 if __name__ == "__main__":

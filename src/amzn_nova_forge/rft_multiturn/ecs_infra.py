@@ -34,11 +34,13 @@ from .base_infra import (
     create_rft_execution_role,
 )
 from .common_infra_commands import CommonInfraCommands
-from .constants import ECR_REPO_NAME, SAM_WAIT_TIME, STARTER_KIT_S3
+from .constants import (
+    ECS_IMAGE_URI,
+    ECS_STARTER_KIT_PATH,
+    SAM_WAIT_TIME,
+    STARTER_KIT_S3,
+)
 from .utils import build_duplicate_job_error_message
-
-STARTER_KIT_PATH_ECS = "/root/v1"
-IMAGE_URI_FOR_TASKS = "public.ecr.aws/docker/library/python:3.12-slim"
 
 
 class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
@@ -93,7 +95,6 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         self.user_cpu = cpu
         self.user_memory = memory
         self.ecs_client = boto3.client("ecs", region_name=region)
-        self.ecr_client = boto3.client("ecr", region_name=region)
         self.ec2_client = boto3.client(
             "ec2", region_name=region
         )  # Needed for VPC discovery
@@ -108,7 +109,7 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         self.latest_eval_task_id: Optional[str] = None
         self.latest_sam_task_id: Optional[str] = None
 
-        self.base_path = STARTER_KIT_PATH_ECS
+        self.base_path = ECS_STARTER_KIT_PATH
         self.starter_kit_s3 = STARTER_KIT_S3
         self.sam_base_dir = "/root"
 
@@ -118,7 +119,11 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
             logger.info(f"Using custom starter kit from S3: {self.starter_kit_s3}")
 
     def _get_package_install_cmd(self) -> List[str]:
-        return ["apt-get update", "apt-get install -y git awscli"]
+        # AL2023 has python3.12 in default repos — same yum commands as EC2
+        return [
+            "yum update -y",
+            "yum install -y python3.12 python3.12-pip git awscli tar",
+        ]
 
     def _build_sam_deploy_command(
         self, custom_starter_kit_s3: Optional[str] = None
@@ -226,72 +231,13 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         except self.logs_client.exceptions.ResourceAlreadyExistsException:
             pass
 
-    def _setup_ecr_image(self, repo_name: str = ECR_REPO_NAME) -> str:
+    def _setup_ecr_image(self) -> str:
         """
-        Setup ECR repository and push Python 3.12 image
+        Return the public base image URI directly — no Docker or ECR push required.
+        ECS Fargate can pull public ECR images without any local Docker daemon.
         """
-        try:
-            response = self.ecr_client.describe_repositories(
-                repositoryNames=[repo_name]
-            )
-            repository_uri = response["repositories"][0]["repositoryUri"]
-            logger.info(f"ECR repository exists: {repository_uri}")
-        except self.ecr_client.exceptions.RepositoryNotFoundException:
-            response = self.ecr_client.create_repository(repositoryName=repo_name)
-            repository_uri = response["repository"]["repositoryUri"]
-            logger.info(f"Created ECR repository: {repository_uri}")
-
-        image_uri = f"{repository_uri}:latest"
-
-        try:
-            self.ecr_client.describe_images(
-                repositoryName=repo_name, imageIds=[{"imageTag": "latest"}]
-            )
-            logger.info(f"Image already exists in ECR: {image_uri}")
-            return image_uri
-        except self.ecr_client.exceptions.ImageNotFoundException:
-            pass
-
-        subprocess.run(
-            ["docker", "pull", f"{IMAGE_URI_FOR_TASKS}"],
-            check=True,
-        )
-
-        # Get ECR login password and pipe to docker login
-        password_result = subprocess.run(
-            ["aws", "ecr", "get-login-password", "--region", self.region],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        subprocess.run(
-            [
-                "docker",
-                "login",
-                "--username",
-                "AWS",
-                "--password-stdin",
-                f"{self.account_id}.dkr.ecr.{self.region}.amazonaws.com",
-            ],
-            input=password_result.stdout,
-            text=True,
-            check=True,
-        )
-
-        subprocess.run(
-            [
-                "docker",
-                "tag",
-                f"{IMAGE_URI_FOR_TASKS}",
-                image_uri,
-            ],
-            check=True,
-        )
-
-        subprocess.run(["docker", "push", image_uri], check=True)
-
-        logger.info(f"Successfully pushed image to {image_uri}")
-        return image_uri
+        logger.info(f"Using base image {ECS_IMAGE_URI} for ECS task")
+        return ECS_IMAGE_URI
 
     def _get_s3_etag(self, s3_uri: str) -> Optional[str]:
         """
@@ -1075,6 +1021,7 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         """
         for env_type in [EnvType.TRAIN, EnvType.EVAL]:
             self.kill_task(env_type, deregister_task_def=cleanup_environment)
+
         logger.info("ECS cleanup complete")
 
     def get_state(self) -> Dict:
