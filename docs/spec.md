@@ -2586,22 +2586,20 @@ Monitors job status:
 
 ### Limitations and Notes
 
-1. **Platform Support**: Currently only SMTJ (SageMaker Training Jobs) is supported. SMHP support coming soon.
+1. **Email Confirmation**: Users must confirm their email subscription before receiving notifications.
 
-2. **Email Confirmation**: Users must confirm their email subscription before receiving notifications.
+2. **Region-Specific**: Notification infrastructure is created per region. Jobs in different regions require separate infrastructure.
 
-3. **Region-Specific**: Notification infrastructure is created per region. Jobs in different regions require separate infrastructure.
+3. **One Stack Per Region**: Only one notification stack per platform per region. All jobs in that region/platform share the same infrastructure.
 
-4. **One Stack Per Region**: Only one notification stack per platform per region. All jobs in that region/platform share the same infrastructure.
-
-5. **KMS Key Requirements**: If using KMS encryption:
+4. **KMS Key Requirements**: If using KMS encryption:
    - Provide only the key ID, not the full ARN
    - The Lambda function automatically receives permissions to use the key
    - The key must be in the same region as the notification infrastructure
 
-6. **Output Path Required**: The `output_s3_path` is required for manifest validation. The SDK will attempt to extract it from `model_artifacts` if not provided explicitly.
+5. **Output Path Required**: The `output_s3_path` is required for manifest validation. The SDK will attempt to extract it from `model_artifacts` if not provided explicitly.
 
-7. **Hard-coded CloudFormation Stack Names**: When the CF stack is created, it will have one of the following names: `NovaForgeSDK-SMTJ-JobNotifications` or `NovaForgeSDK-SMHP-JobNotifications`. 
+6. **Hard-coded CloudFormation Stack Names**: When the CF stack is created, it will have one of the following names: `NovaForgeSDK-SMTJ-JobNotifications` or `NovaForgeSDK-SMHP-JobNotifications-{HP-Cluster}`. 
 
 ### Troubleshooting
 
