@@ -2545,12 +2545,12 @@ Email notifications include:
 - For completed jobs: Validation status of output artifacts
 - For failed jobs: Failure reason (if available)
 
-### Infrastructure Details
+### Infrastructure Details (SMTJ)
 
 #### CloudFormation Stack
 
 The notification infrastructure is managed as a CloudFormation stack:
-- **Stack Name**: `NovaForgeSDK-SMTJ-JobNotifications` (for SMTJ)
+- **Stack Name**: `NovaForgeSDK-SMTJ-JobNotifications`
 - **Region**: Specified when enabling notifications (default: us-east-1)
 - **Resources**: DynamoDB table, SNS topic, Lambda function, EventBridge rule, IAM roles
 
@@ -2584,13 +2584,64 @@ Monitors job status:
 - **Event Pattern**: SageMaker Training Job State Change events
 - **States Monitored**: Completed, Failed, Stopped
 
+### Infrastructure Details (SMHP)
+
+#### CloudFormation Stack
+
+The notification infrastructure is managed as a CloudFormation stack:
+- **Stack Name**: `NovaForgeSDK-SMHP-JobNotifications-{ClusterName}`
+- **Region**: Specified when enabling notifications (default: us-east-1)
+- **Resources**: DynamoDB table, SNS topic, Lambda function, EventBridge rule, IAM roles, VPC endpoints
+
+#### DynamoDB Table
+
+Stores job notification configurations:
+- **Table Name**: `NovaForgeSDK-SMHP-JobNotifications-{ClusterName}`
+- **Primary Key**: `job_id` (String)
+- **Attributes**: `output_s3_path` (String), `namespace` (String), `ttl` (Number)
+- **TTL**: Automatically deletes entries after 30 days
+- **Point-in-Time Recovery**: Enabled
+
+#### SNS Topic
+
+Manages email subscriptions:
+- **Topic Name**: `NovaForgeSDK-SMHP-Notifications-{ClusterName}`
+- **Encryption**: Optional KMS encryption
+- **Subscriptions**: Email protocol with confirmation required
+
+#### Lambda Function
+
+Handles job status polling:
+- **Function Name**: `NovaForgeSDK-SMHP-NotificationHandler-{ClusterName}`
+- **Runtime**: Python 3.12
+- **Timeout**: 300 seconds
+- **Memory**: 512 MB
+- **VPC Configuration**: Deployed in VPC with access to EKS cluster
+- **Layers**: kubectl layer for Kubernetes API access
+- **Triggers**: EventBridge scheduled rule (default: every 5 minutes)
+
+#### EventBridge Rule
+
+Periodically checks job status:
+- **Rule Name**: `NovaForgeSDK-SMHP-Job-Check-{ClusterName}`
+- **Schedule**: Rate-based (default: every 5 minutes, configurable)
+- **Target**: Lambda function for polling PyTorchJob status
+
+#### VPC Endpoints
+
+Enable private AWS service access for Lambda:
+- **DynamoDB Gateway Endpoint**: `NovaForgeSDK-SMHP-DynamoDB-{ClusterName}`
+- **SNS Interface Endpoint**: `NovaForgeSDK-SMHP-SNS-{ClusterName}`
+- **S3 Gateway Endpoint**: `NovaForgeSDK-SMHP-S3-{ClusterName}`
+
 ### Limitations and Notes
 
 1. **Email Confirmation**: Users must confirm their email subscription before receiving notifications.
 
 2. **Region-Specific**: Notification infrastructure is created per region. Jobs in different regions require separate infrastructure.
 
-3. **One Stack Per Region**: Only one notification stack per platform per region. All jobs in that region/platform share the same infrastructure.
+3. **Stack Creation Restrictions**: For SMTJ, one notification stack is created per region. 
+For SMHP, one notification stack is created per cluster per region.
 
 4. **KMS Key Requirements**: If using KMS encryption:
    - Provide only the key ID, not the full ARN
