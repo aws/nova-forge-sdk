@@ -1,0 +1,22 @@
+name: Slack
+permissions: {}
+on:
+  issues:
+    types:
+      - opened
+      - reopened
+jobs:
+  issue-opened:
+    name: Issue Opened
+    if: ${{ github.event_name == 'issues'}}
+    environment: Slack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.ISSUE_WEBHOOK_URL }}
+          webhook-type: webhook-trigger
+          payload: |
+            title: ${{ github.event.issue.title }}
+            user: ${{ github.event.issue.user.login }}
+            link: ${{ github.event.issue.html_url }}
