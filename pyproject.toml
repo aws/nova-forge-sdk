@@ -23,12 +23,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+mcp = [
+    "fastmcp>=2.0",
+]
 dev = [
     "build",
     "setuptools",
     "twine",
     "wheel",
 ]
+
+[project.scripts]
+nova-forge-mcp = "amzn_nova_forge.mcp.server:main"
 
 [tool.setuptools.package-data]
 amzn_nova_forge = ["**/*.json", "**/*.yaml"]

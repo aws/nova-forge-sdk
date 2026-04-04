@@ -6,6 +6,7 @@ A comprehensive Python SDK for fine-tuning and customizing Amazon Nova models. T
 
 - [Installation](#installation)
 - [Setup](#setup)
+- [MCP Server](#mcp-server)
 - [Supported Models and Training Methods](#supported-models-and-training-methods)
 - [Core Modules Overview](#core-modules-overview)
 - [Additional Features](#additional-features)
@@ -19,6 +20,83 @@ pip install amzn-nova-forge
 ```
 * The SDK requires [sagemaker](https://pypi.org/project/sagemaker/), which is automatically set by pip.
 
+
+## MCP Server
+
+The Nova Forge SDK includes an optional [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server, allowing AI assistants like Claude to directly train, evaluate, deploy, and monitor Nova models on your behalf.
+
+### Installation
+
+```bash
+pip install "amzn-nova-forge[mcp]"
+```
+
+### Usage
+
+#### With Claude Desktop or Claude Code
+
+Add the following to your MCP configuration (`claude_desktop_config.json` or `.claude/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "nova-forge": {
+      "command": "uvx",
+      "args": ["--from", "amzn-nova-forge[mcp]", "nova-forge-mcp"]
+    }
+  }
+}
+```
+
+Or, if you've already pip-installed the package:
+
+```json
+{
+  "mcpServers": {
+    "nova-forge": {
+      "command": "nova-forge-mcp"
+    }
+  }
+}
+```
+
+#### Standalone
+
+```bash
+nova-forge-mcp
+```
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `list_options` | List all available models, training methods, platforms, and evaluation tasks |
+| `train` | Launch a fine-tuning job (SFT, DPO, CPT, RFT) |
+| `evaluate` | Launch a model evaluation job (MMLU, BBH, GPQA, etc.) |
+| `deploy` | Deploy a fine-tuned model to SageMaker or Bedrock |
+| `get_job_status` | Check the status of a training or evaluation job |
+| `get_logs` | Retrieve CloudWatch logs for a job |
+| `validate_dataset` | Load and validate a JSONL dataset before training |
+
+### Prerequisites
+
+The MCP server uses your local AWS credentials (via `boto3`). Make sure your environment is configured with appropriate IAM permissions before use. See [Setup](#setup) for details.
+
+### Example Conversation
+
+> **You:** Train a Nova Lite model with SFT LoRA on my data at s3://my-bucket/data.jsonl using a SageMaker training job with an ml.p5.48xlarge instance.
+>
+> **Assistant:** *(calls `train` tool)* Job started: nova-lite-sft-20260331. Job ID: `abc-123-def`. Status: InProgress.
+>
+> **You:** How's that job going?
+>
+> **Assistant:** *(calls `get_job_status` tool)* Job `abc-123-def` is InProgress. Started 12 minutes ago.
+>
+> **You:** Show me the logs.
+>
+> **Assistant:** *(calls `get_logs` tool)* Here are the latest log entries...
+
+---
 
 ## Setup
 
