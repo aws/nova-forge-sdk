@@ -11,8 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+# Re-export JobConfig for backward compatibility (canonical location: core.types)
+from amzn_nova_forge.core.types import JobConfig  # noqa: F401
+
+from .glue_runtime_manager import (
+    GlueRuntimeManager,
+)
+from .local_runtime_manager import (
+    LocalRuntimeManager,
+)
 from .runtime_manager import (
     BedrockRuntimeManager,
+    DataPrepJobConfig,
     SMHPRuntimeManager,
     SMTJRuntimeManager,
     SMTJServerlessRuntimeManager,
@@ -20,7 +30,11 @@ from .runtime_manager import (
 
 __all__ = [
     "BedrockRuntimeManager",
+    "DataPrepJobConfig",
     
+    "GlueRuntimeManager",
+    "LocalRuntimeManager",
+    "JobConfig",
     "SMHPRuntimeManager",
     "SMTJRuntimeManager",
     "SMTJServerlessRuntimeManager",

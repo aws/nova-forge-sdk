@@ -58,7 +58,23 @@ class SplitOperation(NovaForgeSplitOperation):
         val_loader = self._create_split_loader(loader, dataset, val_indices)
         test_loader = self._create_split_loader(loader, dataset, test_indices)
 
-        logger.info(f"Data split: {n_train} train, {n_val} val, {n_test} test")
+        if len(dataset) < 10:
+            logger.info(
+                "Split: %d samples → %d train, %d val, %d test"
+                " (dataset is small, consider adding more data)",
+                len(dataset),
+                n_train,
+                n_val,
+                n_test,
+            )
+        else:
+            logger.info(
+                "Split: %d samples → %d train, %d val, %d test",
+                len(dataset),
+                n_train,
+                n_val,
+                n_test,
+            )
         return train_loader, val_loader, test_loader
 
     # ------------------------------------------------------------------
@@ -73,6 +89,7 @@ class SplitOperation(NovaForgeSplitOperation):
     ) -> Tuple[float, float, float]:
         """Return validated (train, val, test) ratios, applying defaults when all are None."""
         if (train_ratio, val_ratio, test_ratio) == (None, None, None):
+            logger.info("Split: using default ratios (0.8 train, 0.1 val, 0.1 test)")
             return 0.8, 0.1, 0.1
 
         if train_ratio is None or val_ratio is None or test_ratio is None:
@@ -82,9 +99,7 @@ class SplitOperation(NovaForgeSplitOperation):
             )
 
         if any(r < 0 for r in [train_ratio, val_ratio, test_ratio]):
-            raise DataPrepError(
-                "Calculated ratio is negative. Provided ratios sum to > 1.0"
-            )
+            raise DataPrepError("Calculated ratio is negative. Provided ratios sum to > 1.0")
 
         if abs(train_ratio + val_ratio + test_ratio - 1.0) > 1e-6:
             raise DataPrepError(
@@ -101,12 +116,6 @@ class SplitOperation(NovaForgeSplitOperation):
         dataset = list(loader.dataset())
         if not dataset:
             raise DataPrepError("Dataset is empty. Call load() method first")
-
-        if len(dataset) < 10:
-            logger.info(
-                "The provided dataset is small. Data will be split, "
-                "but consider adding more data for better results."
-            )
         return dataset
 
     @staticmethod
@@ -150,9 +159,7 @@ class SplitOperation(NovaForgeSplitOperation):
         return n_train, n_val, n_test
 
     @staticmethod
-    def _create_split_loader(
-        loader: Any, dataset: List[Dict], split_indices: List[int]
-    ) -> Any:
+    def _create_split_loader(loader: Any, dataset: List[Dict], split_indices: List[int]) -> Any:
         """Create a new loader of the same type backed by the given indices."""
 
         def generator() -> Iterator[Dict]:

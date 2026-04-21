@@ -1,0 +1,96 @@
+{
+  "trust_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": {
+          "Service": "sagemaker.amazonaws.com"
+        },
+        "Action": "sts:AssumeRole"
+      }
+    ]
+  },
+  "s3_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:ListBucket"
+        ],
+        "Resource": "S3_BUCKET_PLACEHOLDER"
+      }
+    ]
+  },
+  "ecr_read_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": ["ecr:GetAuthorizationToken"],
+        "Resource": "*"
+      },
+      {
+        "Effect": "Allow",
+        "Action": [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage"
+        ],
+        "Resource": "ECR_REPO_PLACEHOLDER"
+      }
+    ]
+  },
+  "cloudwatch_logs_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents",
+          "logs:DescribeLogStreams"
+        ],
+        "Resource": "arn:aws:logs:*:*:log-group:/aws/sagemaker/TrainingJobs*"
+      }
+    ]
+  },
+  "cloudwatch_metric_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "cloudwatch:PutMetricData"
+        ],
+        "Resource": "*"
+      }
+    ]
+  },
+  "ec2_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "ec2:CreateNetworkInterface",
+          "ec2:CreateNetworkInterfacePermission",
+          "ec2:DeleteNetworkInterface",
+          "ec2:DeleteNetworkInterfacePermission",
+          "ec2:ModifyNetworkInterfaceAttribute",
+          "ec2:DescribeNetworkInterfaces",
+          "ec2:DescribeVpcs",
+          "ec2:DescribeVpcEndpoints",
+          "ec2:DescribeDhcpOptions",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeSecurityGroups"
+        ],
+        "Resource": "*"
+      }
+    ]
+  }
+}

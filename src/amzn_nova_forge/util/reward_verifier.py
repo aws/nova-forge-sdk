@@ -21,10 +21,11 @@ import boto3
 from botocore.exceptions import ClientError
 from pydantic import ValidationError
 
+from amzn_nova_forge.core.enums import Model, Platform
 from amzn_nova_forge.dataset.dataset_validator.rft_dataset_validator import (
     RFTDatasetValidator,
 )
-from amzn_nova_forge.model.model_enums import Model, Platform
+from amzn_nova_forge.telemetry import UNKNOWN, Feature, _telemetry_emitter
 from amzn_nova_forge.util.logging import logger
 
 
@@ -50,9 +51,7 @@ def _validate_output_format(result: Dict[str, Any], idx: int) -> List[str]:
         errors.append(f"Output {idx}: Missing 'id' field (required for RFT)")
 
     if "aggregate_reward_score" not in result:
-        errors.append(
-            f"Output {idx}: Missing 'aggregate_reward_score' field (required for RFT)"
-        )
+        errors.append(f"Output {idx}: Missing 'aggregate_reward_score' field (required for RFT)")
     elif not isinstance(result.get("aggregate_reward_score"), (int, float)):
         errors.append(f"Output {idx}: 'aggregate_reward_score' should be a number")
 
@@ -70,27 +69,21 @@ def _validate_output_format(result: Dict[str, Any], idx: int) -> List[str]:
                 else:
                     # Validate required metric fields
                     if "name" not in metric:
-                        errors.append(
-                            f"Output {idx}, metric {metric_idx}: Missing 'name' field"
-                        )
+                        errors.append(f"Output {idx}, metric {metric_idx}: Missing 'name' field")
                     elif not isinstance(metric["name"], str):
                         errors.append(
                             f"Output {idx}, metric {metric_idx}: 'name' should be a string"
                         )
 
                     if "value" not in metric:
-                        errors.append(
-                            f"Output {idx}, metric {metric_idx}: Missing 'value' field"
-                        )
+                        errors.append(f"Output {idx}, metric {metric_idx}: Missing 'value' field")
                     elif not isinstance(metric["value"], (int, float)):
                         errors.append(
                             f"Output {idx}, metric {metric_idx}: 'value' should be a number"
                         )
 
                     if "type" not in metric:
-                        errors.append(
-                            f"Output {idx}, metric {metric_idx}: Missing 'type' field"
-                        )
+                        errors.append(f"Output {idx}, metric {metric_idx}: Missing 'type' field")
                     elif metric["type"] not in ["Metric", "Reward"]:
                         errors.append(
                             f"Output {idx}, metric {metric_idx}: 'type' should be 'Metric' or 'Reward', got '{metric['type']}'"
@@ -99,6 +92,13 @@ def _validate_output_format(result: Dict[str, Any], idx: int) -> List[str]:
     return errors
 
 
+@_telemetry_emitter(
+    Feature.TRAINING,
+    "verify_reward_function",
+    extra_info_fn=lambda *args, **kwargs: {
+        "platform": kwargs.get("platform", UNKNOWN),
+    },
+)
 def verify_reward_function(
     reward_function: str,
     sample_data: List[Dict[str, Any]],
@@ -221,10 +221,7 @@ def verify_reward_function(
 
                 # Additional check: reference_answer is recommended for meaningful rewards
                 # (it's optional in RFT dataset format)
-                if (
-                    "reference_answer" not in sample
-                    or sample["reference_answer"] is None
-                ):
+                if "reference_answer" not in sample or sample["reference_answer"] is None:
                     warnings.append(
                         f"Sample {idx} (id: {sample.get('id', 'unknown')}): No 'reference_answer' provided. "
                         f"Without reference_answer, your reward function cannot compare model outputs against expected answers. "
@@ -235,17 +232,14 @@ def verify_reward_function(
                 # Convert Pydantic validation errors to our format
                 for error in e.errors():
                     field_path = " -> ".join(str(loc) for loc in error["loc"])
-                    input_errors.append(
-                        f"Sample {idx}, field '{field_path}': {error['msg']}"
-                    )
+                    input_errors.append(f"Sample {idx}, field '{field_path}': {error['msg']}")
             except Exception as e:
                 input_errors.append(f"Sample {idx}: {str(e)}")
 
         # If there are input validation errors, raise immediately
         if input_errors:
-            error_message = (
-                "Input validation failed with the following errors:\n"
-                + "\n".join(f"  - {err}" for err in input_errors)
+            error_message = "Input validation failed with the following errors:\n" + "\n".join(
+                f"  - {err}" for err in input_errors
             )
             raise ValueError(error_message)
 
@@ -326,9 +320,7 @@ def verify_reward_function(
                     # Single successful result
                     logger.info("Lambda returned single result (non-list format)")
                     result_str = (
-                        json.dumps(payload, indent=2)
-                        if isinstance(payload, dict)
-                        else str(payload)
+                        json.dumps(payload, indent=2) if isinstance(payload, dict) else str(payload)
                     )
                     logger.info(f"Result:\n{result_str}")
 
@@ -371,9 +363,7 @@ def verify_reward_function(
 
             # Find the lambda_handler function
             if "lambda_handler" not in namespace:
-                raise ValueError(
-                    "Local Python file must contain a 'lambda_handler' function"
-                )
+                raise ValueError("Local Python file must contain a 'lambda_handler' function")
 
             handler = namespace["lambda_handler"]
 
@@ -415,9 +405,7 @@ def verify_reward_function(
                         results.append(
                             {
                                 "sample_index": idx,
-                                "input": sample_data[idx]
-                                if idx < len(sample_data)
-                                else {},
+                                "input": sample_data[idx] if idx < len(sample_data) else {},
                                 "output": item,
                                 "status": "error" if sample_errors else "success",
                                 "errors": sample_errors,
@@ -477,9 +465,7 @@ def verify_reward_function(
 
     # Log warnings if any
     if warnings:
-        logger.warning(
-            f"Reward function verification completed with {len(warnings)} warning(s):"
-        )
+        logger.warning(f"Reward function verification completed with {len(warnings)} warning(s):")
         for warning in warnings:
             logger.warning(f"  - {warning}")
 

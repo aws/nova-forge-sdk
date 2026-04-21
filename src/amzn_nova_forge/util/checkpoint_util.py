@@ -24,9 +24,21 @@ from urllib.parse import urlparse
 import boto3
 from botocore.exceptions import ClientError
 
-from amzn_nova_forge.model.model_enums import Platform
-from amzn_nova_forge.model.result import TrainingResult
+from amzn_nova_forge.core.enums import Platform
+from amzn_nova_forge.core.result import TrainingResult
 from amzn_nova_forge.util.logging import logger
+
+
+def _s3_key_exists(s3_client, bucket: str, key: str) -> bool:
+    """Check if an S3 key exists without raising."""
+    try:
+        s3_client.head_object(Bucket=bucket, Key=key)
+        return True
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "404":
+            return False
+        logger.error("Unexpected error checking S3 key s3://%s/%s: %s", bucket, key, e)
+        return False
 
 
 def _extract_bedrock_model_arn(job_arn: str) -> str:
@@ -71,9 +83,7 @@ def _extract_bedrock_model_arn(job_arn: str) -> str:
             f"Failed to query Bedrock job {job_arn}: [{error_code}] {error_message}"
         ) from e
     except (KeyError, ValueError) as e:
-        raise RuntimeError(
-            f"Failed to extract model ARN from Bedrock job {job_arn}: {e}"
-        ) from e
+        raise RuntimeError(f"Failed to extract model ARN from Bedrock job {job_arn}: {e}") from e
 
 
 def extract_checkpoint_path_from_job_output(
@@ -108,7 +118,7 @@ def extract_checkpoint_path_from_job_output(
     Raises:
         Exception: If unable to extract checkpoint path or job is not completed
     """
-    from amzn_nova_forge.model.result.job_result import JobStatus
+    from amzn_nova_forge.core.result.job_result import JobStatus
 
     s3_client = boto3.client("s3")
 
@@ -131,11 +141,7 @@ def extract_checkpoint_path_from_job_output(
         )
 
     # Check if this is a Bedrock job (ARN format: arn:aws:bedrock:region:account:model-customization-job/...)
-    if (
-        job_id
-        and job_id.startswith("arn:aws:bedrock:")
-        and "model-customization-job" in job_id
-    ):
+    if job_id and job_id.startswith("arn:aws:bedrock:") and "model-customization-job" in job_id:
         logger.info(f"Detected Bedrock training job: {job_id}")
         return _extract_bedrock_model_arn(job_id)
 
@@ -165,9 +171,7 @@ def extract_checkpoint_path_from_job_output(
                 detect_platform_from_path,
             )
 
-            platform = detect_platform_from_path(
-                job_result.model_artifacts.checkpoint_s3_path
-            )
+            platform = detect_platform_from_path(job_result.model_artifacts.checkpoint_s3_path)
 
     # Section 2: Extract manifest based on platform (try SMHP first if unknown)
     manifest = None
@@ -192,28 +196,37 @@ def extract_checkpoint_path_from_job_output(
                 logger.debug(f"SMHP format not found, trying SMTJ: {e}")
 
         if manifest is None:
-            # Try SMTJ format: manifest.json inside output.tar.gz
-            s3_client.head_object(Bucket=bucket, Key=output_key)
-            with tempfile.NamedTemporaryFile() as tmp_file:
-                s3_client.download_file(bucket, output_key, tmp_file.name)
-
-                with tarfile.open(tmp_file.name, "r:gz") as tar:
-                    manifest_file = tar.extractfile("manifest.json")
-                    if manifest_file is None:
-                        raise KeyError(
-                            f"manifest.json not found in {full_output_s3_url}"
-                        )
-                    manifest_content = manifest_file.read()
-                    manifest = json.loads(manifest_content)
-                    platform = Platform.SMTJ
-                    logger.info("Extracted manifest for SMTJ training job")
+            # Try SMTJ format (output.tar.gz) or Serverless format (output/output/manifest.json)
+            serverless_manifest_key = f"{base_key}/{job_id}/output/output/manifest.json"
+            if _s3_key_exists(s3_client, bucket, output_key):
+                # SMTJ: manifest.json inside output.tar.gz
+                with tempfile.NamedTemporaryFile() as tmp_file:
+                    s3_client.download_file(bucket, output_key, tmp_file.name)
+                    with tarfile.open(tmp_file.name, "r:gz") as tar:
+                        manifest_file = tar.extractfile("manifest.json")
+                        if manifest_file is None:
+                            raise KeyError(f"manifest.json not found in {full_output_s3_url}")
+                        manifest_content = manifest_file.read()
+                        manifest = json.loads(manifest_content)
+                        platform = Platform.SMTJ
+                        logger.info("Extracted manifest for SMTJ training job")
+            elif _s3_key_exists(s3_client, bucket, serverless_manifest_key):
+                # Serverless: manifest.json at output/output/manifest.json
+                manifest_obj = s3_client.get_object(Bucket=bucket, Key=serverless_manifest_key)
+                manifest_content = manifest_obj["Body"].read()
+                manifest = json.loads(manifest_content)
+                platform = Platform.SMTJServerless
+                logger.info("Extracted manifest for SMTJ Serverless training job")
+            else:
+                raise KeyError(
+                    f"Neither output.tar.gz nor output/output/manifest.json found at "
+                    f"s3://{bucket}/{base_key}/{job_id}/. "
+                    "Job may not be completed or output path is incorrect."
+                )
 
     except (KeyError, json.JSONDecodeError, tarfile.TarError, ClientError) as e:
         error_args = [f"Failed to extract manifest from {full_output_s3_url}: {e}"]
-        if (
-            isinstance(e, ClientError)
-            and e.response.get("Error", {}).get("Code") == "404"
-        ):
+        if isinstance(e, ClientError) and e.response.get("Error", {}).get("Code") == "404":
             error_args.append("Job may not be completed or output path is incorrect.")
         raise Exception(*error_args) from e
 
@@ -272,9 +285,7 @@ def validate_checkpoint_uri(checkpoint_uri: str, region: str):
                 f"S3 bucket {bucket} does not exist when validating model checkpoint {checkpoint_uri}: {str(e)}"
             )
         elif "NoSuchKey" in str(e):
-            raise ValueError(
-                f"Model checkpoint does not exist at {checkpoint_uri}: {str(e)}"
-            )
+            raise ValueError(f"Model checkpoint does not exist at {checkpoint_uri}: {str(e)}")
         elif "Model path must be an S3 URI" in str(e):
             raise ValueError(f"Model path must be an S3 URI, got: {checkpoint_uri}")
         else:

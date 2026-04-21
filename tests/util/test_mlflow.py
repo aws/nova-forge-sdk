@@ -37,9 +37,7 @@ class TestMLflowUtilities(unittest.TestCase):
         result = get_default_mlflow_tracking_uri("us-west-2")
 
         # Verify
-        self.assertEqual(
-            result, "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-ABC123"
-        )
+        self.assertEqual(result, "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-ABC123")
         mock_client_func.assert_called_once_with("sagemaker", region_name="us-west-2")
         mock_client.list_mlflow_apps.assert_called_once()
 
@@ -63,9 +61,7 @@ class TestMLflowUtilities(unittest.TestCase):
         result = get_default_mlflow_tracking_uri()
 
         # Verify
-        self.assertEqual(
-            result, "arn:aws:sagemaker:us-east-1:123456789012:mlflow-app/app-XYZ789"
-        )
+        self.assertEqual(result, "arn:aws:sagemaker:us-east-1:123456789012:mlflow-app/app-XYZ789")
         mock_client_func.assert_called_once_with("sagemaker")
 
     @patch("boto3.client")
@@ -88,14 +84,10 @@ class TestMLflowUtilities(unittest.TestCase):
         result = get_default_mlflow_tracking_uri("us-west-2")
 
         # Verify - Updating status should still return the ARN
-        self.assertEqual(
-            result, "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-UPDATE1"
-        )
+        self.assertEqual(result, "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-UPDATE1")
 
     @patch("boto3.client")
-    def test_get_default_mlflow_tracking_uri_update_failed_status(
-        self, mock_client_func
-    ):
+    def test_get_default_mlflow_tracking_uri_update_failed_status(self, mock_client_func):
         """Test auto-discovery with app in UpdateFailed status."""
         # Setup mock
         mock_client = MagicMock()
@@ -114,9 +106,7 @@ class TestMLflowUtilities(unittest.TestCase):
         result = get_default_mlflow_tracking_uri("us-west-2")
 
         # Verify - UpdateFailed status should still return the ARN (might be functional)
-        self.assertEqual(
-            result, "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-FAILED1"
-        )
+        self.assertEqual(result, "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-FAILED1")
 
     @patch("boto3.client")
     def test_get_default_mlflow_tracking_uri_invalid_status(self, mock_client_func):
@@ -138,9 +128,7 @@ class TestMLflowUtilities(unittest.TestCase):
         result = get_default_mlflow_tracking_uri("us-west-2")
 
         # Verify - Deleting status should still return the ARN (accept any status)
-        self.assertEqual(
-            result, "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-DEL123"
-        )
+        self.assertEqual(result, "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-DEL123")
 
     @patch("boto3.client")
     def test_get_default_mlflow_tracking_uri_not_found(self, mock_client_func):
@@ -191,9 +179,7 @@ class TestMLflowUtilities(unittest.TestCase):
         from botocore.exceptions import ClientError
 
         error_response = {"Error": {"Code": "AccessDeniedException"}}
-        mock_client.list_mlflow_apps.side_effect = ClientError(
-            error_response, "list_mlflow_apps"
-        )
+        mock_client.list_mlflow_apps.side_effect = ClientError(error_response, "list_mlflow_apps")
 
         # Test - should raise ValueError
         with self.assertRaises(ValueError) as context:
@@ -213,9 +199,7 @@ class TestMLflowUtilities(unittest.TestCase):
         from botocore.exceptions import ClientError
 
         error_response = {"Error": {"Code": "ResourceNotFoundException"}}
-        mock_client.list_mlflow_apps.side_effect = ClientError(
-            error_response, "list_mlflow_apps"
-        )
+        mock_client.list_mlflow_apps.side_effect = ClientError(error_response, "list_mlflow_apps")
 
         # Test - should raise ValueError
         with self.assertRaises(ValueError) as context:
@@ -265,9 +249,7 @@ class TestMLflowUtilities(unittest.TestCase):
             get_default_mlflow_tracking_uri("us-west-2")
 
         # Verify error message
-        self.assertIn(
-            "Unexpected error during MLflow auto-discovery", str(context.exception)
-        )
+        self.assertIn("Unexpected error during MLflow auto-discovery", str(context.exception))
 
 
 class TestMLflowValidation(unittest.TestCase):
@@ -279,9 +261,7 @@ class TestMLflowValidation(unittest.TestCase):
             validate_mlflow_tracking_uri_format,
         )
 
-        uri = (
-            "arn:aws:sagemaker:us-west-2:123456789012:mlflow-tracking-server/my-server"
-        )
+        uri = "arn:aws:sagemaker:us-west-2:123456789012:mlflow-tracking-server/my-server"
         result = validate_mlflow_tracking_uri_format(uri)
         self.assertTrue(result)
 
@@ -503,15 +483,11 @@ class TestMLflowArnValidation(unittest.TestCase):
         self.assertEqual(message, "MLflow tracking server exists (status: True)")
 
     @patch("boto3.client")
-    def test_validate_mlflow_arn_exists_tracking_server_not_found(
-        self, mock_client_func
-    ):
+    def test_validate_mlflow_arn_exists_tracking_server_not_found(self, mock_client_func):
         """Test validation when MLflow tracking server doesn't exist."""
         mock_client = MagicMock()
         mock_client_func.return_value = mock_client
-        mock_client.list_mlflow_tracking_servers.return_value = {
-            "TrackingServerSummaries": []
-        }
+        mock_client.list_mlflow_tracking_servers.return_value = {"TrackingServerSummaries": []}
 
         is_valid, message = validate_mlflow_arn_exists(
             "arn:aws:sagemaker:us-west-2:123456789012:mlflow-tracking-server/my-server"
@@ -528,9 +504,7 @@ class TestMLflowArnValidation(unittest.TestCase):
         from botocore.exceptions import ClientError
 
         error_response = {"Error": {"Code": "AccessDeniedException"}}
-        mock_client.list_mlflow_apps.side_effect = ClientError(
-            error_response, "list_mlflow_apps"
-        )
+        mock_client.list_mlflow_apps.side_effect = ClientError(error_response, "list_mlflow_apps")
 
         is_valid, message = validate_mlflow_arn_exists(
             "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-ABC123"
@@ -547,9 +521,7 @@ class TestMLflowArnValidation(unittest.TestCase):
         from botocore.exceptions import ClientError
 
         error_response = {"Error": {"Code": "ResourceNotFoundException"}}
-        mock_client.list_mlflow_apps.side_effect = ClientError(
-            error_response, "list_mlflow_apps"
-        )
+        mock_client.list_mlflow_apps.side_effect = ClientError(error_response, "list_mlflow_apps")
 
         is_valid, message = validate_mlflow_arn_exists(
             "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-ABC123"
@@ -568,9 +540,7 @@ class TestMLflowArnValidation(unittest.TestCase):
             "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-ABC123"
         )
         self.assertTrue(is_valid)
-        self.assertEqual(
-            message, "AWS credentials not configured - cannot validate MLflow ARN"
-        )
+        self.assertEqual(message, "AWS credentials not configured - cannot validate MLflow ARN")
 
     @patch("boto3.client")
     def test_validate_mlflow_arn_exists_no_region(self, mock_client_func):
@@ -583,9 +553,7 @@ class TestMLflowArnValidation(unittest.TestCase):
             "arn:aws:sagemaker:us-west-2:123456789012:mlflow-app/app-ABC123"
         )
         self.assertTrue(is_valid)
-        self.assertEqual(
-            message, "AWS region not configured - cannot validate MLflow ARN"
-        )
+        self.assertEqual(message, "AWS region not configured - cannot validate MLflow ARN")
 
     @patch("boto3.client")
     def test_validate_mlflow_arn_exists_unexpected_error(self, mock_client_func):

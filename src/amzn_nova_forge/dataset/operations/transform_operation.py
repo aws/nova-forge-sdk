@@ -15,16 +15,18 @@
 
 from enum import Enum
 from typing import Any, Callable, Dict, Iterator, List, Optional, cast
+from urllib.parse import urlparse
 
+import boto3
 import jsonschema
 
-from ...model.model_enums import Model, TrainingMethod
-from ...recipe.recipe_config import EvaluationTask
+from ...core.enums import EvaluationTask, Model, TrainingMethod
 from ...util.iterator_utils import peek
 from ...util.logging import logger
-from ..dataset_transformers import DatasetTransformer
+from ..data_state import DataLocation, DataState
+from ..dataset_transformers import DatasetTransformer, TransformContext
 from ..transform_format_schema import TRANSFORM_CONFIG
-from .base import DataPrepError, NovaForgeTransformOperation
+from .base import DataPrepError, NovaForgeTransformOperation, OperationResult
 
 
 class SchemaTransformOperation(NovaForgeTransformOperation):
@@ -41,32 +43,50 @@ class SchemaTransformOperation(NovaForgeTransformOperation):
         "convert_to_rft_multiturn": DatasetTransformer.convert_to_rft_multiturn,
     }
 
-    def execute(self, loader: Any, **kwargs) -> None:
+    def execute(self, loader: Any, **kwargs) -> OperationResult:
+        # Accept but ignore output_path — local transform operates in-memory.
+        kwargs.pop("output_path", None)
+        state = kwargs.pop("state", None)
+
         training_method: Optional[TrainingMethod] = kwargs.get("training_method")
         model: Optional[Model] = kwargs.get("model")
         eval_task: Optional[EvaluationTask] = kwargs.get("eval_task")
 
         if training_method is None or model is None:
-            raise ValueError(
-                "training_method and model are required for schema transforms."
-            )
+            raise ValueError("training_method and model are required for schema transforms.")
 
         if not self._has_data(loader):
             logger.info("Dataset is empty. Call load() method to load data first")
-            return
+            return OperationResult(status="SKIPPED", output_state=state)
 
         training_method = self._resolve_eval_method(training_method, eval_task)
         transform_config = self._lookup_config(training_method, model)
         column_mappings = kwargs.get("column_mappings", {})
+        multimodal_data_s3_path = kwargs.get("multimodal_data_s3_path")
+        multimodal_data_bucket_owner = kwargs.get("multimodal_data_bucket_owner")
 
         # Already in target format — nothing to do
         if self._validate_against_schema(loader.dataset, transform_config["schema"]):
-            logger.info(transform_config["success_msg"])
-            return
+            logger.info("Transform: %s", transform_config["success_msg"])
+            return OperationResult(status="SUCCEEDED", output_state=state)
 
         self._apply_first_matching_transformer(
-            loader, transform_config, column_mappings
+            loader,
+            transform_config,
+            column_mappings,
+            multimodal_data_s3_path,
+            multimodal_data_bucket_owner,
         )
+        # Transform produces in-memory data — update state to LOCAL so that
+        # _flush_pending() will materialize the dataset and prevent the lazy
+        # generator from re-running the transform on subsequent terminal ops.
+        local_state = DataState(
+            path=state.path if state else "",
+            format=state.format if state else "unknown",
+            location=DataLocation.LOCAL,
+            generator=loader.dataset,
+        )
+        return OperationResult(status="SUCCEEDED", output_state=local_state)
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -102,9 +122,7 @@ class SchemaTransformOperation(NovaForgeTransformOperation):
         """Find the TRANSFORM_CONFIG entry for this (method, model) pair."""
         for (methods, models), config in TRANSFORM_CONFIG.items():
             if (training_method in methods) and (
-                models is None
-                or models == model
-                or (isinstance(models, tuple) and model in models)
+                models is None or models == model or (isinstance(models, tuple) and model in models)
             ):
                 return cast(Dict[str, Any], config)
 
@@ -119,6 +137,8 @@ class SchemaTransformOperation(NovaForgeTransformOperation):
         loader: Any,
         transform_config: Dict[str, Any],
         column_mappings: dict,
+        multimodal_data_s3_path: Optional[str],
+        multimodal_data_bucket_owner: Optional[str],
     ) -> None:
         """Try each transformer in order; apply the first whose source schema matches."""
         transformers: List[Dict[str, Any]] = transform_config.get("transformers", [])
@@ -130,26 +150,31 @@ class SchemaTransformOperation(NovaForgeTransformOperation):
             )
 
             if should_apply:
-                logger.info(transformer_info["msg"])
+                method_name = transformer_info["method"]
                 self._wire_transform_generator(
                     loader,
-                    transformer_info["method"],
+                    method_name,
+                    transformer_info["msg"],
                     column_mappings,
                     source_schema,
+                    multimodal_data_s3_path,
+                    multimodal_data_bucket_owner,
                 )
                 return
 
         raise DataPrepError(
-            "Unable to transform dataset. No suitable transformer found "
-            "for the given data format."
+            "Unable to transform dataset. No suitable transformer found for the given data format."
         )
 
     def _wire_transform_generator(
         self,
         loader: Any,
         method_name: str,
+        description: str,
         column_mappings: dict,
         source_schema: Optional[dict],
+        multimodal_data_s3_path: Optional[str],
+        multimodal_data_bucket_owner: Optional[str],
     ) -> None:
         """Replace loader.dataset with a generator that applies the transformer."""
         transformer_func = self._get_transformer_function(method_name)
@@ -161,14 +186,52 @@ class SchemaTransformOperation(NovaForgeTransformOperation):
             else ""
         )
 
+        # Eagerly resolve multimodal S3 config so save() can validate bucket before iteration.
+        transform_ctx = None
+        if multimodal_data_s3_path is not None:
+            if not multimodal_data_s3_path.startswith("s3://"):
+                raise ValueError(
+                    "multimodal_data_s3_path must be a valid S3 prefix starting with 's3://'"
+                )
+            parsed = urlparse(multimodal_data_s3_path)
+            bucket = parsed.netloc
+            prefix = parsed.path.lstrip("/")
+            if prefix and not prefix.endswith("/"):
+                prefix += "/"
+
+            # Resolve bucket owner
+            bucket_owner = multimodal_data_bucket_owner
+            if bucket_owner is None:
+                try:
+                    sts_client = boto3.client("sts")
+                    account_id = sts_client.get_caller_identity()["Account"]
+                    logger.info("Auto-resolved bucket owner for %r: %s", bucket, account_id)
+                    bucket_owner = account_id
+                except Exception as e:
+                    raise ValueError(f"Failed to resolve bucket owner for '{bucket}': {e}")
+
+            transform_ctx = TransformContext(
+                bucket=bucket,
+                prefix=prefix,
+                bucket_owner=bucket_owner,
+            )
+            loader._multimodal_image_bucket = bucket
+
         def transform_generator(
             captured_dataset=dataset_callable,
             captured_source_schema=source_schema,
             captured_error_suffix=error_suffix,
         ):
+            logger.info("Transform: %s (runtime=Local)", description)
+            logger.info("  Input: in-memory (dict)")
+            logger.info("  Output: in-memory")
+            # Create S3 client once for the entire transform pass.
+            s3_client = boto3.client("s3") if transform_ctx is not None else None
+            count = 0
             try:
                 for rec in captured_dataset():
-                    yield transformer_func(rec, column_mappings)
+                    yield transformer_func(rec, column_mappings, transform_ctx, s3_client)
+                    count += 1
             except Exception as e:
                 error_type = (
                     "using generic format"
@@ -176,9 +239,9 @@ class SchemaTransformOperation(NovaForgeTransformOperation):
                     else "from detected format"
                 )
                 raise DataPrepError(
-                    f"Error transforming dataset {error_type}: "
-                    f"{str(e)}{captured_error_suffix}"
+                    f"Error transforming dataset {error_type}: {str(e)}{captured_error_suffix}"
                 )
+            logger.info("Transform complete: %s — %d samples processed", method_name, count)
 
         loader.dataset = transform_generator
 

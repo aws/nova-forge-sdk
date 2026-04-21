@@ -22,22 +22,20 @@ from typing import Dict, Iterator, List, Optional
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
-from amzn_nova_forge.model.model_enums import Model, Version
+from amzn_nova_forge.core.enums import Model, TrainingMethod, Version
 
 from .dataset_validator import (
     BaseDatasetValidator,
-    check_forbidden_keywords,
-    is_valid_path,
+    _is_valid_path,
+    _run_validations_in_scope,
 )
 
 # Format constants, update as necessary.
-NOVA_ONE_IMAGE_FORMATS = ["jpeg", "png", "gif", "webp"]
-NOVA_TWO_IMAGE_FORMATS = ["png", "jpeg", "gif"]
+NOVA_ONE_IMAGE_FORMATS = ["gif", "jpeg", "png", "webp"]
+NOVA_TWO_IMAGE_FORMATS = ["gif", "jpeg", "png", "webp"]
 NOVA_ONE_VIDEO_FORMATS = ["mov", "mkv", "mp4", "webm"]
 NOVA_TWO_VIDEO_FORMATS = ["mov", "mkv", "mp4"]
 NOVA_TWO_DOC_FORMATS = ["pdf"]
-MAX_NUM_IMAGES = 10
-FORBIDDEN_KEYWORDS = ["Bot:", "<image>", "<video>", "[EOS]", "Assistant:", "User:"]
 OPTIONAL_FIELDS = [
     "system",
     "messages.content.image",
@@ -70,7 +68,7 @@ class S3Location(BaseModel):
         """Validates that the URI starts with 's3://'."""
         if not uri.startswith("s3://"):
             raise ValueError(f"Invalid S3 URI, must start with 's3://'")
-        is_valid_path(uri.replace("s3://", ""))
+        _is_valid_path(uri.replace("s3://", ""))
         return uri
 
 
@@ -104,6 +102,13 @@ class ImageContent(BaseModel):
                 )
         return image_format
 
+    @model_validator(mode="after")
+    def run_validations(self, info: ValidationInfo) -> "ImageContent":
+        _run_validations_in_scope(
+            self, info, TrainingMethod.SFT_FULL
+        )  # same validations apply for FULL or Lora
+        return self
+
 
 class VideoContent(BaseModel):
     """Represents and validates video content with format and source."""
@@ -127,6 +132,13 @@ class VideoContent(BaseModel):
                     f"Invalid video format, supported formats are {NOVA_TWO_VIDEO_FORMATS}"
                 )
         return video_format
+
+    @model_validator(mode="after")
+    def run_validations(self, info: ValidationInfo) -> "VideoContent":
+        _run_validations_in_scope(
+            self, info, TrainingMethod.SFT_FULL
+        )  # same validations apply for FULL or Lora
+        return self
 
 
 class DocContent(BaseModel):
@@ -156,17 +168,12 @@ class ReasoningText(BaseModel):
 
     text: str
 
-    @field_validator("text")
-    @classmethod
-    def validate_text_keywords(cls, text):
-        """Validates that reasoning text does not contain forbidden keywords."""
-        found_keywords = check_forbidden_keywords(text)
-        if found_keywords:
-            keywords_str = ", ".join(found_keywords)
-            raise ValueError(
-                f"Invalid reasoning text, please do not use these keywords: {keywords_str}"
-            )
-        return text
+    @model_validator(mode="after")
+    def run_validations(self, info: ValidationInfo) -> "ReasoningText":
+        _run_validations_in_scope(
+            self, info, TrainingMethod.SFT_FULL
+        )  # same validations apply for FULL or Lora
+        return self
 
 
 class ReasoningContent(BaseModel):
@@ -185,9 +192,7 @@ class InputSchema(BaseModel):
     def validate_json_schema(cls, schema):
         """Validates that the schema is a valid object."""
         if not isinstance(schema, dict):
-            raise ValueError(
-                "Invalid inputSchema, json field must be a valid JSON Schema object"
-            )
+            raise ValueError("Invalid inputSchema, json field must be a valid JSON Schema object")
         # Basic JSON Schema validation
         if "type" not in schema:
             raise ValueError("Invalid inputSchema, json must have a 'type' field")
@@ -277,21 +282,16 @@ class ToolResultContentItem(BaseModel):
     @model_validator(mode="after")
     def validate_content(self) -> "ToolResultContentItem":
         if self.text is None and self.json_item is None:
-            raise ValueError(
-                "Invalid toolResult content, either text or json must be provided"
-            )
+            raise ValueError("Invalid toolResult content, either text or json must be provided")
         if self.text is not None and self.json_item is not None:
-            raise ValueError(
-                "Invalid toolResult content, cannot have both text and json"
-            )
-        # Validate text for forbidden keywords if present
-        if self.text is not None:
-            found_keywords = check_forbidden_keywords(self.text)
-            if found_keywords:
-                keywords_str = ", ".join(found_keywords)
-                raise ValueError(
-                    f"Invalid toolResult text content, please do not use these keywords: {keywords_str}"
-                )
+            raise ValueError("Invalid toolResult content, cannot have both text and json")
+        return self
+
+    @model_validator(mode="after")
+    def run_validations(self, info: ValidationInfo) -> "ToolResultContentItem":
+        _run_validations_in_scope(
+            self, info, TrainingMethod.SFT_FULL
+        )  # same validations apply for FULL or Lora
         return self
 
 
@@ -331,8 +331,7 @@ class ContentItem(BaseModel):
     def validate_model_fields(self) -> "ContentItem":
         """Validates that at least one content type is provided and enforces content rules."""
         if not any(
-            getattr(self, field) is not None
-            for field in self.__class__.model_fields.keys()
+            getattr(self, field) is not None for field in self.__class__.model_fields.keys()
         ):
             raise ValueError(
                 f"Invalid content, at least one of {list(self.__class__.model_fields.keys())} must be provided"
@@ -346,18 +345,12 @@ class ContentItem(BaseModel):
 
         return self
 
-    @field_validator("text")
-    @classmethod
-    def validate_text_keywords(cls, text):
-        """Validates that text does not contain forbidden keywords."""
-        if text is not None:
-            found_keywords = check_forbidden_keywords(text)
-            if found_keywords:
-                keywords_str = ", ".join(found_keywords)
-                raise ValueError(
-                    f"Invalid text content, please do not use these keywords: {keywords_str}"
-                )
-        return text
+    @model_validator(mode="after")
+    def run_validations(self, info: ValidationInfo) -> "ContentItem":
+        _run_validations_in_scope(
+            self, info, TrainingMethod.SFT_FULL
+        )  # same validations apply for FULL or Lora
+        return self
 
 
 class Message(BaseModel):
@@ -411,15 +404,18 @@ class Message(BaseModel):
 
         # Validate tool use rules
         if has_tool_use and self.role.lower() != "assistant":
-            raise ValueError(
-                "Invalid content, toolUse can only be included in assistant messages"
-            )
+            raise ValueError("Invalid content, toolUse can only be included in assistant messages")
 
         if has_tool_result and self.role.lower() != "user":
-            raise ValueError(
-                "Invalid content, toolResult can only be included in user messages"
-            )
+            raise ValueError("Invalid content, toolResult can only be included in user messages")
 
+        return self
+
+    @model_validator(mode="after")
+    def run_validations(self, info: ValidationInfo) -> "Message":
+        _run_validations_in_scope(
+            self, info, TrainingMethod.SFT_FULL
+        )  # same validations apply for FULL or Lora
         return self
 
     @field_validator("content")
@@ -432,25 +428,14 @@ class Message(BaseModel):
         has_document = any(item.document is not None for item in content)
         has_reasoning = any(item.reasoningContent is not None for item in content)
 
-        total_text_length = sum(
-            len(item.text) for item in content if item.text is not None
-        )
+        total_text_length = sum(len(item.text) for item in content if item.text is not None)
         if has_text and not (has_image or has_video) and total_text_length == 0:
             raise ValueError("Invalid content, empty text content")
-
-        if sum(1 for item in content if item.video is not None) > 1:
-            raise ValueError("Only one video is allowed per sample")
 
         # Check that a sample only has ONE multimodal type (image, video, doc)
         if sum([has_video, has_image, has_document]) > 1:
             raise ValueError(
                 "'content' list can ONLY contain one of the following multimodal types: image, video, OR a document for a given sample.'"
-            )
-
-        num_images = sum(1 for item in content if item.image is not None)
-        if num_images > MAX_NUM_IMAGES:
-            raise ValueError(
-                f"Invalid content, number of images {num_images} exceed maximum allowed limit of {MAX_NUM_IMAGES}"
             )
 
         # Multimodal reasoning content is not supported for SFT. Reasoning mode applies to text-only inputs.
@@ -467,17 +452,12 @@ class SystemMessage(BaseModel):
 
     text: str
 
-    @field_validator("text")
-    @classmethod
-    def validate_text_keywords(cls, text):
-        """Validates that system message text does not contain forbidden keywords."""
-        found_keywords = check_forbidden_keywords(text)
-        if found_keywords:
-            keywords_str = ", ".join(found_keywords)
-            raise ValueError(
-                f"Invalid system message text, please do not use these keywords: {keywords_str}"
-            )
-        return text
+    @model_validator(mode="after")
+    def run_validations(self, info: ValidationInfo) -> "SystemMessage":
+        _run_validations_in_scope(
+            self, info, TrainingMethod.SFT_FULL
+        )  # same validations apply for FULL or Lora
+        return self
 
 
 class SFTConverseDatasetSample(BaseModel):
@@ -506,9 +486,7 @@ class SFTConverseDatasetSample(BaseModel):
         return messages
 
     @model_validator(mode="after")
-    def validate_tool_use_rules(
-        self, info: ValidationInfo
-    ) -> "SFTConverseDatasetSample":
+    def validate_tool_use_rules(self, info: ValidationInfo) -> "SFTConverseDatasetSample":
         """Validates tool use rules across the conversation."""
         if self.toolConfig is not None:
             # Check if model supports tool configuration
@@ -539,9 +517,7 @@ def check_roles_order(messages):
             )
 
     if messages[-1].role != ConverseRoles.ASSISTANT:
-        raise ValueError(
-            f"Invalid messages, last turn should have {ConverseRoles.ASSISTANT} role"
-        )
+        raise ValueError(f"Invalid messages, last turn should have {ConverseRoles.ASSISTANT} role")
 
 
 def validate_tool_use_in_conversation(messages: List[Message], tool_config: ToolConfig):

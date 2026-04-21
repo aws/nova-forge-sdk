@@ -57,7 +57,13 @@ SFT_NOVA_ONE_CONVERSE_2024 = {
                                             "properties": {
                                                 "format": {
                                                     "type": "string",
-                                                    "enum": ["png", "jpg", "jpeg"],
+                                                    "enum": [
+                                                        "png",
+                                                        "jpg",
+                                                        "jpeg",
+                                                        "gif",
+                                                        "webp",
+                                                    ],
                                                 },
                                                 "source": {
                                                     "type": "object",
@@ -65,12 +71,8 @@ SFT_NOVA_ONE_CONVERSE_2024 = {
                                                         "s3Location": {
                                                             "type": "object",
                                                             "properties": {
-                                                                "uri": {
-                                                                    "type": "string"
-                                                                },
-                                                                "bucketOwner": {
-                                                                    "type": "string"
-                                                                },
+                                                                "uri": {"type": "string"},
+                                                                "bucketOwner": {"type": "string"},
                                                             },
                                                             "required": [
                                                                 "uri",
@@ -106,12 +108,8 @@ SFT_NOVA_ONE_CONVERSE_2024 = {
                                                         "s3Location": {
                                                             "type": "object",
                                                             "properties": {
-                                                                "uri": {
-                                                                    "type": "string"
-                                                                },
-                                                                "bucketOwner": {
-                                                                    "type": "string"
-                                                                },
+                                                                "uri": {"type": "string"},
+                                                                "bucketOwner": {"type": "string"},
                                                             },
                                                             "required": [
                                                                 "uri",
@@ -186,9 +184,7 @@ SFT_NOVA_TWO_CONVERSE_2024 = {
                                             "properties": {
                                                 "reasoningText": {
                                                     "type": "object",
-                                                    "properties": {
-                                                        "text": {"type": "string"}
-                                                    },
+                                                    "properties": {"text": {"type": "string"}},
                                                     "required": ["text"],
                                                     "additionalProperties": False,
                                                 }
@@ -226,9 +222,7 @@ SFT_NOVA_TWO_CONVERSE_2024 = {
                                                     "type": "array",
                                                     "items": {
                                                         "type": "object",
-                                                        "properties": {
-                                                            "text": {"type": "string"}
-                                                        },
+                                                        "properties": {"text": {"type": "string"}},
                                                         "required": ["text"],
                                                         "additionalProperties": False,
                                                     },
@@ -249,7 +243,13 @@ SFT_NOVA_TWO_CONVERSE_2024 = {
                                             "properties": {
                                                 "format": {
                                                     "type": "string",
-                                                    "enum": ["jpeg", "jpg", "png"],
+                                                    "enum": [
+                                                        "png",
+                                                        "jpg",
+                                                        "jpeg",
+                                                        "gif",
+                                                        "webp",
+                                                    ],
                                                 },
                                                 "source": {
                                                     "type": "object",
@@ -257,12 +257,8 @@ SFT_NOVA_TWO_CONVERSE_2024 = {
                                                         "s3Location": {
                                                             "type": "object",
                                                             "properties": {
-                                                                "uri": {
-                                                                    "type": "string"
-                                                                },
-                                                                "bucketOwner": {
-                                                                    "type": "string"
-                                                                },
+                                                                "uri": {"type": "string"},
+                                                                "bucketOwner": {"type": "string"},
                                                             },
                                                             "required": [
                                                                 "uri",
@@ -298,12 +294,8 @@ SFT_NOVA_TWO_CONVERSE_2024 = {
                                                         "s3Location": {
                                                             "type": "object",
                                                             "properties": {
-                                                                "uri": {
-                                                                    "type": "string"
-                                                                },
-                                                                "bucketOwner": {
-                                                                    "type": "string"
-                                                                },
+                                                                "uri": {"type": "string"},
+                                                                "bucketOwner": {"type": "string"},
                                                             },
                                                             "required": [
                                                                 "uri",
@@ -382,8 +374,50 @@ OPENAI_FORMAT = {
                         "enum": ["system", "user", "assistant", "tool"],
                     },
                     "content": {
-                        "type": ["string", "null"]
-                    },  # Allow null for assistant messages with only tool_calls
+                        "oneOf": [
+                            {
+                                "type": ["string", "null"]
+                            },  # Allow null for assistant messages with only tool_calls
+                            {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                    "oneOf": [
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "type": {
+                                                    "type": "string",
+                                                    "const": "text",
+                                                },
+                                                "text": {"type": "string"},
+                                            },
+                                            "required": ["type", "text"],
+                                            "additionalProperties": False,
+                                        },
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "type": {
+                                                    "type": "string",
+                                                    "const": "image_url",
+                                                },
+                                                "image_url": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "url": {"type": "string"},
+                                                    },
+                                                    "required": ["url"],
+                                                },
+                                            },
+                                            "required": ["type", "image_url"],
+                                            "additionalProperties": False,
+                                        },
+                                    ],
+                                },
+                            },
+                        ],
+                    },
                     "tool_calls": {
                         "type": "array",
                         "items": {
@@ -448,8 +482,50 @@ RFT_OPENAI_FORMAT = {
                         "enum": ["system", "user", "assistant", "developer", "tool"],
                     },
                     "content": {
-                        "type": ["string", "null"]
-                    },  # Allow null for assistant messages with only tool_calls
+                        "oneOf": [
+                            {
+                                "type": ["string", "null"]
+                            },  # Allow null for assistant messages with only tool_calls
+                            {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {
+                                    "oneOf": [
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "type": {
+                                                    "type": "string",
+                                                    "const": "text",
+                                                },
+                                                "text": {"type": "string"},
+                                            },
+                                            "required": ["type", "text"],
+                                            "additionalProperties": False,
+                                        },
+                                        {
+                                            "type": "object",
+                                            "properties": {
+                                                "type": {
+                                                    "type": "string",
+                                                    "const": "image_url",
+                                                },
+                                                "image_url": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "url": {"type": "string"},
+                                                    },
+                                                    "required": ["url"],
+                                                },
+                                            },
+                                            "required": ["type", "image_url"],
+                                            "additionalProperties": False,
+                                        },
+                                    ],
+                                },
+                            },
+                        ],
+                    },
                     "tool_calls": {
                         "type": "array",
                         "items": {

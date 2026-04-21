@@ -39,9 +39,9 @@ class ShowOperation(NovaForgeShowOperation):
         peeked_value, dataset_iter = peek(dataset_iter)
 
         if peeked_value:
-            logger.info("Showing dataset:")
+            logger.info("Show: displaying first %d samples", n)
             items = islice(dataset_iter, n)
             for i, row in enumerate(items):
                 logger.info(json.dumps(row))
         else:
-            logger.info("Dataset is empty. Call load() method to load data first")
+            logger.info("Show: dataset is empty")

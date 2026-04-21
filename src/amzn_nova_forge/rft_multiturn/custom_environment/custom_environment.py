@@ -82,11 +82,7 @@ class CustomEnvironment:
         logger.info(f"Creating custom environment at: {env_dir}")
 
         # Write environment file directly at root (like built-in environments)
-        template = (
-            SINGLE_TURN_TEMPLATE
-            if self.env_type == "single_turn"
-            else MULTI_TURN_TEMPLATE
-        )
+        template = SINGLE_TURN_TEMPLATE if self.env_type == "single_turn" else MULTI_TURN_TEMPLATE
         with open(os.path.join(env_dir, env_file), "w") as f:
             f.write(template)
         logger.info(f"Created {env_file}")
@@ -100,11 +96,7 @@ class CustomEnvironment:
 
         # Write pyproject.toml
         with open(os.path.join(env_dir, "pyproject.toml"), "w") as f:
-            f.write(
-                PYPROJECT_TEMPLATE.format(
-                    env_name=env_name_safe, module_name=module_name
-                )
-            )
+            f.write(PYPROJECT_TEMPLATE.format(env_name=env_name_safe, module_name=module_name))
         logger.info("Created pyproject.toml")
 
         # Write README
@@ -190,9 +182,7 @@ class CustomEnvironment:
 
         # Check new structure: Python files at root level
         py_files_root = [
-            f
-            for f in os.listdir(env_path)
-            if f.endswith(".py") and not f.startswith("__")
+            f for f in os.listdir(env_path) if f.endswith(".py") and not f.startswith("__")
         ]
 
         for py_file in py_files_root:
@@ -211,9 +201,7 @@ class CustomEnvironment:
             src_path = os.path.join(env_path, "src")
             if os.path.exists(src_path) and os.path.isdir(src_path):
                 py_files_src = [
-                    f
-                    for f in os.listdir(src_path)
-                    if f.endswith(".py") and not f.startswith("__")
+                    f for f in os.listdir(src_path) if f.endswith(".py") and not f.startswith("__")
                 ]
 
                 for py_file in py_files_src:

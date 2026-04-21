@@ -18,30 +18,53 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import boto3
 
-from amzn_nova_forge.manager.runtime_manager import (
-    BedrockRuntimeManager,
-    RuntimeManager,
-    SMHPRuntimeManager,
-    SMTJRuntimeManager,
-    SMTJServerlessRuntimeManager,
+from amzn_nova_forge.core.constants import (
+    BYOD_AVAILABLE_EVAL_TASKS,
+    EVAL_TASK_STRATEGY_MAP,
+    get_available_subtasks,
 )
-from amzn_nova_forge.model.model_enums import (
+from amzn_nova_forge.core.enums import (
+    EvaluationTask,
+    Model,
     Platform,
     TrainingMethod,
 )
-from amzn_nova_forge.recipe.recipe_config import (
-    BYOD_AVAILABLE_EVAL_TASKS,
-    EVAL_TASK_STRATEGY_MAP,
-    EvaluationTask,
-    get_available_subtasks,
+from amzn_nova_forge.core.runtime import RuntimeManager
+from amzn_nova_forge.core.validation_patterns import (
+    CLUSTER_NAME_REGEX,
+    JOB_NAME_REGEX,
+    NAMESPACE_REGEX,
+)
+from amzn_nova_forge.core.validation_patterns import (
+    validate_cluster_name as _validate_cluster_name,
+)
+from amzn_nova_forge.core.validation_patterns import (
+    validate_job_name as _validate_job_name,
+)
+from amzn_nova_forge.core.validation_patterns import (
+    validate_namespace as _validate_namespace,
+)
+from amzn_nova_forge.manager.runtime_manager import (
+    BedrockRuntimeManager,
+    SMHPRuntimeManager,
+    SMTJRuntimeManager,
+    SMTJServerlessRuntimeManager,
 )
 from amzn_nova_forge.util.logging import logger
 from amzn_nova_forge.util.recipe import _parse_s3_uri
 from amzn_nova_forge.util.reward_verifier import verify_reward_function
 from amzn_nova_forge.util.sagemaker import get_cluster_instance_info
+from amzn_nova_forge.validation.dataset_row_count_validator import (
+    count_s3_dataset_rows,
+    get_applicable_row_count_checks,
+    validate_row_counts,
+)
 
-LAMBDA_ARN_REGEX = re.compile(
-    r"^arn:aws:lambda:[a-z0-9-]+:\d{12}:function:[A-Za-z0-9-_]+$"
+LAMBDA_ARN_REGEX = re.compile(r"^arn:aws:lambda:[a-z0-9-]+:\d{12}:function:[A-Za-z0-9-_]+$")
+
+# arn:aws:sagemaker:<region>:<account>:hub-content/<hub>/<type>/<name>/<version>
+HUB_CONTENT_ARN_REGEX = re.compile(
+    r"^arn:aws[a-zA-Z-]*:sagemaker:[a-z0-9-]+:\d{12}:hub-content/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+/\d+\.\d+\.\d+$"
 )
 
 
@@ -67,19 +90,15 @@ def is_lambda_arn(value: str) -> bool:
     return bool(LAMBDA_ARN_REGEX.match(value))
 
 
+def is_hub_content_arn(value: Optional[str]) -> bool:
+    """Return True if value is a SageMaker hub-content ARN."""
+    return bool(value and HUB_CONTENT_ARN_REGEX.match(value))
+
+
 # ECR image URI pattern: account.dkr.ecr.region.amazonaws.com/repository:tag
 ECR_IMAGE_URI_REGEX = re.compile(
     r"^\d{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/[a-zA-Z0-9][a-zA-Z0-9._/-]*:[a-zA-Z0-9._-]+$"
 )
-
-# https://docs.aws.amazon.com/sagemaker/latest/APIReference/API_TrainingJob.html
-JOB_NAME_REGEX = re.compile(r"^[a-zA-Z0-9\-]{1,63}$")
-
-# https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
-NAMESPACE_REGEX = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
-
-# https://docs.aws.amazon.com/eks/latest/APIReference/API_CreateCluster.html#API_CreateCluster_RequestParameters
-CLUSTER_NAME_REGEX = re.compile(r"^[0-9A-Za-z][A-Za-z0-9\-_]{1,100}$")
 
 
 TYPE_ALIASES = {
@@ -108,16 +127,10 @@ class Validator:
         """Resolve the role used to execute the job being validated."""
         execution_role = None
 
-        if (
-            infra
-            and hasattr(infra, "execution_role")
-            and getattr(infra, "execution_role", None)
-        ):
+        if infra and hasattr(infra, "execution_role") and getattr(infra, "execution_role", None):
             execution_role = infra.execution_role
         else:
-            raise ValueError(
-                f"RuntimeManager {infra} is invalid or does not use execution roles!"
-            )
+            raise ValueError(f"RuntimeManager {infra} is invalid or does not use execution roles!")
 
         return execution_role
 
@@ -178,9 +191,7 @@ class Validator:
                 iam_client.list_role_policies(RoleName=role_name)
 
                 # Test managed policies access
-                attached_policies = iam_client.list_attached_role_policies(
-                    RoleName=role_name
-                )
+                attached_policies = iam_client.list_attached_role_policies(RoleName=role_name)
 
                 # If there are managed policies, test if we can read them
                 if attached_policies["AttachedPolicies"]:
@@ -227,9 +238,7 @@ class Validator:
                                 permission == action
                                 or action == f"{service}:*"
                                 or action == "*"
-                                or Validator._matches_iam_wildcard_pattern(
-                                    action, permission
-                                )
+                                or Validator._matches_iam_wildcard_pattern(action, permission)
                             ):
                                 found = True
                                 break
@@ -253,8 +262,6 @@ class Validator:
             return False
 
         # Convert wildcard pattern to regex
-        import re
-
         # Escape special regex characters except *
         escaped = re.escape(pattern).replace(r"\*", ".*")
 
@@ -270,9 +277,7 @@ class Validator:
             List[str],
             List[Tuple[str, str]],
             List[Tuple[str, Callable[[RuntimeManager], str]]],
-            List[
-                Union[str, Tuple[str, str], Tuple[str, Callable[[RuntimeManager], str]]]
-            ],
+            List[Union[str, Tuple[str, str], Tuple[str, Callable[[RuntimeManager], str]]]],
         ],
         infra: Optional[RuntimeManager] = None,
         region_name: str = "us-east-1",
@@ -399,15 +404,11 @@ class Validator:
             # Get inline policies
             inline_policies = iam_client.list_role_policies(RoleName=role_name)
             for policy_name in inline_policies["PolicyNames"]:
-                policy_doc = iam_client.get_role_policy(
-                    RoleName=role_name, PolicyName=policy_name
-                )
+                policy_doc = iam_client.get_role_policy(RoleName=role_name, PolicyName=policy_name)
                 policies.append(policy_doc["PolicyDocument"])
 
             # Get attached managed policies
-            attached_policies = iam_client.list_attached_role_policies(
-                RoleName=role_name
-            )
+            attached_policies = iam_client.list_attached_role_policies(RoleName=role_name)
             for policy in attached_policies["AttachedPolicies"]:
                 policy_version = iam_client.get_policy(PolicyArn=policy["PolicyArn"])
                 policy_doc = iam_client.get_policy_version(
@@ -417,17 +418,240 @@ class Validator:
                 policies.append(policy_doc["PolicyVersion"]["Document"])
 
             # Check if permission is granted using the refactored helper
-            missing_permissions = Validator._check_policy_json_permissions(
-                policies, [api_string]
-            )
+            missing_permissions = Validator._check_policy_json_permissions(policies, [api_string])
 
             if missing_permissions:
                 errors.append(f"Missing required calling role permission: {api_string}")
 
         except Exception as e:
-            errors.append(
-                f"Failed to validate permission {api_string} via JSON parsing: {e}"
+            errors.append(f"Failed to validate permission {api_string} via JSON parsing: {e}")
+
+    @staticmethod
+    def _validate_smhp_iam(
+        errors: List[str],
+        infra: RuntimeManager,
+        data_s3_path: Optional[str],
+        output_s3_path: Optional[str],
+    ) -> None:
+        """Validate IAM permissions for SMHP (HyperPod) platform."""
+        try:
+            region_name = getattr(infra, "region", "us-east-1")
+
+            required_calling_role_permissions = type(infra).required_calling_role_permissions(
+                data_s3_path, output_s3_path
             )
+
+            Validator._validate_calling_role_permissions(
+                errors, required_calling_role_permissions, infra, region_name
+            )
+
+            # Additional cluster-specific validation
+            cluster_name = getattr(infra, "cluster_name", None)
+            if cluster_name:
+                try:
+                    sagemaker_client = boto3.client("sagemaker", region_name=region_name)
+                    sagemaker_client.describe_cluster(ClusterName=cluster_name)
+                except Exception as e:
+                    if "ResourceNotFound" in str(e):
+                        errors.append(f"HyperPod cluster '{cluster_name}' not found")
+                    elif "AccessDenied" in str(e):
+                        errors.append(
+                            f"Access denied when checking cluster '{cluster_name}' - verify sagemaker:DescribeCluster and eks:DescribeCluster permissions"
+                        )
+
+        except Exception as e:
+            errors.append(f"Failed to validate SMHP IAM permissions: {str(e)}")
+
+    @staticmethod
+    def _validate_smtj_iam(
+        errors: List[str],
+        infra: RuntimeManager,
+        data_s3_path: Optional[str],
+        output_s3_path: Optional[str],
+    ) -> None:
+        """Validate IAM permissions for SMTJ / SMTJServerless platform."""
+        # Validate calling role permissions
+        try:
+            region_name = getattr(infra, "region", "us-east-1")
+
+            required_calling_role_permissions = type(infra).required_calling_role_permissions(
+                data_s3_path, output_s3_path
+            )
+
+            Validator._validate_calling_role_permissions(
+                errors, required_calling_role_permissions, infra, region_name
+            )
+
+        except Exception as e:
+            errors.append(
+                f"Failed to validate SMTJ calling role permissions: {str(e)}\n"
+                "Note that this may result in failure to validate the execution role as well."
+            )
+
+        # Validate SageMaker execution role (which only applies to SMTJ)
+        execution_role = None
+        try:
+            try:
+                execution_role = Validator._resolve_execution_role(infra)
+            except Exception as e:
+                errors.append(f"Could not resolve intended execution role for job: {str(e)}")
+                return
+
+            region_name = getattr(infra, "region", "us-east-1")
+
+            # Extract role name from ARN, handle non-string execution roles
+            if not isinstance(execution_role, str):
+                errors.append(f"Invalid execution role format: {type(execution_role).__name__}")
+                return
+
+            role_name = execution_role.split("/")[-1]
+
+            is_cross_account_role = Validator._is_cross_account_role(execution_role)
+
+            # Check if this is a cross-account role
+            if is_cross_account_role:
+                # Attempt cross-account data collection
+                iam_client, trust_policy, can_read_policies = Validator._access_cross_account_role(
+                    execution_role, region_name
+                )
+                if iam_client is None:
+                    # Cross-account data collection failed, skip validation logic
+                    logger.info(
+                        f"Could not access cross-account execution role {execution_role} for validation, will assume correctness."
+                    )
+                    return
+            else:
+                # Same-account role validation
+                can_read_policies = True  # Assume we can read policies in same account
+                try:
+                    iam_client = boto3.client("iam", region_name=region_name)
+                    role_response = iam_client.get_role(RoleName=role_name)
+                    trust_policy = role_response["Role"]["AssumeRolePolicyDocument"]
+                except Exception as e:
+                    if "NoSuchEntity" in str(e):
+                        errors.append(f"SageMaker execution role {role_name} does not exist")
+                    elif "AccessDenied" in str(e):
+                        errors.append(
+                            "Missing IAM permissions in current role: iam:GetRole required to validate execution role"
+                        )
+                    else:
+                        errors.append(f"Failed to retrieve execution role from IAM: {str(e)}")
+                    return
+
+                if trust_policy is None:
+                    errors.append(
+                        f"Failed to parse trust policy from IAM role. GetRole output: {role_response}"
+                    )
+
+            # Check if SageMaker service can assume this role
+            sagemaker_trusted = False
+            try:
+                if trust_policy:
+                    for statement in trust_policy.get("Statement", []):
+                        if statement.get("Effect") == "Allow":
+                            principal = statement.get("Principal", {})
+                            if isinstance(principal, dict):
+                                service = principal.get("Service", [])
+                                if isinstance(service, str):
+                                    service = [service]
+
+                                if "sagemaker.amazonaws.com" in service:
+                                    sagemaker_trusted = True
+                                    break
+                # For cross-account roles, if we can't check trust policy assume it's valid
+                elif is_cross_account_role:
+                    sagemaker_trusted = True
+
+                if not sagemaker_trusted:
+                    errors.append(
+                        f"SageMaker execution role {role_name} does not trust sagemaker.amazonaws.com service"
+                    )
+            except Exception as e:
+                errors.append(f"Failed to parse trust policy: {str(e)}")
+
+            # Check required permissions for CreateTrainingJob (only if we can read policies)
+            if can_read_policies:
+                # Taken from https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-roles.html#sagemaker-roles-createtrainingjob-perms
+                # NOTE: Removed the CloudWatch permissions as likely not availability impacting
+                required_execution_role_permissions = [
+                    "s3:GetObject",
+                    "s3:PutObject",
+                    "s3:ListBucket",
+                ]
+
+                try:
+                    # Get all policies attached to the role
+                    policies = []
+
+                    # Get inline policies
+                    inline_policies = iam_client.list_role_policies(RoleName=role_name)
+                    for policy_name in inline_policies["PolicyNames"]:
+                        policy_doc = iam_client.get_role_policy(
+                            RoleName=role_name, PolicyName=policy_name
+                        )
+                        policies.append(policy_doc["PolicyDocument"])
+
+                    # Get attached managed policies
+                    attached_policies = iam_client.list_attached_role_policies(RoleName=role_name)
+                    for policy in attached_policies["AttachedPolicies"]:
+                        policy_version = iam_client.get_policy(PolicyArn=policy["PolicyArn"])
+                        policy_doc = iam_client.get_policy_version(
+                            PolicyArn=policy["PolicyArn"],
+                            VersionId=policy_version["Policy"]["DefaultVersionId"],
+                        )
+                        policies.append(policy_doc["PolicyVersion"]["Document"])
+
+                    # Check if required permissions are granted using refactored helper
+                    missing_permissions = Validator._check_policy_json_permissions(
+                        policies, required_execution_role_permissions
+                    )
+
+                    if missing_permissions:
+                        errors.append(
+                            f"Execution role missing required permissions: {', '.join(missing_permissions)}"
+                        )
+                except Exception as e:
+                    if "AccessDenied" in str(e):
+                        errors.append(
+                            f"Missing IAM permissions to validate execution role permissions: {str(e)}"
+                        )
+                    else:
+                        errors.append(f"Failed to validate execution role permissions: {str(e)}")
+        except Exception as e:
+            # For cross-account roles, silently skip IAM validation on unexpected errors
+            if execution_role and Validator._is_cross_account_role(execution_role):
+                return
+
+            if not execution_role:
+                errors.append(f"Unknown issue resolving execution role: {str(e)}")
+            elif "Could not find credentials" in str(e):
+                errors.append("AWS credentials not configured")
+            elif "Unable to locate credentials" in str(e):
+                errors.append("AWS credentials not found")
+            else:
+                errors.append(f"Failed to validate execution role: {str(e)}")
+
+    @staticmethod
+    def _validate_bedrock_iam(
+        errors: List[str],
+        infra: RuntimeManager,
+        data_s3_path: Optional[str],
+        output_s3_path: Optional[str],
+    ) -> None:
+        """Validate IAM permissions for Bedrock platform."""
+        try:
+            region_name = getattr(infra, "region", "us-east-1")
+
+            required_calling_role_permissions = type(infra).required_calling_role_permissions(
+                data_s3_path, output_s3_path
+            )
+
+            Validator._validate_calling_role_permissions(
+                errors, required_calling_role_permissions, infra, region_name
+            )
+
+        except Exception as e:
+            errors.append(f"Failed to validate Bedrock IAM permissions: {str(e)}")
 
     @staticmethod
     def _validate_iam_permissions(
@@ -439,254 +663,29 @@ class Validator:
         """
         Validate required IAM permissions for training jobs.
 
+        Dispatches to a platform-specific handler based on infra.platform.
+
         Args:
             errors: List to append validation errors to
             infra: Optional infrastructure manager to check for overridden execution role
             data_s3_path: Optional S3 path for training data
             output_s3_path: Optional S3 path for output
         """
-        if isinstance(infra, SMHPRuntimeManager):
-            # SMHP validations - validate calling role permissions
-            try:
-                region_name = getattr(infra, "region", "us-east-1")
-
-                # Required permissions for HyperPod operations
-                required_calling_role_permissions = type(
-                    infra
-                ).required_calling_role_permissions(data_s3_path, output_s3_path)
-
-                # Validate calling role permissions
-                Validator._validate_calling_role_permissions(
-                    errors, required_calling_role_permissions, infra, region_name
-                )
-
-                # Additional cluster-specific validation
-                cluster_name = getattr(infra, "cluster_name", None)
-                if cluster_name:
-                    try:
-                        sagemaker_client = boto3.client(
-                            "sagemaker", region_name=region_name
-                        )
-                        sagemaker_client.describe_cluster(ClusterName=cluster_name)
-                    except Exception as e:
-                        if "ResourceNotFound" in str(e):
-                            errors.append(
-                                f"HyperPod cluster '{cluster_name}' not found"
-                            )
-                        elif "AccessDenied" in str(e):
-                            errors.append(
-                                f"Access denied when checking cluster '{cluster_name}' - verify sagemaker:DescribeCluster and eks:DescribeCluster permissions"
-                            )
-
-            except Exception as e:
-                errors.append(f"Failed to validate SMHP IAM permissions: {str(e)}")
+        if infra is None:
             return
 
-        elif isinstance(infra, SMTJRuntimeManager) or isinstance(
-            infra, SMTJServerlessRuntimeManager
-        ):
-            # SMTJ validations
-            try:
-                region_name = getattr(infra, "region", "us-east-1")
+        _dispatch = {
+            Platform.SMHP: Validator._validate_smhp_iam,
+            Platform.SMTJ: Validator._validate_smtj_iam,
+            Platform.SMTJServerless: Validator._validate_smtj_iam,
+            Platform.BEDROCK: Validator._validate_bedrock_iam,
+        }
 
-                # Required permissions for SMTJ calling role operations,
-                # as well as execution role validation
-                required_calling_role_permissions = type(
-                    infra
-                ).required_calling_role_permissions(data_s3_path, output_s3_path)
-
-                # Validate calling role permissions
-                Validator._validate_calling_role_permissions(
-                    errors, required_calling_role_permissions, infra, region_name
-                )
-
-            except Exception as e:
-                errors.append(
-                    f"Failed to validate SMTJ calling role permissions: {str(e)}\n"
-                    "Note that this may result in failure to validate the execution role as well."
-                )
-
-            # Validate SageMaker execution role (which only applies to SMTJ)
-            execution_role = None
-            try:
-                try:
-                    execution_role = Validator._resolve_execution_role(infra)
-                except Exception as e:
-                    errors.append(
-                        f"Could not resolve intended execution role for job: {str(e)}"
-                    )
-                    return
-
-                region_name = getattr(infra, "region", "us-east-1")
-
-                # Extract role name from ARN, handle non-string execution roles
-                if not isinstance(execution_role, str):
-                    errors.append(
-                        f"Invalid execution role format: {type(execution_role).__name__}"
-                    )
-                    return
-
-                role_name = execution_role.split("/")[-1]
-
-                is_cross_account_role = Validator._is_cross_account_role(execution_role)
-
-                # Check if this is a cross-account role
-                if is_cross_account_role:
-                    # Attempt cross-account data collection
-                    iam_client, trust_policy, can_read_policies = (
-                        Validator._access_cross_account_role(
-                            execution_role, region_name
-                        )
-                    )
-                    if iam_client is None:
-                        # Cross-account data collection failed, skip validation logic
-                        logger.info(
-                            f"Could not access cross-account execution role {execution_role} for validation, will assume correctness."
-                        )
-                        return
-                else:
-                    # Same-account role validation
-                    can_read_policies = (
-                        True  # Assume we can read policies in same account
-                    )
-                    try:
-                        iam_client = boto3.client("iam", region_name=region_name)
-                        role_response = iam_client.get_role(RoleName=role_name)
-                        trust_policy = role_response["Role"]["AssumeRolePolicyDocument"]
-                    except Exception as e:
-                        if "NoSuchEntity" in str(e):
-                            errors.append(
-                                f"SageMaker execution role {role_name} does not exist"
-                            )
-                        elif "AccessDenied" in str(e):
-                            errors.append(
-                                "Missing IAM permissions in current role: iam:GetRole required to validate execution role"
-                            )
-                        else:
-                            errors.append(
-                                f"Failed to retrieve execution role from IAM: {str(e)}"
-                            )
-                        return
-
-                    if trust_policy is None:
-                        errors.append(
-                            f"Failed to parse trust policy from IAM role. GetRole output: {role_response}"
-                        )
-
-                # Check if SageMaker service can assume this role
-                sagemaker_trusted = False
-                try:
-                    if trust_policy:
-                        for statement in trust_policy.get("Statement", []):
-                            if statement.get("Effect") == "Allow":
-                                principal = statement.get("Principal", {})
-                                if isinstance(principal, dict):
-                                    service = principal.get("Service", [])
-                                    if isinstance(service, str):
-                                        service = [service]
-
-                                    if "sagemaker.amazonaws.com" in service:
-                                        sagemaker_trusted = True
-                                        break
-                    # For cross-account roles, if we can't check trust policy assume it's valid
-                    elif is_cross_account_role:
-                        sagemaker_trusted = True
-
-                    if not sagemaker_trusted:
-                        errors.append(
-                            f"SageMaker execution role {role_name} does not trust sagemaker.amazonaws.com service"
-                        )
-                except Exception as e:
-                    errors.append(f"Failed to parse trust policy: {str(e)}")
-
-                # Check required permissions for CreateTrainingJob (only if we can read policies)
-                if can_read_policies:
-                    # Taken from https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-roles.html#sagemaker-roles-createtrainingjob-perms
-                    # NOTE: Removed the CloudWatch permissions as likely not availability impacting
-                    required_execution_role_permissions = [
-                        "s3:GetObject",
-                        "s3:PutObject",
-                        "s3:ListBucket",
-                    ]
-
-                    try:
-                        # Get all policies attached to the role
-                        policies = []
-
-                        # Get inline policies
-                        inline_policies = iam_client.list_role_policies(
-                            RoleName=role_name
-                        )
-                        for policy_name in inline_policies["PolicyNames"]:
-                            policy_doc = iam_client.get_role_policy(
-                                RoleName=role_name, PolicyName=policy_name
-                            )
-                            policies.append(policy_doc["PolicyDocument"])
-
-                        # Get attached managed policies
-                        attached_policies = iam_client.list_attached_role_policies(
-                            RoleName=role_name
-                        )
-                        for policy in attached_policies["AttachedPolicies"]:
-                            policy_version = iam_client.get_policy(
-                                PolicyArn=policy["PolicyArn"]
-                            )
-                            policy_doc = iam_client.get_policy_version(
-                                PolicyArn=policy["PolicyArn"],
-                                VersionId=policy_version["Policy"]["DefaultVersionId"],
-                            )
-                            policies.append(policy_doc["PolicyVersion"]["Document"])
-
-                        # Check if required permissions are granted using refactored helper
-                        missing_permissions = Validator._check_policy_json_permissions(
-                            policies, required_execution_role_permissions
-                        )
-
-                        if missing_permissions:
-                            errors.append(
-                                f"Execution role missing required permissions: {', '.join(missing_permissions)}"
-                            )
-                    except Exception as e:
-                        if "AccessDenied" in str(e):
-                            errors.append(
-                                f"Missing IAM permissions to validate execution role permissions: {str(e)}"
-                            )
-                        else:
-                            errors.append(
-                                f"Failed to validate execution role permissions: {str(e)}"
-                            )
-            except Exception as e:
-                # For cross-account roles, silently skip IAM validation on unexpected errors
-                if execution_role and Validator._is_cross_account_role(execution_role):
-                    return
-
-                if not execution_role:
-                    errors.append(f"Unknown issue resolving execution role: {str(e)}")
-                elif "Could not find credentials" in str(e):
-                    errors.append("AWS credentials not configured")
-                elif "Unable to locate credentials" in str(e):
-                    errors.append("AWS credentials not found")
-                else:
-                    errors.append(f"Failed to validate execution role: {str(e)}")
-
-        elif isinstance(infra, BedrockRuntimeManager):
-            # Bedrock validations - validate calling role permissions
-            try:
-                region_name = getattr(infra, "region", "us-east-1")
-
-                # Required permissions for Bedrock operations
-                required_calling_role_permissions = type(
-                    infra
-                ).required_calling_role_permissions(data_s3_path, output_s3_path)
-
-                # Validate calling role permissions
-                Validator._validate_calling_role_permissions(
-                    errors, required_calling_role_permissions, infra, region_name
-                )
-
-            except Exception as e:
-                errors.append(f"Failed to validate Bedrock IAM permissions: {str(e)}")
+        handler = _dispatch.get(infra.platform)
+        if handler is None:
             return
+
+        handler(errors, infra, data_s3_path, output_s3_path)
 
     @staticmethod
     def _validate_infrastructure(infra: Any, errors: List[str]) -> None:
@@ -702,9 +701,7 @@ class Validator:
 
             cluster_name = getattr(infra, "cluster_name", None)
             if not cluster_name:
-                errors.append(
-                    "SMHP cluster name not found in infrastructure configuration"
-                )
+                errors.append("SMHP cluster name not found in infrastructure configuration")
                 return
 
             # Test permission to describe SageMaker clusters
@@ -732,9 +729,7 @@ class Validator:
                     compatible_groups.append(group)
 
             if not compatible_groups:
-                available_types = [
-                    group["instance_type"] for group in restricted_instance_groups
-                ]
+                available_types = [group["instance_type"] for group in restricted_instance_groups]
                 errors.append(
                     f"Instance type '{infra.instance_type}' not available in restricted instance groups in cluster '{cluster_name}'. "
                     f"Available types: {sorted(set(available_types))}"
@@ -749,9 +744,7 @@ class Validator:
                     break
 
             if not sufficient_capacity:
-                max_available = max(
-                    group["current_count"] for group in compatible_groups
-                )
+                max_available = max(group["current_count"] for group in compatible_groups)
                 errors.append(
                     f"Insufficient capacity for instance type '{infra.instance_type}' in cluster '{cluster_name}'. "
                     f"Required: {infra.instance_count}, Maximum available: {max_available}"
@@ -814,8 +807,7 @@ class Validator:
                 total = sum(non_none_values)
                 if abs(total - 100.0) > 0.01:  # Allow small floating point errors
                     raise ValueError(
-                        f"Nova data percentages must sum to 100, got {total}. "
-                        f"Fields: {nova_fields}"
+                        f"Nova data percentages must sum to 100, got {total}. Fields: {nova_fields}"
                     )
 
         if customer_percent == 100 and total > 0:
@@ -881,7 +873,17 @@ class Validator:
                     "Set rft_lambda on the RuntimeManager to a Lambda ARN or a .py file path, then call deploy_lambda()."
                 )
             elif rft_lambda_arn is not None and not is_lambda_arn(rft_lambda_arn):
-                errors.append("'rft_lambda_arn' must be a valid Lambda function ARN")
+                if is_hub_content_arn(rft_lambda_arn) and platform == Platform.SMTJServerless:
+                    pass  # valid — hub-content ARN used as EvaluatorArn on SMTJServerless
+                else:
+                    errors.append(
+                        "'rft_lambda_arn' must be a valid Lambda function ARN"
+                        + (
+                            " or a SageMaker hub-content ARN (for SMTJServerless)"
+                            if platform == Platform.SMTJServerless
+                            else ""
+                        )
+                    )
 
         def validate_eval(
             eval_task: EvaluationTask,
@@ -902,9 +904,7 @@ class Validator:
             """
             # Validate eval task strategy
             if eval_task not in EVAL_TASK_STRATEGY_MAP:
-                errors.append(
-                    f"Evaluation task '{eval_task.value}' is not currently supported"
-                )
+                errors.append(f"Evaluation task '{eval_task.value}' is not currently supported")
 
             # Validate BYOD task
             if data_s3_path:
@@ -934,12 +934,8 @@ class Validator:
                         errors.append("processor_config must contain a lambda_arn")
                     else:
                         lambda_arn = processor_config.get("lambda_arn")
-                        if not isinstance(lambda_arn, str) or not is_lambda_arn(
-                            lambda_arn
-                        ):
-                            errors.append(
-                                "'lambda_arn' must be a valid Lambda function ARN"
-                            )
+                        if not isinstance(lambda_arn, str) or not is_lambda_arn(lambda_arn):
+                            errors.append("'lambda_arn' must be a valid Lambda function ARN")
 
             # Check rl_env_config
             if rl_env_config:
@@ -957,9 +953,7 @@ class Validator:
                     if not isinstance(reward_lambda_arn, str) or not is_lambda_arn(
                         reward_lambda_arn
                     ):
-                        errors.append(
-                            "'reward_lambda_arn' must be a valid Lambda function ARN"
-                        )
+                        errors.append("'reward_lambda_arn' must be a valid Lambda function ARN")
 
         def get_recipe_value(data: Dict[str, Any], key_to_find: str) -> Any:
             """
@@ -983,9 +977,7 @@ class Validator:
             raise Exception("Unable to find override key in recipe.")
 
         if method in [TrainingMethod.RFT_LORA, TrainingMethod.RFT_FULL]:
-            validate_rft(
-                rft_lambda_arn=rft_lambda_arn, rft_lambda_source=rft_lambda_source
-            )
+            validate_rft(rft_lambda_arn=rft_lambda_arn, rft_lambda_source=rft_lambda_source)
         elif method in [TrainingMethod.EVALUATION]:
             assert eval_task is not None
             validate_eval(
@@ -1024,9 +1016,7 @@ class Validator:
                 recipe_value = get_recipe_value(recipe, key)
             except Exception as e:
                 if override_metadata.get("required", False):
-                    errors.append(
-                        f"'{key}' is required, but was not found in your recipe"
-                    )
+                    errors.append(f"'{key}' is required, but was not found in your recipe")
                 continue
 
             # Special validation for save_steps in RFT multiturn training
@@ -1087,9 +1077,7 @@ class Validator:
             save_steps = get_recipe_value(recipe, "save_steps")
             max_steps = get_recipe_value(recipe, "max_steps")
 
-            if isinstance(save_steps, (int, float)) and isinstance(
-                max_steps, (int, float)
-            ):
+            if isinstance(save_steps, (int, float)) and isinstance(max_steps, (int, float)):
                 if save_steps > max_steps:
                     errors.append(
                         f"'save_steps' ({save_steps}) must be less than or equal to 'max_steps' ({max_steps})"
@@ -1109,8 +1097,7 @@ class Validator:
         Raises:
             ValueError: If validation fails
         """
-        if not JOB_NAME_REGEX.match(job_name):
-            raise ValueError(f"Job name must fit pattern {JOB_NAME_REGEX.pattern}")
+        _validate_job_name(job_name)
 
     @staticmethod
     def validate_namespace(namespace: str) -> None:
@@ -1123,8 +1110,7 @@ class Validator:
         Raises:
             ValueError: If validation fails
         """
-        if not NAMESPACE_REGEX.match(namespace):
-            raise ValueError(f"Namespace must fit pattern {NAMESPACE_REGEX.pattern}")
+        _validate_namespace(namespace)
 
     @staticmethod
     def validate_cluster_name(cluster_name: str) -> None:
@@ -1137,10 +1123,7 @@ class Validator:
         Raises:
             ValueError: If validation fails
         """
-        if not CLUSTER_NAME_REGEX.match(cluster_name):
-            raise ValueError(
-                f"Cluster name must fit pattern {CLUSTER_NAME_REGEX.pattern}"
-            )
+        _validate_cluster_name(cluster_name)
 
     @staticmethod
     def validate_ecr_image_uri(image_uri: str) -> None:
@@ -1160,6 +1143,35 @@ class Validator:
                 f"Provided: {image_uri}"
             )
 
+    @staticmethod
+    def _validate_dataset_row_counts(
+        platform: Platform,
+        method: TrainingMethod,
+        model: Model,
+        recipe: Dict[str, Any],
+        data_s3_path: str,
+        region: str,
+        errors: List[str],
+    ) -> None:
+        """Check dataset row counts against DATASET_CHECKS config."""
+        if not get_applicable_row_count_checks(method, platform, model):
+            return
+
+        try:
+            row_count = count_s3_dataset_rows(data_s3_path, region)
+        except Exception as e:
+            logger.warning("Could not count dataset rows for validation: %s", e)
+            return
+
+        validate_row_counts(
+            row_count,
+            model,
+            platform,
+            method,
+            recipe=recipe,
+            errors=errors,
+        )
+
     @classmethod
     def validate(
         cls,
@@ -1176,6 +1188,7 @@ class Validator:
         subtask: Optional[str] = None,
         processor_config: Optional[Dict[str, Any]] = None,
         rl_env_config: Optional[Dict[str, Any]] = None,
+        model: Optional["Model"] = None,
     ) -> None:
         """
         Master validation method that orchestrates all validation checks.
@@ -1194,6 +1207,7 @@ class Validator:
             subtask: Optional subtask for evaluation
             processor_config: Optional BYOM processor configuration
             rl_env_config: Optional BYO RFT evaluation configuration
+            model: Optional Model enum for dataset row-count validation
 
         Raises:
             ValueError: If validation fails
@@ -1234,14 +1248,28 @@ class Validator:
                 platform=platform,
                 rft_lambda_arn=rft_lambda_arn,
                 rft_lambda_source=getattr(infra, "rft_lambda", None)
-                if infra
-                and not (getattr(infra, "rft_lambda", None) or "").startswith("arn:")
+                if infra and not (getattr(infra, "rft_lambda", None) or "").startswith("arn:")
                 else None,
                 eval_task=eval_task,
                 data_s3_path=data_s3_path,
                 subtask=subtask,
                 processor_config=processor_config,
                 rl_env_config=rl_env_config,
+            )
+
+        # Dataset row count validation
+        if model is not None and data_s3_path:
+            # get the region attribute from the infra object (which is an SMTJRuntimeManager, SMHPRuntimeManager, or BedrockRuntimeManager),
+            # and if that attribute doesn't exist, fall back to "us-east-1".
+            region_name = getattr(infra, "region", "us-east-1")
+            cls._validate_dataset_row_counts(
+                platform=platform,
+                method=method,
+                model=model,
+                recipe=recipe,
+                data_s3_path=data_s3_path,
+                region=region_name,
+                errors=errors,
             )
 
         if errors:
@@ -1307,8 +1335,6 @@ def verify_rft_lambda(
 
     try:
         # Read sample data from S3
-        import boto3
-
         s3_client = boto3.client("s3", region_name=region)
         response = s3_client.get_object(Bucket=bucket, Key=key)
 
@@ -1330,8 +1356,6 @@ def verify_rft_lambda(
                 "Please ensure the data file contains valid JSONL data."
             )
 
-        from amzn_nova_forge.util.logging import logger
-
         logger.info(f"Verifying RFT lambda with {len(samples)} sample(s)...")
 
     except Exception as e:
@@ -1351,8 +1375,6 @@ def verify_rft_lambda(
             validate_format=True,
             platform=platform,
         )
-
-        from amzn_nova_forge.util.logging import logger
 
         logger.info(
             f"RFT lambda verification successful: {result['successful_samples']}/{result['total_samples']} sample(s) passed"

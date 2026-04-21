@@ -44,9 +44,7 @@ class DatasetWriter:
     """
 
     @staticmethod
-    def save_to_local(
-        save_path: str, dataset_iter: Iterator[Dict], is_jsonl: bool
-    ) -> None:
+    def save_to_local(save_path: str, dataset_iter: Iterator[Dict], is_jsonl: bool) -> None:
         """
         Stream dataset to local file without loading all data into memory.
 
@@ -95,9 +93,7 @@ class DatasetWriter:
             raise DatasetWriteError(f"Failed to write to local file {save_path}: {e}")
 
     @staticmethod
-    def save_to_s3(
-        save_path: str, dataset_iter: Iterator[Dict], is_jsonl: bool
-    ) -> None:
+    def save_to_s3(save_path: str, dataset_iter: Iterator[Dict], is_jsonl: bool) -> None:
         """
         Stream dataset to S3 without loading all data into memory.
         Uses a temporary file and boto3's upload_file for efficient multipart upload.
@@ -154,7 +150,5 @@ class DatasetWriter:
                 try:
                     os.unlink(tmp_path)
                 except Exception:
-                    logger.warning(
-                        f"Failed to delete tmp file {tmp_path} after S3 upload."
-                    )
+                    logger.warning(f"Failed to delete tmp file {tmp_path} after S3 upload.")
                     pass  # Best effort cleanup

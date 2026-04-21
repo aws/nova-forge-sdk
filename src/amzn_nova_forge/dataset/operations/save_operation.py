@@ -40,12 +40,24 @@ class SaveOperation(NovaForgeSaveOperation):
         """
         save_path: str = kwargs["save_path"]
 
+        # Validate S3 bucket matches multimodal image bucket
+        if save_path.startswith("s3://"):
+            image_bucket = loader._multimodal_image_bucket
+            if image_bucket is not None:
+                save_bucket = save_path.replace("s3://", "").split("/")[0]
+                if save_bucket != image_bucket:
+                    raise DataPrepError(
+                        f"The save path bucket ('{save_bucket}') differs from the "
+                        f"multimodal image bucket ('{image_bucket}'). Nova training "
+                        f"requires images and the dataset JSONL to be in the same S3 bucket."
+                    )
+
         # Get iterator from the current dataset
         dataset_iter = loader.dataset()
         peeked_value, dataset_iter = peek(dataset_iter)
 
         if peeked_value is None:
-            logger.warning("Warning: Dataset is empty. An empty dataset will be saved.")
+            logger.warning("Save: dataset is empty. An empty file will be written.")
             dataset_iter = iter([])
 
         try:
@@ -55,9 +67,7 @@ class SaveOperation(NovaForgeSaveOperation):
             elif save_path.endswith(".json"):
                 is_jsonl = False
             else:
-                raise DataPrepError(
-                    "Unsupported format. Use '.json' or '.jsonl' extension"
-                )
+                raise DataPrepError("Unsupported format. Use '.json' or '.jsonl' extension")
 
             # Save to S3 or local file using DatasetWriter
             if save_path.startswith("s3://"):
@@ -65,7 +75,7 @@ class SaveOperation(NovaForgeSaveOperation):
             else:
                 DatasetWriter.save_to_local(save_path, dataset_iter, is_jsonl)
 
-            logger.info(f"Dataset saved successfully to {save_path}")
+            logger.info("Save complete: %s", save_path)
             return save_path
 
         except Exception as e:

@@ -41,9 +41,7 @@ class TestRFTMultiturnInfrastructure:
     def test_detect_platform_local(self):
         """Test platform detection returns 'local' for None infrastructure_arn."""
         with patch("boto3.client"):
-            with patch(
-                "amzn_nova_forge.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
-            ):
+            with patch("amzn_nova_forge.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test",
                     vf_env_id=VFEnvId.WORDLE,
@@ -54,9 +52,7 @@ class TestRFTMultiturnInfrastructure:
     def test_detect_platform_ec2_instance_id(self):
         """Test platform detection returns 'ec2' for instance ID."""
         with patch("boto3.client"):
-            with patch(
-                "amzn_nova_forge.rft_multiturn.rft_multiturn.EC2RFTInfrastructure"
-            ):
+            with patch("amzn_nova_forge.rft_multiturn.rft_multiturn.EC2RFTInfrastructure"):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test",
                     vf_env_id=VFEnvId.WORDLE,
@@ -68,9 +64,7 @@ class TestRFTMultiturnInfrastructure:
     def test_detect_platform_ec2_arn(self):
         """Test platform detection returns 'ec2' for EC2 ARN."""
         with patch("boto3.client"):
-            with patch(
-                "amzn_nova_forge.rft_multiturn.rft_multiturn.EC2RFTInfrastructure"
-            ):
+            with patch("amzn_nova_forge.rft_multiturn.rft_multiturn.EC2RFTInfrastructure"):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test",
                     vf_env_id=VFEnvId.WORDLE,
@@ -82,9 +76,7 @@ class TestRFTMultiturnInfrastructure:
     def test_detect_platform_ecs(self):
         """Test platform detection returns 'ecs' for ECS ARN."""
         with patch("boto3.client"):
-            with patch(
-                "amzn_nova_forge.rft_multiturn.rft_multiturn.ECSRFTInfrastructure"
-            ):
+            with patch("amzn_nova_forge.rft_multiturn.rft_multiturn.ECSRFTInfrastructure"):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test",
                     vf_env_id=VFEnvId.WORDLE,
@@ -95,9 +87,7 @@ class TestRFTMultiturnInfrastructure:
     def test_init_with_vf_env_id_enum(self):
         """Test initialization with VFEnvId enum."""
         with patch("boto3.client"):
-            with patch(
-                "amzn_nova_forge.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
-            ):
+            with patch("amzn_nova_forge.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test",
                     vf_env_id=VFEnvId.WORDLE,
@@ -109,9 +99,7 @@ class TestRFTMultiturnInfrastructure:
     def test_init_with_vf_env_id_string(self):
         """Test initialization with VFEnvId as string."""
         with patch("boto3.client"):
-            with patch(
-                "amzn_nova_forge.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
-            ):
+            with patch("amzn_nova_forge.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test",
                     vf_env_id="terminalbench_env",
@@ -123,9 +111,7 @@ class TestRFTMultiturnInfrastructure:
         """Test initialization with custom environment."""
         custom_env = CustomEnvironment(env_id="my-env", local_path="/path/to/env")
         with patch("boto3.client"):
-            with patch(
-                "amzn_nova_forge.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
-            ):
+            with patch("amzn_nova_forge.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test", custom_env=custom_env, python_venv_name="venv"
                 )
@@ -177,9 +163,7 @@ class TestRFTMultiturnInfrastructure:
     def test_ecs_defaults_python_venv_name(self):
         """Test ECS platform defaults python_venv_name."""
         with patch("boto3.client"):
-            with patch(
-                "amzn_nova_forge.rft_multiturn.rft_multiturn.ECSRFTInfrastructure"
-            ):
+            with patch("amzn_nova_forge.rft_multiturn.rft_multiturn.ECSRFTInfrastructure"):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test",
                     vf_env_id=VFEnvId.WORDLE,
@@ -191,9 +175,7 @@ class TestRFTMultiturnInfrastructure:
         """Test custom environment on LOCAL requires local_path."""
         custom_env = CustomEnvironment(env_id="my-env")
         with patch("boto3.client"):
-            with pytest.raises(
-                ValueError, match="CustomEnvironment.local_path required"
-            ):
+            with pytest.raises(ValueError, match="CustomEnvironment.local_path required"):
                 RFTMultiturnInfrastructure(
                     stack_name="test", custom_env=custom_env, python_venv_name="venv"
                 )
@@ -241,9 +223,7 @@ class TestRFTMultiturnInfrastructure:
     def test_region_defaults_to_us_east_1(self):
         """Test that region defaults to us-east-1."""
         with patch("boto3.client"):
-            with patch(
-                "amzn_nova_forge.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
-            ):
+            with patch("amzn_nova_forge.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test",
                     vf_env_id=VFEnvId.WORDLE,
@@ -254,9 +234,7 @@ class TestRFTMultiturnInfrastructure:
     def test_region_can_be_customized(self):
         """Test that region can be customized."""
         with patch("boto3.client"):
-            with patch(
-                "amzn_nova_forge.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
-            ):
+            with patch("amzn_nova_forge.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"):
                 rft = RFTMultiturnInfrastructure(
                     stack_name="test",
                     region="us-west-2",
@@ -272,13 +250,9 @@ class TestRFTMultiturnInfrastructure:
         mock_cfn.exceptions.ClientError = ClientError
 
         # During __init__, _check_stack_exists is called — return healthy stack
-        mock_cfn.describe_stacks.return_value = {
-            "Stacks": [{"StackStatus": "CREATE_COMPLETE"}]
-        }
+        mock_cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "CREATE_COMPLETE"}]}
         with patch("boto3.client", return_value=mock_cfn):
-            with patch(
-                "amzn_nova_forge.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"
-            ):
+            with patch("amzn_nova_forge.rft_multiturn.rft_multiturn.LocalRFTInfrastructure"):
                 infra = RFTMultiturnInfrastructure(
                     stack_name="test-stack",
                     vf_env_id=VFEnvId.WORDLE,
@@ -287,9 +261,7 @@ class TestRFTMultiturnInfrastructure:
         infra.region = "us-east-1"
 
         # Now simulate the stack transitioning to DELETE_FAILED
-        mock_cfn.describe_stacks.return_value = {
-            "Stacks": [{"StackStatus": "DELETE_FAILED"}]
-        }
+        mock_cfn.describe_stacks.return_value = {"Stacks": [{"StackStatus": "DELETE_FAILED"}]}
         with patch("boto3.client", return_value=mock_cfn):
             with pytest.raises(RuntimeError) as exc_info:
                 infra._check_stack_exists("my-stuck-stack")
@@ -438,9 +410,7 @@ class TestRFTMultiturnDumpLoad:
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.stack_name = "test-stack-NovaForgeSDK"
-            mock_local_instance.get_state.return_value = {
-                "python_venv_name": "test_venv"
-            }
+            mock_local_instance.get_state.return_value = {"python_venv_name": "test_venv"}
             mock_local.return_value = mock_local_instance
 
             rft = RFTMultiturnInfrastructure(
@@ -465,9 +435,7 @@ class TestRFTMultiturnDumpLoad:
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.stack_name = "test-stack-NovaForgeSDK"
-            mock_local_instance.get_state.return_value = {
-                "python_venv_name": "test_venv"
-            }
+            mock_local_instance.get_state.return_value = {"python_venv_name": "test_venv"}
             mock_local.return_value = mock_local_instance
 
             rft = RFTMultiturnInfrastructure(
@@ -477,9 +445,7 @@ class TestRFTMultiturnDumpLoad:
                 rft_role_name="TestRole",
             )
 
-            result_path = rft.dump(
-                file_path=str(tmp_path), file_name="custom_state.json"
-            )
+            result_path = rft.dump(file_path=str(tmp_path), file_name="custom_state.json")
 
             assert result_path.name == "custom_state.json"
             assert result_path.exists()
@@ -494,9 +460,7 @@ class TestRFTMultiturnDumpLoad:
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.stack_name = "test-stack-NovaForgeSDK"
-            mock_local_instance.get_state.return_value = {
-                "python_venv_name": "test_venv"
-            }
+            mock_local_instance.get_state.return_value = {"python_venv_name": "test_venv"}
             mock_local.return_value = mock_local_instance
 
             rft = RFTMultiturnInfrastructure(
@@ -566,9 +530,7 @@ class TestRFTMultiturnDumpLoad:
         ) as mock_local:
             mock_local_instance = MagicMock()
             mock_local_instance.stack_name = "test-stack-NovaForgeSDK"
-            mock_local_instance.get_state.return_value = {
-                "python_venv_name": "test_venv"
-            }
+            mock_local_instance.get_state.return_value = {"python_venv_name": "test_venv"}
             mock_local.return_value = mock_local_instance
 
             custom_env = CustomEnvironment(
@@ -992,9 +954,7 @@ class TestRFTMultiturnStartEnvironment:
 
             # Verify local setup was called
             mock_local_instance.setup_local.assert_called_once()
-            mock_local_instance.install_local_environment.assert_called_once_with(
-                VFEnvId.WORDLE
-            )
+            mock_local_instance.install_local_environment.assert_called_once_with(VFEnvId.WORDLE)
 
             # Verify start_environment was called with correct parameters
             mock_local_instance.start_environment.assert_called_once()
@@ -1123,9 +1083,7 @@ class TestRFTMultiturnStartEnvironment:
                 dynamo_table_name="test-table",
             )
 
-            custom_queue = (
-                "https://sqs.us-east-1.amazonaws.com/123456789012/custom-queue"
-            )
+            custom_queue = "https://sqs.us-east-1.amazonaws.com/123456789012/custom-queue"
             rft.start_environment(env_type=EnvType.TRAIN, queue_url=custom_queue)
 
             # Queue URL is not passed to infra.start_environment, it's used internally

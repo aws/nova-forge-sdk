@@ -1,15 +1,812 @@
 # Nova Forge SDK - API Specification
 
 ## Table of Contents
-1. [NovaModelCustomizer](#novamodelcustomizer)
-2. [Runtime Managers](#runtime-managers)
-3. [Dataset Loaders](#dataset-loaders)
-4. [Job Results](#job-results)
-5. [Utility Functions](#utility-functions)
-6. [Monitoring](#monitoring)
-7. [Enums and Configuration](#enums-and-configuration)
+1. [Service Classes (Recommended)](#service-classes-recommended)
+2. [NovaModelCustomizer (Deprecated)](#novamodelcustomizer)
+3. [Runtime Managers](#runtime-managers)
+4. [Dataset Loaders](#dataset-loaders)
+5. [Job Results](#job-results)
+6. [Utility Functions](#utility-functions)
+7. [Monitoring](#monitoring)
+8. [Enums and Configuration](#enums-and-configuration)
+---
+## Service Classes (Recommended)
+
+The modular service classes are the recommended API for Nova model customization. Each class handles a single concern — training, evaluation, deployment, or inference — and can be used independently.
+
+All service classes accept an optional `ForgeConfig` dataclass for shared configuration (KMS keys, output paths, caching, etc.).
+
+### ForgeConfig
+
+Shared configuration dataclass for all service classes.
+
+**Signature:**
+```python
+@dataclass
+class ForgeConfig:
+    kms_key_id: Optional[str] = None
+    output_s3_path: Optional[str] = None
+    generated_recipe_dir: Optional[str] = None
+    validation_config: Optional[Dict[str, bool]] = None
+    image_uri: Optional[str] = None
+    mlflow_monitor: Optional[MLflowMonitor] = None
+    enable_job_caching: bool = False
+    job_cache_dir: str = "~/.nova-forge/cache"
+    job_caching_config: Optional[Dict[str, Any]] = None
+```
+
+**Parameters:**
+- `kms_key_id` (Optional[str]): KMS key ID for S3 encryption
+- `output_s3_path` (Optional[str]): S3 path for output artifacts. Auto-generated if not provided
+- `generated_recipe_dir` (Optional[str]): Local path to save generated recipe files
+- `validation_config` (Optional[Dict[str, bool]]): Controls pre-flight validation. Keys: `iam`, `infra`, `recipe` (all default to True)
+- `image_uri` (Optional[str]): Custom container image URI override
+- `mlflow_monitor` (Optional[MLflowMonitor]): MLflow monitoring configuration (SageMaker only)
+- `enable_job_caching` (bool): Enable caching of completed job results for reuse. Default: False
+- `job_cache_dir` (str): Directory for cached job results. Default: `~/.nova-forge/cache`
+- `job_caching_config` (Optional[Dict[str, Any]]): Advanced caching configuration options
+
+**Example:**
+```python
+from amzn_nova_forge.core import ForgeConfig
+from amzn_nova_forge.monitor import MLflowMonitor
+
+config = ForgeConfig(
+    output_s3_path="s3://my-bucket/output",
+    kms_key_id="my-kms-key-id",
+    validation_config={"iam": True, "infra": True, "recipe": True},
+    mlflow_monitor=MLflowMonitor(
+        tracking_uri="arn:aws:sagemaker:us-east-1:123456789012:mlflow-app/app-xxx",
+        experiment_name="nova-customization"
+    ),
+    enable_job_caching=True
+)
+```
+---
+
+### ForgeTrainer
+
+Handles training job configuration and execution for Nova models.
+
+#### Constructor
+
+**Signature:**
+```python
+def __init__(
+    self,
+    model: Model,
+    method: TrainingMethod,
+    infra: RuntimeManager,
+    training_data_s3_path: Optional[str] = None,
+    model_s3_path: Optional[str] = None,
+    data_mixing_enabled: bool = False,
+    holdout_data_s3_path: Optional[str] = None,
+    config: Optional[ForgeConfig] = None,
+    region: Optional[str] = None,
+    is_multimodal: Optional[bool] = None,
+)
+```
+
+**Parameters:**
+- `model` (Model): The Nova model to train (e.g., `Model.NOVA_MICRO`, `Model.NOVA_LITE_2`)
+- `method` (TrainingMethod): The fine-tuning method (e.g., `TrainingMethod.SFT_LORA`, `TrainingMethod.RFT`)
+- `infra` (RuntimeManager): Runtime infrastructure manager (e.g., `SMTJRuntimeManager`, `SMHPRuntimeManager`, `BedrockRuntimeManager`)
+- `training_data_s3_path` (Optional[str]): S3 path to the training dataset
+- `model_s3_path` (Optional[str]): S3 path for the base or previously trained model
+- `data_mixing_enabled` (bool): Enable data mixing for CPT and SFT training on SMHP. Default: False
+- `holdout_data_s3_path` (Optional[str]): S3 path to holdout/validation data (optional, used for CPT)
+- `config` (Optional[ForgeConfig]): Shared configuration. If not provided, defaults are used
+- `region` (Optional[str]): AWS region. Auto-detected if not provided
+- `is_multimodal` (Optional[bool]): Explicitly set multimodal mode when `data_mixing_enabled=True`. If None, auto-detects from data
+
+**Example:**
+```python
+from amzn_nova_forge.trainer import ForgeTrainer
+from amzn_nova_forge.core import ForgeConfig
+from amzn_nova_forge.manager import SMTJRuntimeManager
+from amzn_nova_forge.model.model_enums import Model, TrainingMethod
+
+infra = SMTJRuntimeManager(instance_type="ml.p5.48xlarge", instance_count=2)
+
+trainer = ForgeTrainer(
+    model=Model.NOVA_MICRO,
+    method=TrainingMethod.SFT_LORA,
+    infra=infra,
+    training_data_s3_path="s3://my-bucket/training-data/data.jsonl",
+    config=ForgeConfig(output_s3_path="s3://my-bucket/output")
+)
+```
+---
+
+#### Methods
+
+##### `train()`
+Generates the recipe YAML, configures the runtime, and launches a training job.
+
+**Signature:**
+```python
+def train(
+    self,
+    job_name: str,
+    recipe_path: Optional[str] = None,
+    overrides: Optional[Dict[str, Any]] = None,
+    rft_lambda_arn: Optional[str] = None,
+    dry_run: bool = False,
+    rft_multiturn_infra=None,
+) -> Optional[TrainingResult]
+```
+
+**Parameters:**
+- `job_name` (str): User-defined name for the training job
+- `recipe_path` (Optional[str]): Path for a YAML recipe file (S3 or local)
+- `overrides` (Optional[Dict[str, Any]]): Dictionary of configuration overrides (e.g., `max_epochs`, `lr`, `warmup_steps`, `global_batch_size`)
+- `rft_lambda_arn` (Optional[str]): Rewards Lambda ARN (only for RFT methods). Takes priority over `rft_lambda_arn` on the RuntimeManager
+- `dry_run` (bool): If True, performs validation only without starting a job. Default: False
+- `rft_multiturn_infra`: Optional RFTMultiturnInfrastructure for RFT multiturn training
+
+**Returns:**
+- `TrainingResult`: Metadata object containing `job_id`, `method`, `started_time`, `model_artifacts`, and `model_type`. Returns `None` if `dry_run=True`
+
+**Raises:**
+- `Exception`: If job execution fails
+- `ValueError`: If training method is not supported
+
+**Example:**
+```python
+result = trainer.train(
+    job_name="my-training-job",
+    overrides={
+        "max_epochs": 10,
+        "lr": 5e-6,
+        "warmup_steps": 20,
+        "global_batch_size": 128
+    }
+)
+print(f"Training job started: {result.job_id}")
+print(f"Checkpoint path: {result.model_artifacts.checkpoint_s3_path}")
+```
+---
+
+##### `get_logs()`
+Retrieves and displays CloudWatch logs for a training job.
+
+**Signature:**
+```python
+def get_logs(
+    self,
+    job_result=None,
+    job_id=None,
+    started_time=None,
+    limit=None,
+    start_from_head: bool = False,
+    end_time=None,
+) -> None
+```
+
+**Parameters:**
+- `job_result` (Optional[TrainingResult]): Job result to retrieve logs for. If not provided, uses `job_id`
+- `job_id` (Optional[str]): Job identifier. Used if `job_result` is not provided
+- `started_time` (Optional[datetime]): Job start time to filter logs
+- `limit` (Optional[int]): Maximum number of log lines to retrieve
+- `start_from_head` (bool): If True, start from the beginning of logs. Default: False
+- `end_time` (Optional[str]): End time for searching a log time range
+
+**Returns:**
+- None (prints logs to console)
+
+**Example:**
+```python
+trainer.get_logs(job_result=result, limit=100, start_from_head=True)
+```
+---
+
+### ForgeEvaluator
+
+Handles evaluation job configuration and execution for Nova models.
+
+#### Constructor
+
+**Signature:**
+```python
+def __init__(
+    self,
+    model: Model,
+    infra: RuntimeManager,
+    data_s3_path: Optional[str] = None,
+    config: Optional[ForgeConfig] = None,
+    region: Optional[str] = None,
+)
+```
+
+**Parameters:**
+- `model` (Model): The Nova model to evaluate
+- `infra` (RuntimeManager): Runtime infrastructure manager
+- `data_s3_path` (Optional[str]): S3 path to evaluation data (required for BYOD evaluation tasks)
+- `config` (Optional[ForgeConfig]): Shared configuration
+- `region` (Optional[str]): AWS region. Auto-detected if not provided
+
+**Example:**
+```python
+from amzn_nova_forge.evaluator import ForgeEvaluator
+from amzn_nova_forge.manager import SMTJRuntimeManager
+from amzn_nova_forge.model.model_enums import Model
+
+infra = SMTJRuntimeManager(instance_type="ml.p5.48xlarge", instance_count=2)
+
+evaluator = ForgeEvaluator(
+    model=Model.NOVA_MICRO,
+    infra=infra,
+    data_s3_path="s3://my-bucket/eval-data/data.jsonl"
+)
+```
+---
+
+#### Methods
+
+##### `evaluate()`
+Generates the recipe YAML, configures the runtime, and launches an evaluation job.
+
+**Signature:**
+```python
+def evaluate(
+    self,
+    job_name: str,
+    eval_task: EvaluationTask,
+    model_path: Optional[str] = None,
+    task_config: Optional[EvalTaskConfig] = None,
+    recipe_path: Optional[str] = None,
+    overrides: Optional[Dict[str, Any]] = None,
+    dry_run: bool = False,
+    job_result: Optional[TrainingResult] = None,
+    rft_multiturn_infra=None,
+) -> Optional[EvaluationResult]
+```
+
+**Parameters:**
+- `job_name` (str): User-defined name for the evaluation job
+- `eval_task` (EvaluationTask): The evaluation task (e.g., `EvaluationTask.MMLU`)
+- `model_path` (Optional[str]): S3 path to the model to evaluate. If not provided, extracted from `job_result`
+- `task_config` (Optional[EvalTaskConfig]): Task-specific configuration. Fields: `subtask`, `processor`, `rl_env`, `override_data_s3_path`
+- `recipe_path` (Optional[str]): Path for a YAML recipe file (S3 or local)
+- `overrides` (Optional[Dict[str, Any]]): Inference configuration overrides (e.g., `max_new_tokens`, `temperature`, `top_p`)
+- `dry_run` (bool): If True, performs validation only. Default: False
+- `job_result` (Optional[TrainingResult]): Training result to extract checkpoint path from
+- `rft_multiturn_infra`: Optional RFTMultiturnInfrastructure for RFT evaluation
+
+**Returns:**
+- `EvaluationResult`: Metadata object containing `job_id`, `started_time`, `eval_output_path`, and `eval_task`. Returns `None` if `dry_run=True`
+
+**Example:**
+```python
+from amzn_nova_forge.core import EvaluationTask
+
+eval_result = evaluator.evaluate(
+    job_name="my-eval-job",
+    eval_task=EvaluationTask.MMLU,
+    model_path="s3://my-bucket/checkpoints/my-model",
+    overrides={
+        "max_new_tokens": 2048,
+        "temperature": 0,
+        "top_p": 1.0
+    }
+)
+print(f"Evaluation job started: {eval_result.job_id}")
+
+# Chain from training result
+eval_result = evaluator.evaluate(
+    job_name="my-eval-job",
+    eval_task=EvaluationTask.MMLU,
+    job_result=training_result
+)
+```
+---
+
+##### `get_logs()`
+Retrieves and displays CloudWatch logs for an evaluation job.
+
+**Signature:**
+```python
+def get_logs(
+    self,
+    job_result=None,
+    job_id=None,
+    started_time=None,
+    limit=None,
+    start_from_head: bool = False,
+    end_time=None,
+) -> None
+```
+
+**Parameters:**
+- `job_result` (Optional[EvaluationResult]): Job result to retrieve logs for
+- `job_id` (Optional[str]): Job identifier
+- `started_time` (Optional[datetime]): Job start time to filter logs
+- `limit` (Optional[int]): Maximum number of log lines
+- `start_from_head` (bool): If True, start from the beginning of logs. Default: False
+- `end_time` (Optional[str]): End time for searching a log time range
+
+**Returns:**
+- None (prints logs to console)
+
+**Example:**
+```python
+evaluator.get_logs(job_result=eval_result, limit=50)
+```
+---
+
+### ForgeDeployer
+
+Handles model deployment to Amazon Bedrock and SageMaker endpoints.
+
+#### Constructor
+
+**Signature:**
+```python
+def __init__(
+    self,
+    region: str,
+    model: Model,
+    deployment_mode: DeploymentMode = DeploymentMode.FAIL_IF_EXISTS,
+    config: Optional[ForgeConfig] = None,
+    method: Optional[TrainingMethod] = None,
+)
+```
+
+**Parameters:**
+- `region` (str): AWS region for deployment
+- `model` (Model): The Nova model being deployed
+- `deployment_mode` (DeploymentMode): Behavior when endpoint already exists. Default: `FAIL_IF_EXISTS`
+- `config` (Optional[ForgeConfig]): Shared configuration
+- `method` (Optional[TrainingMethod]): Training method used (needed for SageMaker deployment image selection)
+
+**Example:**
+```python
+from amzn_nova_forge.deployer import ForgeDeployer
+from amzn_nova_forge.model.model_enums import Model, DeploymentMode
+
+deployer = ForgeDeployer(
+    region="us-east-1",
+    model=Model.NOVA_MICRO,
+    deployment_mode=DeploymentMode.FAIL_IF_EXISTS
+)
+```
+---
+
+#### Methods
+
+##### `deploy()`
+Creates a custom model and deploys it to Amazon Bedrock or SageMaker in a single step.
+
+**Signature:**
+```python
+def deploy(
+    self,
+    model_artifact_path: str,
+    deploy_platform: DeployPlatform = DeployPlatform.BEDROCK_OD,
+    endpoint_name: Optional[str] = None,
+    unit_count: int = 1,
+    execution_role_name: Optional[str] = None,
+    sagemaker_instance_type: str = "ml.p5.48xlarge",
+    sagemaker_environment_variables: Optional[Dict[str, Any]] = None,
+    skip_model_reuse: bool = False,
+) -> DeploymentResult
+```
+
+**Parameters:**
+- `model_artifact_path` (str): S3 path to the trained model checkpoint
+- `deploy_platform` (DeployPlatform): Platform to deploy to (`BEDROCK_OD`, `BEDROCK_PT`, or `SAGEMAKER`). Default: `BEDROCK_OD`
+- `endpoint_name` (Optional[str]): Name of the endpoint (auto-generated if not provided)
+- `unit_count` (int): Number of PT units (Bedrock PT) or instances (SageMaker). Default: 1
+- `execution_role_name` (Optional[str]): IAM role name. If omitted, the SDK creates a default role
+- `sagemaker_instance_type` (str): Instance type for SageMaker deployment. Default: `"ml.p5.48xlarge"`
+- `sagemaker_environment_variables` (Optional[Dict[str, Any]]): Environment variables for SageMaker model configuration
+- `skip_model_reuse` (bool): If True, always create a new model. Default: False
+
+**Returns:**
+- `DeploymentResult`: Contains `endpoint` (EndpointInfo), `platform`, `endpoint_name`, `uri`, `model_artifact_path`, and `created_at`
+
+**Raises:**
+- `Exception`: When unable to deploy the model
+- `ValueError`: If platform is not supported
+
+**Example:**
+```python
+deployment = deployer.deploy(
+    model_artifact_path="s3://escrow-bucket/my-model-artifacts/",
+    deploy_platform=DeployPlatform.BEDROCK_OD,
+    endpoint_name="my-custom-nova-model"
+)
+print(f"Model deployed: {deployment.endpoint.uri}")
+```
+---
+
+##### `create_custom_model()`
+Creates a Bedrock custom model from S3 artifacts without deploying to an endpoint.
+
+**Signature:**
+```python
+def create_custom_model(
+    self,
+    model_artifact_path: str,
+    endpoint_name: Optional[str] = None,
+    execution_role_name: Optional[str] = None,
+    tags: Optional[List[Dict[str, str]]] = None,
+    skip_model_reuse: bool = False,
+) -> ModelDeployResult
+```
+
+**Parameters:**
+- `model_artifact_path` (str): S3 path to trained model checkpoint
+- `endpoint_name` (Optional[str]): Optional name prefix for the model name
+- `execution_role_name` (Optional[str]): IAM role name for Bedrock
+- `tags` (Optional[List[Dict[str, str]]]): Optional list of `{"key": str, "value": str}` dicts for tracking
+- `skip_model_reuse` (bool): If True, always create a new model. Default: False
+
+**Returns:**
+- `ModelDeployResult`: Contains `model_arn`, `model_name`, `escrow_uri`, and `created_at`
+
+**Example:**
+```python
+publish_result = deployer.create_custom_model(
+    model_artifact_path="s3://escrow-bucket/my-model-artifacts/"
+)
+print(f"Model ARN: {publish_result.model_arn}")
+publish_result.dump(file_path="./results/")
+```
+---
+
+##### `deploy_to_bedrock()`
+Deploys a published Bedrock custom model to an endpoint.
+
+**Signature:**
+```python
+def deploy_to_bedrock(
+    self,
+    model_deploy_result: Optional[ModelDeployResult] = None,
+    model_arn: Optional[str] = None,
+    deploy_platform: DeployPlatform = DeployPlatform.BEDROCK_OD,
+    pt_units: Optional[int] = None,
+    endpoint_name: Optional[str] = None,
+) -> DeploymentResult
+```
+
+**Parameters:**
+- `model_deploy_result` (Optional[ModelDeployResult]): Result from `create_custom_model()`. Cannot be combined with `model_arn`
+- `model_arn` (Optional[str]): Direct model ARN. Cannot be combined with `model_deploy_result`
+- `deploy_platform` (DeployPlatform): `BEDROCK_OD` (default) or `BEDROCK_PT`
+- `pt_units` (Optional[int]): Number of PT units (required for `BEDROCK_PT`)
+- `endpoint_name` (Optional[str]): Endpoint name (auto-generated if not provided)
+
+**Returns:**
+- `DeploymentResult`: Contains `endpoint`, `created_at`, and `model_publish`
+
+**Raises:**
+- `ValueError`: When both `model_deploy_result` and `model_arn` are provided, or when no model ARN is available
+- `RuntimeError`: When deployment creation fails
+
+**Example:**
+```python
+# Two-step deploy: create model, then deploy
+publish_result = deployer.create_custom_model(
+    model_artifact_path="s3://escrow-bucket/my-model-artifacts/"
+)
+deployment = deployer.deploy_to_bedrock(
+    model_deploy_result=publish_result,
+    endpoint_name="my-endpoint"
+)
+
+# Or deploy from an existing model ARN
+deployment = deployer.deploy_to_bedrock(
+    model_arn="arn:aws:bedrock:us-east-1:123456789012:custom-model/my-model"
+)
+```
+---
+
+##### `find_published_model()`
+Finds an existing published model by platform and escrow path to enable model reuse.
+
+**Signature:**
+```python
+def find_published_model(
+    self,
+    platform: str,
+    escrow_path: str,
+    skip_model_reuse: bool = False,
+) -> Optional[str]
+```
+
+**Parameters:**
+- `platform` (str): Target platform (`"bedrock"` or `"sagemaker"`)
+- `escrow_path` (str): S3 path of the model artifacts
+- `skip_model_reuse` (bool): If True, always returns None (skips lookup). Default: False
+
+**Returns:**
+- `Optional[str]`: Existing model ARN if found, otherwise None
+
+**Example:**
+```python
+existing_arn = deployer.find_published_model(
+    platform="bedrock",
+    escrow_path="s3://escrow-bucket/my-model-artifacts/"
+)
+if existing_arn:
+    print(f"Reusing existing model: {existing_arn}")
+```
+---
+
+##### `get_status()`
+Gets the deployment status for a DeploymentResult.
+
+**Signature:**
+```python
+def get_status(self, result: DeploymentResult) -> JobStatus
+```
+
+**Parameters:**
+- `result` (DeploymentResult): The deployment result to check
+
+**Returns:**
+- `JobStatus`: Current status (`IN_PROGRESS`, `COMPLETED`, or `FAILED`)
+
+---
+
+##### `get_status_by_arn()`
+Gets the deployment status by endpoint ARN and platform.
+
+**Signature:**
+```python
+def get_status_by_arn(
+    self,
+    endpoint_arn: str,
+    platform: DeployPlatform,
+) -> Optional[JobStatus]
+```
+
+**Parameters:**
+- `endpoint_arn` (str): The endpoint ARN to check
+- `platform` (DeployPlatform): The deployment platform
+
+**Returns:**
+- `Optional[JobStatus]`: Current status, or None if status cannot be determined
+
+---
+
+##### `get_logs()`
+Retrieves and displays logs for a deployment.
+
+**Signature:**
+```python
+def get_logs(
+    self,
+    job_result=None,
+    endpoint_arn=None,
+    platform=None,
+) -> None
+```
+
+**Parameters:**
+- `job_result` (Optional[DeploymentResult]): Deployment result to retrieve logs for
+- `endpoint_arn` (Optional[str]): Endpoint ARN (used if `job_result` is not provided)
+- `platform` (Optional[DeployPlatform]): Deployment platform (used with `endpoint_arn`)
+
+**Returns:**
+- None (prints logs to console)
+
+---
+
+### ForgeInference
+
+Handles single and batch inference on trained Nova models.
+
+#### Constructor
+
+**Signature:**
+```python
+def __init__(
+    self,
+    region: Optional[str] = None,
+    model: Optional[Model] = None,
+    infra: Optional[RuntimeManager] = None,
+    config: Optional[ForgeConfig] = None,
+    method: Optional[TrainingMethod] = None,
+)
+```
+
+**Parameters:**
+- `region` (Optional[str]): AWS region. Auto-detected if not provided
+- `model` (Optional[Model]): The Nova model (required for batch inference)
+- `infra` (Optional[RuntimeManager]): Runtime infrastructure manager (required for batch inference)
+- `config` (Optional[ForgeConfig]): Shared configuration
+- `method` (Optional[TrainingMethod]): Training method (used for batch inference recipe generation)
+
+**Example:**
+```python
+from amzn_nova_forge.inference import ForgeInference
+
+# For single inference (minimal setup)
+inference = ForgeInference(region="us-east-1")
+
+# For batch inference
+inference = ForgeInference(
+    region="us-east-1",
+    model=Model.NOVA_MICRO,
+    infra=SMTJRuntimeManager(instance_type="ml.p5.48xlarge", instance_count=1),
+    method=TrainingMethod.SFT_LORA
+)
+```
+---
+
+#### Methods
+
+##### `invoke()`
+Invokes a single inference on a deployed model endpoint.
+
+**Signature:**
+```python
+def invoke(
+    self,
+    endpoint_arn: str,
+    request_body: Dict[str, Any],
+) -> Any
+```
+
+**Parameters:**
+- `endpoint_arn` (str): Endpoint ARN to invoke
+- `request_body` (Dict[str, Any]): Inference request body
+
+**Returns:**
+- `Any`: Inference response
+
+**Example:**
+```python
+response = inference.invoke(
+    endpoint_arn="arn:aws:bedrock:us-east-1:123456789012:endpoint/my-endpoint",
+    request_body={
+        "messages": [{"role": "user", "content": "Hello! How are you?"}],
+        "max_tokens": 100,
+        "stream": False
+    }
+)
+```
+---
+
+##### `invoke_batch()`
+Launches a batch inference job on a trained model.
+
+**Signature:**
+```python
+def invoke_batch(
+    self,
+    job_name: str,
+    input_path: str,
+    output_s3_path: str,
+    model_path: Optional[str] = None,
+    recipe_path: Optional[str] = None,
+    overrides: Optional[Dict[str, Any]] = None,
+    dry_run: bool = False,
+    job_result: Optional[TrainingResult] = None,
+) -> Optional[InferenceResult]
+```
+
+**Parameters:**
+- `job_name` (str): Name for the batch inference job
+- `input_path` (str): S3 path to input data
+- `output_s3_path` (str): S3 path for inference outputs
+- `model_path` (Optional[str]): S3 path to the model checkpoint
+- `recipe_path` (Optional[str]): Path for a YAML recipe file
+- `overrides` (Optional[Dict[str, Any]]): Inference configuration overrides (e.g., `max_new_tokens`, `temperature`, `top_p`)
+- `dry_run` (bool): If True, performs validation only. Default: False
+- `job_result` (Optional[TrainingResult]): Training result to extract checkpoint path from
+
+**Returns:**
+- `InferenceResult`: Metadata object containing `job_id`, `started_time`, and `inference_output_path`. Returns `None` if `dry_run=True`
+
+**Example:**
+```python
+inference_result = inference.invoke_batch(
+    job_name="batch-inference-job",
+    input_path="s3://my-bucket/inference-input",
+    output_s3_path="s3://my-bucket/inference-output",
+    model_path="s3://my-bucket/trained-model"
+)
+print(f"Batch inference started: {inference_result.job_id}")
+```
+---
+
+##### `get_logs()`
+Retrieves and displays CloudWatch logs for an inference job.
+
+**Signature:**
+```python
+def get_logs(
+    self,
+    job_result=None,
+    job_id=None,
+    started_time=None,
+    limit=None,
+    start_from_head: bool = False,
+    end_time=None,
+) -> None
+```
+
+**Parameters:**
+- `job_result` (Optional[InferenceResult]): Job result to retrieve logs for
+- `job_id` (Optional[str]): Job identifier
+- `started_time` (Optional[datetime]): Job start time to filter logs
+- `limit` (Optional[int]): Maximum number of log lines
+- `start_from_head` (bool): If True, start from the beginning of logs. Default: False
+- `end_time` (Optional[str]): End time for searching a log time range
+
+**Returns:**
+- None (prints logs to console)
+
+**Example:**
+```python
+inference.get_logs(job_result=inference_result, limit=100)
+```
+---
+
+### End-to-End Example (Service Classes)
+
+```python
+from amzn_nova_forge.trainer import ForgeTrainer
+from amzn_nova_forge.evaluator import ForgeEvaluator
+from amzn_nova_forge.deployer import ForgeDeployer
+from amzn_nova_forge.inference import ForgeInference
+from amzn_nova_forge.core import ForgeConfig
+from amzn_nova_forge.manager import SMTJRuntimeManager
+from amzn_nova_forge.model.model_enums import Model, TrainingMethod, DeployPlatform
+from amzn_nova_forge.core import EvaluationTask
+
+# Shared configuration
+config = ForgeConfig(
+    output_s3_path="s3://my-bucket/output",
+    enable_job_caching=True
+)
+infra = SMTJRuntimeManager(instance_type="ml.p5.48xlarge", instance_count=2)
+
+# 1. Train
+trainer = ForgeTrainer(
+    model=Model.NOVA_MICRO,
+    method=TrainingMethod.SFT_LORA,
+    infra=infra,
+    training_data_s3_path="s3://my-bucket/data.jsonl",
+    config=config
+)
+train_result = trainer.train(job_name="my-training-job")
+
+# 2. Evaluate
+evaluator = ForgeEvaluator(model=Model.NOVA_MICRO, infra=infra, config=config)
+eval_result = evaluator.evaluate(
+    job_name="my-eval-job",
+    eval_task=EvaluationTask.MMLU,
+    job_result=train_result
+)
+
+# 3. Deploy
+deployer = ForgeDeployer(region="us-east-1", model=Model.NOVA_MICRO)
+deployment = deployer.deploy(
+    model_artifact_path=train_result.model_artifacts.checkpoint_s3_path,
+    deploy_platform=DeployPlatform.BEDROCK_OD,
+    endpoint_name="my-nova-endpoint"
+)
+
+# 4. Inference
+inference_client = ForgeInference(region="us-east-1")
+response = inference_client.invoke(
+    endpoint_arn=deployment.endpoint.uri,
+    request_body={
+        "messages": [{"role": "user", "content": "Hello!"}],
+        "max_tokens": 100
+    }
+)
+```
+
 ---
 ## NovaModelCustomizer
+
+> **Deprecated**: `NovaModelCustomizer` is a legacy facade. Use `ForgeTrainer`, `ForgeEvaluator`, `ForgeDeployer`, and `ForgeInference` instead.
+
 The main entrypoint class for customizing and training Nova models.
 
 ### Constructor
@@ -33,6 +830,7 @@ def __init__(
  deployment_mode: DeploymentMode = DeploymentMode.FAIL_IF_EXISTS,
  data_mixing_enabled: bool = False,
  enable_job_caching: bool = False,
+ is_multimodal: Optional[bool] = None,
 )
 ```
 **Parameters:**
@@ -52,6 +850,7 @@ def __init__(
 - `data_mixing_enabled` (bool): Enable data mixing feature for CPT and SFT training on SageMaker HyperPod. Default is False
   - **Note:** The `data_mixing_enabled` parameter must be set to `True` during initialization to use data mixing features.
   - **Note:** Datamixing is only supported for CPT, SFT_LORA, and SFT_FULL methods on SageMaker HyperPod (SMHP).
+- `is_multimodal` (Optional[bool]): Only applicable when `data_mixing_enabled=True`. Explicitly set multimodal mode. If None (default), auto-detects from data. Set to False to skip detection for performance on large text-only datasets. Ignored when `data_mixing_enabled=False`
 - `enable_job_caching` (bool): Whether to enable job result caching. When enabled, completed job results are cached to `job_cache_dir` (default: `.cached-nova-jobs/`) and reused for identical job configurations. Default: False
 
 **Raises:**
@@ -68,8 +867,8 @@ customizer = NovaModelCustomizer(
  model=Model.NOVA_MICRO,
  method=TrainingMethod.SFT_LORA,
  infra=infra,
- data_s3_path="s3://my-bucket/training-data/",
- output_s3_path="s3://my-bucket/output/"
+ data_s3_path="s3://my-bucket/training-data/data.jsonl",
+ output_s3_path="s3://my-bucket/output"
 )
 
 # Amazon Bedrock (fully managed)
@@ -82,8 +881,8 @@ bedrock_customizer = NovaModelCustomizer(
  model=Model.NOVA_MICRO,
  method=TrainingMethod.SFT_LORA,
  infra=bedrock_infra,
- data_s3_path="s3://my-bucket/training-data/",
- output_s3_path="s3://my-bucket/output/"
+ data_s3_path="s3://my-bucket/training-data/data.jsonl",
+ output_s3_path="s3://my-bucket/output"
 )
 
 # With MLflow monitoring (SageMaker only)
@@ -97,8 +896,8 @@ customizer_with_mlflow = NovaModelCustomizer(
  model=Model.NOVA_MICRO,
  method=TrainingMethod.SFT_LORA,
  infra=infra,
- data_s3_path="s3://my-bucket/training-data/",
- output_s3_path="s3://my-bucket/output/",
+ data_s3_path="s3://my-bucket/training-data/data.jsonl",
+ output_s3_path="s3://my-bucket/output",
  mlflow_monitor=mlflow_monitor
 )
 ```
@@ -148,22 +947,42 @@ def set_data_mixing_config(
 **Raises:**
 - `ValueError`: If data mixing is not enabled or configuration is invalid
 
+**Note:**
+- The SDK automatically detects whether your dataset is multimodal (contains images, videos, or documents) by scanning the data
+- The appropriate Nova dataset catalog (text-only or multimodal) and nova data mixing fields are selected automatically based on this detection
+
 **Example:**
 ```python
-# Must initialize with data_mixing_enabled=True
+# Text datamixing (auto-detection)
 customizer = NovaModelCustomizer(
     model=Model.NOVA_LITE_2,
     method=TrainingMethod.SFT_LORA,
     infra=SMHPRuntimeManager(...),
     data_s3_path="s3://bucket/data.jsonl",
-    data_mixing_enabled=True
+    data_mixing_enabled=True,
+    # is_multimodal=False,  # Optional: skip auto-detection for performance
 )
 
-# Set data mixing configuration
 customizer.set_data_mixing_config({
     "customer_data_percent": 50,
     "nova_code_percent": 30,
     "nova_general_percent": 70
+})
+
+# Multimodal datamixing (explicit)
+customizer_mm = NovaModelCustomizer(
+    model=Model.NOVA_LITE_2,
+    method=TrainingMethod.SFT_LORA,
+    infra=SMHPRuntimeManager(...),
+    data_s3_path="s3://bucket/multimodal_data.jsonl",
+    data_mixing_enabled=True,
+    is_multimodal=True,
+)
+
+customizer_mm.set_data_mixing_config({
+    "customer_data_percent": 50,
+    "nova_general_percent": 70,
+    "nova_code_percent": 30,
 })
 ```
 
@@ -206,8 +1025,9 @@ def train(
  - `method` (TrainingMethod): The training method used
  - `started_time` (datetime): Job start timestamp
  - `model_artifacts` (ModelArtifacts): Paths to model checkpoints and outputs
-   - `checkpoint_s3_path` (str, Optional): Path to the model checkpoint/trained model.
+   - `checkpoint_s3_path` (str, Optional): Path to the model checkpoint/trained model. For `SMTJServerless`, populated after job completion via `get_model_artifacts()`.
    - `output_s3_path` (str): Path to the metrics and output tar file.
+   - `output_model_arn` (str, Optional): Model package ARN for `SMTJServerless` jobs. Use as `model_path` for iterative training.
  - `model_type` (Model): Model type of the model being trained
 
 **Raises:**
@@ -286,7 +1106,7 @@ from amzn_nova_forge.recipe import *
 eval_result = customizer.evaluate(
     job_name="my-eval-job",
     eval_task=EvaluationTask.MMLU,
-    model_path="s3://my-bucket/checkpoints/my-model/",
+    model_path="s3://my-bucket/checkpoints/my-model",
     overrides={
         'max_new_tokens': 2048,
         'temperature': 0,
@@ -341,7 +1161,7 @@ def deploy(
 - `unit_count` (Optional[int]): Used in Bedrock Provisioned Throughput number of PT to purchase or SageMaker number of initial instances
 - `endpoint_name` (Optional[str]): Name of the deployed model's endpoint (auto-generated if not provided)
 - `job_result` (Optional[TrainingResult]): Training job result object to use for extracting checkpoint path and validating job completion. Also used to retrieve job_id if it's not provided.
-- `execution_role_name`:  Optional IAM execution role name for Bedrock or SageMaker, defaults to BedrockDeployModelExecutionRole or SageMakerExecutionRoleName. If this role does not exist, it will be created.
+- `execution_role_name` (Optional[str]): IAM role for Bedrock or SageMaker. If provided, used as-is — no policies created or attached. If omitted, the SDK creates and manages a default role with required policies.
 - `sagemaker_instance_type`: Optional EC2 instance type for SageMaker deployment, defaults to ml.p5.48xlarge
 - `sagemaker_environment_variables`: Optional environment variables for model configuration
 **Returns:**
@@ -391,7 +1211,7 @@ You can also use the following method to create a Bedrock execution role with sc
  
  
 ```python
-from amzn_nova_forge.util.bedrock import create_bedrock_execution_role
+from amzn_nova_forge.iam import create_bedrock_execution_role
  
 iam_client = boto3.client("iam")
  
@@ -404,6 +1224,179 @@ create_bedrock_execution_role(
  
 ```
 ---
+#### `create_custom_model()`
+Creates a Bedrock custom model from S3 artifacts, decoupled from endpoint deployment.
+
+This method extracts the model-creation step from the deploy flow so users can
+create a model independently of endpoint deployment, enabling retry of deployment
+if it fails after model creation.
+
+**Signature:**
+```python
+def create_custom_model(
+  self,
+  model_artifact_path: Optional[str] = None,
+  job_result: Optional[TrainingResult] = None,
+  endpoint_name: Optional[str] = None,
+  execution_role_name: Optional[str] = None,
+  tags: Optional[List[Dict[str, str]]] = None,
+  skip_model_reuse: bool = False,
+) -> ModelDeployResult
+```
+
+**Parameters:**
+- `model_artifact_path` (Optional[str]): S3 path to trained model checkpoint. Takes precedence over `job_result` if both are provided.
+- `job_result` (Optional[TrainingResult]): Training job result to extract checkpoint path from.
+- `endpoint_name` (Optional[str]): Optional name prefix for the model name (auto-generated if not provided).
+- `execution_role_name` (Optional[str]): IAM role name for Bedrock. Defaults to `BedrockDeployModelExecutionRole`.
+- `tags` (Optional[List[Dict[str, str]]]): Optional list of `{"key": str, "value": str}` dicts for source tracking.
+- `skip_model_reuse` (bool): If True, always create a new model even if one with the same escrow URI already exists. Default: False.
+
+**Returns:**
+- `ModelDeployResult`: Contains:
+  - `model_arn` (str): The Bedrock custom model ARN
+  - `model_name` (str): The model name passed to CreateCustomModel
+  - `escrow_uri` (str): S3 artifacts path used to create the model
+  - `created_at` (datetime): UTC timestamp when the model was created
+
+**Raises:**
+- `ValueError`: When neither `model_artifact_path` nor `job_result` is provided, or when checkpoint path cannot be resolved from `job_result`.
+- `RuntimeError`: When IAM role creation or custom model creation fails.
+
+**Example:**
+```python
+# Create a custom model from training artifacts
+publish_result = customizer.create_custom_model(
+  model_artifact_path="s3://escrow-bucket/my-model-artifacts/"
+)
+print(f"Model ARN: {publish_result.model_arn}")
+
+# Save for later use
+publish_result.dump(file_path="./results/")
+
+# Or create from a training job result
+publish_result = customizer.create_custom_model(job_result=training_result)
+```
+---
+#### `deploy_to_bedrock()`
+Deploys a published Bedrock custom model to an endpoint.
+
+Use after `create_custom_model()` to deploy the model, or provide a model ARN directly.
+This decoupled approach allows retrying deployment without re-creating the model.
+
+When a `model_deploy_result` is provided, the model's status is validated before deployment:
+- **Active**: Proceeds immediately.
+- **Creating**: Waits for the model to become Active (30s poll interval, 15min timeout).
+- **Failed**: Raises `ValueError`.
+
+**Signature:**
+```python
+def deploy_to_bedrock(
+  self,
+  model_deploy_result: Optional[ModelDeployResult] = None,
+  model_arn: Optional[str] = None,
+  deploy_platform: DeployPlatform = DeployPlatform.BEDROCK_OD,
+  pt_units: Optional[int] = None,
+  endpoint_name: Optional[str] = None,
+) -> DeploymentResult
+```
+
+**Parameters:**
+- `model_deploy_result` (Optional[ModelDeployResult]): Result from `create_custom_model()`. Cannot be combined with `model_arn`.
+- `model_arn` (Optional[str]): Direct model ARN. Cannot be combined with `model_deploy_result`.
+- `deploy_platform` (DeployPlatform): `BEDROCK_OD` (default) or `BEDROCK_PT`.
+- `pt_units` (Optional[int]): Number of PT units (required for `BEDROCK_PT`).
+- `endpoint_name` (Optional[str]): Endpoint name (auto-generated if not provided).
+
+**Returns:**
+- `DeploymentResult`: Contains:
+  - `endpoint` (EndpointInfo): Endpoint information
+  - `created_at` (datetime): Deployment creation timestamp
+  - `model_publish` (Optional[ModelDeployResult]): The model deploy result, if available
+  - `escrow_uri` (Optional[str]): Convenience property delegating to `model_publish.escrow_uri`
+
+**Raises:**
+- `ValueError`: When both `model_deploy_result` and `model_arn` are provided, or when no model ARN is available.
+- `RuntimeError`: When deployment creation fails.
+
+**Example:**
+```python
+# Two-step deploy: create model, then deploy
+publish_result = customizer.create_custom_model(
+  model_artifact_path="s3://escrow-bucket/my-model-artifacts/"
+)
+deployment = customizer.deploy_to_bedrock(
+  model_deploy_result=publish_result,
+  endpoint_name="my-endpoint"
+)
+
+# Or deploy directly from a model ARN
+deployment = customizer.deploy_to_bedrock(
+  model_arn="arn:aws:bedrock:us-east-1:123456789012:custom-model/my-model"
+)
+
+# Retry deployment if it fails (model already created)
+deployment = customizer.deploy_to_bedrock(
+  model_arn=publish_result.model_arn
+)
+```
+---
+#### `deploy_to_sagemaker()`
+Deploys a model to a SageMaker Inference endpoint.
+
+Can reuse an existing SageMaker model via `model_deploy_result` (e.g., from a
+previous deploy that created the model but failed on endpoint creation),
+or create a new model from `model_artifact_path`.
+
+**Signature:**
+```python
+def deploy_to_sagemaker(
+  self,
+  instance_type: str,
+  model_deploy_result: Optional[ModelDeployResult] = None,
+  model_artifact_path: Optional[str] = None,
+  unit_count: int = 1,
+  endpoint_name: Optional[str] = None,
+  environment_variables: Optional[Dict[str, Any]] = None,
+  execution_role_name: Optional[str] = None,
+  skip_model_reuse: bool = False,
+) -> DeploymentResult
+```
+
+**Parameters:**
+- `instance_type` (str): SageMaker instance type (required).
+- `model_deploy_result` (Optional[ModelDeployResult]): Result from a previous deploy containing the SM model ARN. Skips model creation. Cannot be combined with `model_artifact_path`.
+- `model_artifact_path` (Optional[str]): S3 path to model artifacts. Creates a new SM model.
+- `unit_count` (int): Number of instances. Default: 1.
+- `endpoint_name` (Optional[str]): Endpoint name (auto-generated if not provided).
+- `environment_variables` (Optional[Dict]): Model configuration (CONTEXT_LENGTH, MAX_CONCURRENCY, etc.).
+- `execution_role_name` (str): IAM execution role name.
+- `skip_model_reuse` (bool): If True, always create a new model (skip tag-based discovery). Default: False.
+
+**Returns:**
+- `DeploymentResult`: Contains endpoint info and `model_publish` (ModelDeployResult).
+
+**Raises:**
+- `ValueError`: When both `model_deploy_result` and `model_artifact_path` are provided, when neither is provided, or when `instance_type` is missing.
+- `RuntimeError`: When endpoint creation fails. The error message includes the model ARN and a retry command using `customizer.last_model_publish`.
+
+**Example:**
+```python
+# Deploy from S3 artifacts
+result = customizer.deploy_to_sagemaker(
+  model_artifact_path="s3://escrow-bucket/checkpoint/",
+  instance_type="ml.g5.12xlarge",
+)
+
+# Retry after endpoint failure (model already created)
+result = customizer.deploy_to_sagemaker(
+  model_deploy_result=customizer.last_model_publish,
+  instance_type="ml.g5.12xlarge",
+  endpoint_name="my-endpoint",
+)
+```
+---
+
 #### `invoke_inference()`
 Invokes a single inference on a trained model.
 
@@ -479,9 +1472,9 @@ def batch_inference(
 ```python
 inference_result = customizer.batch_inference(
  job_name="batch-inference-job",
- input_path="s3://my-bucket/inference-input/",
- output_s3_path="s3://my-bucket/inference-output/",
- model_path="s3://my-bucket/trained-model/"
+ input_path="s3://my-bucket/inference-input",
+ output_s3_path="s3://my-bucket/inference-output",
+ model_path="s3://my-bucket/trained-model"
 )
 print(f"Batch inference started: {inference_result.job_id}")
 ```
@@ -544,8 +1537,8 @@ class JobConfig:
 The following methods are available on all `RuntimeManager` subclasses.
 
 #### Properties (shared)
-- `rft_lambda` (Optional[str]): Lambda ARN or local `.py` file path. Assigning a new value automatically updates `rft_lambda_arn` — if the value is an ARN it is resolved immediately; if it is a file path, `rft_lambda_arn` is cleared until `deploy_lambda()` is called.
-- `rft_lambda_arn` (Optional[str]): Resolved Lambda ARN. Set immediately when `rft_lambda` is assigned an ARN, or populated by `deploy_lambda()` when `rft_lambda` is a file path.
+- `rft_lambda` (Optional[str]): Lambda ARN, SageMaker hub-content ARN (SMTJServerless only), or local `.py` file path. Assigning a new value automatically updates `rft_lambda_arn` — if the value is a Lambda ARN or hub-content ARN it is resolved immediately; if it is a file path, `rft_lambda_arn` is cleared until `deploy_lambda()` is called.
+- `rft_lambda_arn` (Optional[str]): Resolved Lambda ARN or hub-content ARN. Set immediately when `rft_lambda` is assigned an ARN (Lambda or hub-content), or populated by `deploy_lambda()` when `rft_lambda` is a file path.
 
 **Example:**
 ```python
@@ -922,6 +1915,13 @@ def cleanup(
 ### SMTJServerlessRuntimeManager
 Manages SageMaker Training Jobs.
 
+> **Note:** `AWS_DEFAULT_REGION` must be set when using SageMaker Serverless training.
+> The SageMaker SDK's `DataSet` API requires a region to connect to the SageMaker backend.
+> Set it before running your script:
+> ```bash
+> export AWS_DEFAULT_REGION=<your-region>
+> ```
+
 #### Constructor
 
 **Signature:**
@@ -934,9 +1934,9 @@ def __init__(
     encrypt_inter_container_traffic: bool = False,
     subnets: Optional[list[str]] = None,
     security_group_ids: Optional[list[str]] = None,
-    max_job_runtime: Optional[int] = 86400, 
+    max_job_runtime: Optional[int] = 86400,
     rft_lambda: Optional[str] = None,
-
+    evaluator_name: Optional[str] = None,
 )
 ```
 
@@ -948,13 +1948,34 @@ def __init__(
 - `subnets` (Optional[list[str]]): Optional list of strings representing subnets. Default value is None.
 - `security_group_ids` (Optional[list[str]]): Optional list of strings representing security group IDs. Default value is None.
 - `max_job_runtime` (Optional[int]): Max Job Runtime in seconds (default: 1 day)
-- `rft_lambda` (Optional[str]): Lambda ARN or local `.py` file path for RFT reward function. Can also be set or updated after construction.
+- `rft_lambda` (Optional[str]): Lambda ARN, SageMaker hub-content ARN, or local `.py` file path for the RFT reward function.
+  - **Lambda ARN**: Automatically registered as a hub-content `JsonDoc` evaluator during `train()`. The hub-content ARN is passed as `EvaluatorArn` in `ServerlessJobConfig`.
+  - **Hub-content ARN**: Passed directly as `EvaluatorArn` — no registration needed.
+  - **Local `.py` file**: Call `deploy_lambda()` first to deploy and get a Lambda ARN.
+- `evaluator_name` (Optional[str]): Optional human-readable name for the hub-content evaluator entry when auto-registering a Lambda ARN. Defaults to the Lambda function name.
+
 **Example:**
 ```python
 from amzn_nova_forge.manager import *
+
+# With a Lambda ARN (auto-registered as hub-content during train())
 infra = SMTJServerlessRuntimeManager(
-  model_package_group_name="model-group",
+    model_package_group_name="nova-rft-serverless",
+    rft_lambda="arn:aws:lambda:us-east-1:123456789012:function:my-reward-fn",
 )
+
+# With a hub-content ARN (passed directly as EvaluatorArn)
+infra = SMTJServerlessRuntimeManager(
+    model_package_group_name="nova-rft-serverless",
+    rft_lambda="arn:aws:sagemaker:us-east-1:123456789012:hub-content/my-hub/JsonDoc/my-evaluator/0.0.1",
+)
+
+# With a local .py file (deploy_lambda() required before train())
+infra = SMTJServerlessRuntimeManager(
+    model_package_group_name="nova-rft-serverless",
+    rft_lambda="my_reward.py",
+)
+infra.deploy_lambda(lambda_name="my-reward-fn")
 ```
 #### Properties
 - `model_package_group_name` (str): Model Package Group name
@@ -991,7 +2012,7 @@ def cleanup(
 Dataset loaders handle loading, transforming, and saving datasets in various formats.
 
 ### Base Class: DatasetLoader
-Abstract base class for all dataset loaders.
+Base class for all dataset loaders. Handles path resolution (relative, tilde, `..` paths normalized to absolute), directory detection (scans for matching files, loads in lexicographic order), and delegates single-file loading to subclasses.
 
 #### Constructor
 
@@ -1119,6 +2140,64 @@ loader = CSVDatasetLoader(question="user_query", answer="bot_response")
 loader.load("data/conversations.csv")
 ```
 ---
+### ParquetDatasetLoader
+Loads datasets from Apache Parquet files. Uses lazy batch-based iteration via PyArrow — only one row group is in memory at a time.
+
+#### Methods
+
+##### `load()`
+Loads dataset from a Parquet file or directory (local or S3).
+
+**Signature:**
+```python
+def load(
+ self,
+ path: str
+) -> "DatasetLoader"
+```
+
+**Parameters:**
+- `path` (str): Path to Parquet file or directory (local path or S3 URI). Accepts `.parquet` and `.pq` extensions.
+
+**Returns:**
+- `DatasetLoader`: Self (for method chaining)
+
+**Example:**
+```python
+from amzn_nova_forge.dataset import *
+loader = ParquetDatasetLoader()
+loader.load("s3://my-bucket/data/training.parquet")
+```
+---
+### ArrowDatasetLoader
+Loads datasets from Apache Arrow IPC and Feather files. Supports both IPC Stream and IPC File formats with automatic fallback.
+
+#### Methods
+
+##### `load()`
+Loads dataset from an Arrow IPC or Feather file or directory (local or S3).
+
+**Signature:**
+```python
+def load(
+ self,
+ path: str
+) -> "DatasetLoader"
+```
+
+**Parameters:**
+- `path` (str): Path to Arrow file or directory (local path or S3 URI). Accepts `.arrow`, `.feather`, and `.ipc` extensions.
+
+**Returns:**
+- `DatasetLoader`: Self (for method chaining)
+
+**Example:**
+```python
+from amzn_nova_forge.dataset import *
+loader = ArrowDatasetLoader()
+loader.load("s3://my-bucket/data/training.arrow")
+```
+---
 ### Common DatasetLoader Methods
 These methods are available on all DatasetLoader subclasses.
 
@@ -1184,13 +2263,23 @@ Transforms dataset to the required format for a specific training method and mod
 ```python
 def transform(
  self,
- method: TrainingMethod,
- model: Model
+ method: TransformMethod = TransformMethod.SCHEMA,
+ model: Optional[Model] = None,
+ eval_task: Optional[EvaluationTask] = None,
+ **kwargs,
 ) -> "DatasetLoader"
 ```
 **Parameters:**
-- `method` (TrainingMethod): The training method (e.g., `TrainingMethod.SFT_LORA`)
-- `model` (Model): The Nova model version (e.g., `Model.NOVA_LITE`)
+- `method` (TransformMethod): The transform method (default: `TransformMethod.SCHEMA`). Also accepts a `TrainingMethod` enum for backward compatibility (deprecated).
+- `model` (Optional[Model]): The Nova model version (e.g., `Model.NOVA_LITE_2`). Can be passed positionally for backward compatibility.
+- `eval_task` (Optional[EvaluationTask]): Evaluation task. Can be passed positionally for backward compatibility.
+- `**kwargs`: Method-specific arguments passed to the operation. For `TransformMethod.SCHEMA`:
+  - `training_method` (TrainingMethod): Required. The training method (e.g., `TrainingMethod.SFT_LORA`).
+  - `model` (Model): Required. The target model.
+  - `eval_task` (EvaluationTask): Optional. Required when `training_method` is `EVALUATION`.
+  - `column_mappings` (dict): Optional. Maps standard column names to your dataset's column names.
+  - `multimodal_data_s3_path` (Optional[str]): S3 prefix where images will be uploaded during conversion (e.g., `s3://my-bucket/images/`). Required when the dataset contains `image_url` content blocks in OpenAI format. When saving the output to S3, the save path must use the same bucket.
+  - `multimodal_data_bucket_owner` (Optional[str]): AWS account ID that owns the S3 bucket. If not provided, auto-resolved via STS.
 
 **Returns:**
 - `DatasetLoader`: Self (for method chaining)
@@ -1201,9 +2290,19 @@ def transform(
 
 **Example:**
 ```python
+# Text-only transform
 loader.transform(
- method=TrainingMethod.SFT_LORA,
- model=Model.NOVA_MICRO
+ method=TransformMethod.SCHEMA,
+ training_method=TrainingMethod.SFT_LORA,
+ model=Model.NOVA_MICRO,
+)
+
+# Multimodal transform with automatic S3 image upload
+loader.transform(
+ method=TransformMethod.SCHEMA,
+ training_method=TrainingMethod.SFT_LORA,
+ model=Model.NOVA_LITE_2,
+ multimodal_data_s3_path="s3://my-bucket/images/",
 )
 ```
 ---
@@ -1214,15 +2313,17 @@ Validates dataset when given the user's intended training method and model.
 ```python
 def validate(
  self,
- method: TrainingMethod,
- model: Model,
- eval_task: EvaluationTask (Optional)
+ method: ValidateMethod = ValidateMethod.INVALID_RECORDS,
+ model: Model (Optional),
+ eval_task: EvaluationTask (Optional),
+ platform: Platform (Optional)
 ) -> None
 ```
 **Parameters:**
-- `method` (TrainingMethod): The training method (e.g., `TrainingMethod.SFT_LORA`)
+- `method` (ValidateMethod): The validation method (default: `ValidateMethod.INVALID_RECORDS`). `ValidateMethod.SCHEMA` is deprecated but still supported for backward compatibility.
 - `model` (Model): The Nova model version (e.g., `Model.NOVA_LITE`)
-- `eval_task` (EvaluationTask): The evaluation task (e.g., `EvaluationTask.GEN_QA`)
+- `eval_task` (EvaluationTask): Optional. The evaluation task (e.g., `EvaluationTask.GEN_QA`)
+- `platform` (Platform): Optional. The target platform (`Platform.SMTJ`, `Platform.SMHP`, or `Platform.BEDROCK`). Accepted for forward-compatibility; row-count checks are currently enforced only during `train()`, not `validate()`.
 
 **Returns:**
 - None
@@ -1230,23 +2331,132 @@ def validate(
 **Raises:**
 - `ValueError`: If method/model combination is not supported or validation is unsuccessful.
 
+**Row-Count Checks:**
+
+The following row-count checks are enforced during `train()`. They do not currently run on the `loader.validate()` path.
+
+| Check | Applies To | Limit |
+|---|---|---|
+| Maximum dataset rows | `BEDROCK` / `SFT_LORA`, `SFT_FULL`, `DPO_LORA`, `DPO_FULL`, `CPT` / `NOVA_MICRO`, `NOVA_LITE`, `NOVA_PRO` | 20,000 rows |
+| Minimum dataset rows | `BEDROCK` / `SFT_LORA`, `SFT_FULL`, `DPO_LORA`, `DPO_FULL`, `CPT` / `NOVA_MICRO`, `NOVA_LITE`, `NOVA_PRO` | 8 rows |
+| Maximum dataset rows | `BEDROCK` / `SFT_LORA`, `SFT_FULL` / `NOVA_LITE_2` | 20,000 rows |
+| Minimum dataset rows | `BEDROCK` / `SFT_LORA`, `SFT_FULL` / `NOVA_LITE_2` | 200 rows |
+| Maximum dataset rows | `BEDROCK` / `RFT_LORA`, `RFT_FULL` / `NOVA_LITE_2` | 20,000 rows |
+| Minimum dataset rows | `BEDROCK` / `RFT_LORA`, `RFT_FULL` / `NOVA_LITE_2` | 100 rows |
+
+> **Note:** Recipe-dependent checks (e.g. dataset size ≥ `global_batch_size`) are also automatically enforced during `train()` where the fully-built recipe is available.
+
 **Example:**
 ```python
 loader.validate(
- method=TrainingMethod.SFT_LORA,
+ method=ValidateMethod.INVALID_RECORDS,
+ training_method=TrainingMethod.SFT_LORA,
  model=Model.NOVA_MICRO
 )
 ```
+
 If you're validating a BYOD Evaluation dataset, you need to provide another parameter, `eval_task` to the `validate` function. For example:
 ```
 loader.validate(
-    method=TrainingMethod.EVALUATION,
+    method=ValidateMethod.INVALID_RECORDS,
+    training_method=TrainingMethod.EVALUATION,
     model=Model.NOVA_LITE_2,
     eval_task=EvaluationTask.GEN_QA
 )
 
 >> Validation succeeded for 22 samples on an Evaluation BYOD dataset
 ```
+---
+#### `filter()`
+Queues a data filtering operation on the loader. All filters are lazy — `filter()` records the intent and execution happens when `execute()` is called (or implicitly via `transform()`, `show()`, `save()`). Multiple `filter()` calls can be chained.
+
+**Note:** Different filters work on different data formats. Text filters (`DEFAULT_TEXT_FILTER`, `EXACT_DEDUP`, `FUZZY_DEDUP`) operate on raw data and cannot be called after `transform()`. `INVALID_RECORDS` works on schema-formatted data and logs a warning if `transform()` hasn't been called.
+
+**Signature:**
+```python
+def filter(
+ self,
+ method: FilterMethod = FilterMethod.DEFAULT_TEXT_FILTER,
+ **kwargs,
+) -> "DatasetLoader"
+```
+
+**Text Filters** (below text filters work on raw data with a flat text field):
+
+| Value | Description |
+|---|---|
+| `FilterMethod.DEFAULT_TEXT_FILTER` | Removes records with excessive URL content |
+| `FilterMethod.EXACT_DEDUP` | Removes exact duplicate records by content hash |
+| `FilterMethod.FUZZY_DEDUP` | Removes near-duplicate records using MinHash LSH similarity |
+
+Text filters run on AWS Glue (Ray) and use S3 path chaining. See the [Filtering Data](data_prep.md#filtering-data) section in the data prep guide for kwargs (`output_path`, `runtime_manager`, etc.).
+
+**INVALID_RECORDS Filter** (works on data in the expected format for the target training method):
+
+| Value | Description |
+|---|---|
+| `FilterMethod.INVALID_RECORDS` | Removes records that don't conform to expected input for the target model and training technique (schema validation + reserved keyword detection) |
+
+INVALID_RECORDS runs locally and modifies the loader's dataset in place.
+
+**Parameters for `INVALID_RECORDS` (passed as kwargs):**
+- `training_method` (TrainingMethod): Required. Determines which checks apply.
+- `model` (Model): Required. The target model.
+- `platform` (Platform): Required. The target platform (`Platform.SMTJ`, `Platform.SMHP`, or `Platform.BEDROCK`).
+- `eval_task` (EvaluationTask): Optional. Required when `training_method` is `EVALUATION`.
+
+**Returns:**
+- `DatasetLoader`: Self (for method chaining)
+
+> **Note:** After `INVALID_RECORDS` runs, use `loader.show()` to inspect the filtered dataset or `loader.save()` to persist the results.
+
+**Raises:**
+- `ValueError`: If a text filter (`DEFAULT_TEXT_FILTER`, `EXACT_DEDUP`, `FUZZY_DEDUP`) is called after `transform()`.
+- `ValueError`: If required kwargs (`training_method`, `model`, `platform`) are missing for `INVALID_RECORDS`.
+
+> **Note:** If your data is already in the correct schema format (e.g. previously transformed and saved), you can call `filter(INVALID_RECORDS)` directly after `load()` without `transform()`. A warning will be logged reminding you to verify the data format.
+
+**Example (full chain):**
+```python
+loader.load("data.jsonl")
+loader.filter(
+    method=FilterMethod.DEFAULT_TEXT_FILTER,
+).filter(
+    method=FilterMethod.EXACT_DEDUP,
+)
+loader.transform(
+    method=TransformMethod.SCHEMA,
+    training_method=TrainingMethod.SFT_LORA,
+    model=Model.NOVA_LITE_2,
+)
+loader.filter(
+    method=FilterMethod.INVALID_RECORDS,
+    training_method=TrainingMethod.SFT_LORA,
+    model=Model.NOVA_LITE_2,
+    platform=Platform.SMTJ,
+)
+loader.execute()          # flush the pending filter
+loader.validate(
+    method=ValidateMethod.SCHEMA,
+    training_method=TrainingMethod.SFT_LORA,
+    model=Model.NOVA_LITE_2,
+)
+```
+
+**Example (already-formatted data — skip `transform()`):**
+```python
+loader = JSONLDatasetLoader()
+loader.load("pre_transformed_data.jsonl")
+loader.filter(
+    method=FilterMethod.INVALID_RECORDS,
+    training_method=TrainingMethod.SFT_LORA,
+    model=Model.NOVA_LITE_2,
+    platform=Platform.SMTJ,
+)
+loader.execute()
+```
+
+---
 #### `save_data()`
 Saves the dataset to a local or S3 location.
 **Signature:**
@@ -1637,7 +2847,7 @@ def create_bedrock_execution_role(
 **Example:**
 ```python
 import boto3
-from amzn_nova_forge.iam.iam_role_creator import create_bedrock_execution_role
+from amzn_nova_forge.iam import create_bedrock_execution_role
 
 iam_client = boto3.client("iam")
 create_bedrock_execution_role(iam_client, "role-name", "bedrock_resource", "s3_resource")
@@ -1676,7 +2886,7 @@ def create_sagemaker_execution_role(
 **Example:**
 ```python
 import boto3
-from amzn_nova_forge.iam.iam_role_creator import create_sagemaker_execution_role
+from amzn_nova_forge.iam import create_sagemaker_execution_role
 
 iam_client = boto3.client("iam")
 create_sagemaker_execution_role(
@@ -1699,6 +2909,53 @@ create_sagemaker_execution_role(
     )
 ```
 ---
+#### `ModelDeployResult`
+Result of creating a Bedrock or Sagemaker model.
+
+**Fields:**
+- `model_arn` (str): The Bedrock custom model ARN or SageMaker model ARN.
+- `model_name` (str): The model name.
+- `escrow_uri` (str): S3 artifacts path used to create the model.
+- `created_at` (datetime): UTC timestamp when the model was created.
+
+**Properties:**
+- `platform` (Optional[str]): Returns `"bedrock"` or `"sagemaker"` based on strict ARN format validation, or `None` for unrecognized ARNs.
+- `status` (ModelStatus): Queries the model's current status via live API call. Returns `CREATING`, `ACTIVE`, `FAILED`, or `UNKNOWN`. Logs a warning if no AWS client is available.
+
+**Class Methods:**
+- `from_arn(model_arn, bedrock_client=None, sagemaker_client=None)` — Reconstruct from an existing model ARN. Detects platform from ARN format, calls the appropriate describe API, and recovers `escrow_uri` from tags. Works for both Bedrock and SageMaker ARNs.
+- `load(file_path)` — Load from a JSON file saved by `dump()`. Automatically creates fresh AWS clients for status checking.
+
+**Instance Methods:**
+- `dump(file_path=None, file_name=None)` — Save to JSON file for later use with `load()`.
+
+**Example:**
+```python
+# Create and persist
+publish = customizer.create_custom_model(job_result=training_result)
+publish.dump(file_path="./results/")
+
+# Load and check status
+loaded = ModelDeployResult.load("./results/my-model_deploy_result.json")
+print(loaded.platform)  # "bedrock" or "sagemaker"
+print(loaded.status)     # ModelStatus.ACTIVE
+
+# Reconstruct from ARN
+result = ModelDeployResult.from_arn(
+  "arn:aws:bedrock:us-east-1:123456789012:custom-model/my-model"
+)
+```
+
+#### `ModelStatus`
+Platform-independent model status enum.
+
+**Values:**
+- `ModelStatus.CREATING` — Model is still being created (Bedrock only).
+- `ModelStatus.ACTIVE` — Model is ready for deployment.
+- `ModelStatus.FAILED` — Model creation failed.
+- `ModelStatus.UNKNOWN` — Status could not be determined (no client, unrecognized ARN, or unexpected API response).
+---
+
 ## Utility Functions
 
 ### verify_reward_function()
@@ -1737,7 +2994,7 @@ def verify_reward_function(
 **Example**
 ```python
 from amzn_nova_forge import verify_reward_function
-from amzn_nova_forge.model.model_enums import Platform
+from amzn_nova_forge.model import Platform
 
 # Test with Lambda ARN (platform required for Lambda ARNs)
 result = verify_reward_function(
@@ -1848,7 +3105,7 @@ def from_job_id(
 **Example:**
 ```python
 from amzn_nova_forge.monitor import CloudWatchLogMonitor
-from amzn_nova_forge.model.model_enums import Platform
+from amzn_nova_forge.model import Platform
 
 # SMTJ
 monitor = CloudWatchLogMonitor.from_job_id(
@@ -1984,7 +3241,7 @@ def plot_metrics(
 **Example:**
 ```python
 from amzn_nova_forge.monitor import CloudWatchLogMonitor
-from amzn_nova_forge.model.model_enums import Platform, TrainingMethod
+from amzn_nova_forge.model import Platform, TrainingMethod
 
 # Create monitor from a training result
 monitor = CloudWatchLogMonitor.from_job_result(job_result=training_result)
@@ -2504,15 +3761,15 @@ When you enable notifications for a job, the SDK automatically:
 The simplest way to enable notifications is through the job result object:
 
 ```python
-from amzn_nova_forge_sdk import *
+from amzn_nova_forge import *
 
 # Start a training job
 customizer = NovaModelCustomizer(
     model=Model.NOVA_MICRO,
     method=TrainingMethod.SFT_LORA,
     infra=SMTJRuntimeManager(instance_type="ml.p5.48xlarge", instance_count=2),
-    data_s3_path="s3://my-bucket/training-data/",
-    output_s3_path="s3://my-bucket/output/"
+    data_s3_path="s3://my-bucket/training-data/data.jsonl",
+    output_s3_path="s3://my-bucket/output"
 )
 
 result = customizer.train(job_name="my-training-job")
@@ -2522,7 +3779,7 @@ result.enable_job_notifications(
     emails=["user@example.com", "team@example.com"],
     region="us-west-2", # Optional
     kms_key_id="1234abcd-12ab-34cd-56ef-1234567890ab", # Optional customer KMS key
-    output_s3_path="s3://my-bucket/custom-output-path/" # Optional output path
+    output_s3_path="s3://my-bucket/custom-output-path" # Optional output path
 )
 ```
 **Note:** Only provide `output_s3_path` if the 'JobResult' object doesn't have 'model_artifacts' (will be called out when you run the function).

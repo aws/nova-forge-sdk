@@ -2,8 +2,8 @@ import unittest
 from datetime import datetime
 from unittest.mock import Mock, patch
 
-from amzn_nova_forge.model.model_enums import Platform, TrainingMethod
-from amzn_nova_forge.model.result.job_result import (
+from amzn_nova_forge.core.enums import Platform, TrainingMethod
+from amzn_nova_forge.core.result.job_result import (
     BaseJobResult,
     SMHPStatusManager,
     SMTJStatusManager,
@@ -201,9 +201,7 @@ class TestCloudWatchLogMonitor(unittest.TestCase):
         platform = Platform.SMTJ
         started_time = datetime(2023, 1, 1, 12, 0, 0)
 
-        with patch.object(
-            CloudWatchLogMonitor, "__init__", return_value=None
-        ) as mock_init:
+        with patch.object(CloudWatchLogMonitor, "__init__", return_value=None) as mock_init:
             monitor = CloudWatchLogMonitor.from_job_id(
                 job_id=job_id, platform=platform, started_time=started_time
             )
@@ -220,9 +218,7 @@ class TestCloudWatchLogMonitor(unittest.TestCase):
         cluster_name = "test-cluster"
         namespace = "test-namespace"
 
-        with patch.object(
-            CloudWatchLogMonitor, "__init__", return_value=None
-        ) as mock_init:
+        with patch.object(CloudWatchLogMonitor, "__init__", return_value=None) as mock_init:
             monitor = CloudWatchLogMonitor.from_job_id(
                 job_id=job_id,
                 platform=platform,
@@ -246,9 +242,7 @@ class TestCloudWatchLogMonitor(unittest.TestCase):
 
         mock_client = Mock()
 
-        with patch.object(
-            CloudWatchLogMonitor, "__init__", return_value=None
-        ) as mock_init:
+        with patch.object(CloudWatchLogMonitor, "__init__", return_value=None) as mock_init:
             monitor = CloudWatchLogMonitor.from_job_result(
                 job_result=mock_job_result, cloudwatch_logs_client=mock_client
             )
@@ -273,9 +267,7 @@ class TestCloudWatchLogMonitor(unittest.TestCase):
 
         mock_client = Mock()
 
-        with patch.object(
-            CloudWatchLogMonitor, "__init__", return_value=None
-        ) as mock_init:
+        with patch.object(CloudWatchLogMonitor, "__init__", return_value=None) as mock_init:
             monitor = CloudWatchLogMonitor.from_job_result(
                 job_result=mock_job_result, cloudwatch_logs_client=mock_client
             )
@@ -888,9 +880,7 @@ class TestCloudWatchLogMonitor(unittest.TestCase):
         )
         logs = [{"message": "global_step: 1 | reduced_train_loss: 0.5"}]
         with self.assertRaises(NotImplementedError):
-            monitor.strategy.get_metrics(
-                TrainingMethod.SFT_FULL, logs, ["bogus_metric"]
-            )
+            monitor.strategy.get_metrics(TrainingMethod.SFT_FULL, logs, ["bogus_metric"])
 
     @patch("amzn_nova_forge.monitor.log_monitor.pyplot")
     def test_plot_metrics_logs_already_cached(self, mock_pyplot):
@@ -937,9 +927,7 @@ class TestCloudWatchLogMonitor(unittest.TestCase):
             ]
             return monitor.logs
 
-        with patch.object(
-            monitor, "get_logs", side_effect=fake_get_logs
-        ) as mock_get_logs:
+        with patch.object(monitor, "get_logs", side_effect=fake_get_logs) as mock_get_logs:
             monitor.plot_metrics(TrainingMethod.SFT_FULL, ["training_loss"])
             mock_get_logs.assert_called_once()
 
@@ -982,7 +970,7 @@ class TestCloudWatchLogMonitor(unittest.TestCase):
     @patch("amzn_nova_forge.monitor.log_monitor.pyplot")
     def test_plot_metrics_job_in_progress_refreshes_logs(self, mock_pyplot):
         """When job is in-progress, plot_metrics calls get_logs even if logs are cached."""
-        from amzn_nova_forge.model.result.job_result import JobStatus
+        from amzn_nova_forge.core.result.job_result import JobStatus
 
         self.mock_client.describe_log_streams.return_value = {
             "logStreams": [{"logStreamName": "test-job-123/algo-1-1234567890"}]
@@ -1008,9 +996,7 @@ class TestCloudWatchLogMonitor(unittest.TestCase):
             ]
             return monitor.logs
 
-        with patch.object(
-            monitor, "get_logs", side_effect=fake_get_logs
-        ) as mock_get_logs:
+        with patch.object(monitor, "get_logs", side_effect=fake_get_logs) as mock_get_logs:
             monitor.plot_metrics(TrainingMethod.SFT_FULL, ["training_loss"])
             mock_get_logs.assert_called_once()
 

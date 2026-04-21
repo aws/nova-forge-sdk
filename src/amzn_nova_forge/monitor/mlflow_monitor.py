@@ -22,6 +22,7 @@ from typing import Optional
 
 import boto3
 
+from amzn_nova_forge.telemetry import Feature, _telemetry_emitter
 from amzn_nova_forge.util.logging import logger
 from amzn_nova_forge.util.mlflow import (
     get_default_mlflow_tracking_uri,
@@ -112,6 +113,7 @@ class MLflowMonitor:
 
         return config
 
+    @_telemetry_emitter(Feature.MONITOR, "get_presigned_url")
     def get_presigned_url(
         self,
         session_expiration_duration_in_seconds: int = 43200,
@@ -181,9 +183,7 @@ class MLflowMonitor:
 
             presigned_url = response.get("AuthorizedUrl")
             if not presigned_url:
-                raise RuntimeError(
-                    "Failed to generate presigned URL: No URL returned from API"
-                )
+                raise RuntimeError("Failed to generate presigned URL: No URL returned from API")
 
             logger.info(
                 f"Generated presigned MLflow URL (expires in {expires_in_seconds}s, "
@@ -192,6 +192,4 @@ class MLflowMonitor:
             return presigned_url
 
         except Exception as e:
-            raise RuntimeError(
-                f"Failed to generate presigned URL for MLflow tracking server: {e}"
-            )
+            raise RuntimeError(f"Failed to generate presigned URL for MLflow tracking server: {e}")

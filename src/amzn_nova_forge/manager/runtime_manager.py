@@ -16,18 +16,14 @@ import json
 import os
 import re
 import subprocess
-import tempfile
-import uuid
+import time
 import zipfile
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import boto3
-import sagemaker
 import yaml
-from botocore.exceptions import ClientError
-from sagemaker.ai_registry.dataset import DataSet
+from botocore.exceptions import ClientError, NoRegionError
 from sagemaker.core.helper.session_helper import Session, get_execution_role
 from sagemaker.core.shapes import (
     OutputDataConfig,
@@ -42,15 +38,28 @@ from sagemaker.core.training.configs import (
 )
 from sagemaker.train.model_trainer import ModelTrainer
 
-from amzn_nova_forge.model.model_enums import Model, Platform, TrainingMethod
-from amzn_nova_forge.recipe.recipe_config import HYPERPOD_RECIPE_PATH
+from amzn_nova_forge.core.constants import (
+    BYOD_AVAILABLE_EVAL_TASKS,
+    HYPERPOD_RECIPE_PATH,
+    SERVERLESS_CUSTOM_SCORER_EVAL_TASKS,
+)
+from amzn_nova_forge.core.enums import Model, Platform, TrainingMethod
+from amzn_nova_forge.core.runtime import RuntimeManager as RuntimeManagerBase
+from amzn_nova_forge.core.types import JobConfig
+from amzn_nova_forge.telemetry import Feature, _telemetry_emitter
 from amzn_nova_forge.util.bedrock import (
     get_customization_type,
     parse_bedrock_recipe_config,
     resolve_base_model_identifier,
 )
+from amzn_nova_forge.util.hub_util import get_hub_content
 from amzn_nova_forge.util.logging import logger
 from amzn_nova_forge.util.reward_verifier import verify_reward_function
+from amzn_nova_forge.util.sagemaker import (
+    extract_lambda_arn_from_hub_content,
+    register_lambda_as_hub_content,
+)
+from amzn_nova_forge.validation.endpoint_validator import is_sagemaker_arn
 
 # Maps TrainingMethod to (CustomizationTechnique, Peft|None) for ServerlessJobConfig
 _METHOD_TO_SERVERLESS_CONFIG: Dict[TrainingMethod, tuple[str, Optional[str]]] = {
@@ -58,53 +67,84 @@ _METHOD_TO_SERVERLESS_CONFIG: Dict[TrainingMethod, tuple[str, Optional[str]]] = 
     TrainingMethod.SFT_FULL: ("SFT", None),
     TrainingMethod.DPO_LORA: ("DPO", "LORA"),
     TrainingMethod.DPO_FULL: ("DPO", None),
-    # TrainingMethod.RFT_LORA: ("RLVR", "LORA"), # TODO: Add RLVR support
-    # TrainingMethod.RFT_FULL: ("RLVR", None),
+    TrainingMethod.RFT_LORA: ("RLVR", "LORA"),
+    # TrainingMethod.RFT_FULL: ("RLVR", None),  # TODO: Add RLVR full support
 }
 DEFAULT_SMTJ_JOB_MAX_RUNTIME = 86400  # 1 day
 
 
-@dataclass
-class JobConfig:
-    job_name: str
-    image_uri: str
-    recipe_path: str
-    output_s3_path: Optional[str] = None
-    data_s3_path: Optional[str] = None
-    input_s3_data_type: Optional[str] = None
-    validation_data_s3_path: Optional[str] = (
-        None  # Validation data S3 path (for CPT and Bedrock)
+def _is_hub_content_arn(arn: Optional[str]) -> bool:
+    """Return True if the ARN is a SageMaker hub-content ARN."""
+    from amzn_nova_forge.validation.validator import (
+        is_hub_content_arn,  # lazy — avoids circular import at module level
     )
-    rft_lambda_arn: Optional[str] = None  # RFT Lambda ARN (for RFT jobs on Bedrock)
-    mlflow_tracking_uri: Optional[str] = None  # MLflow tracking server ARN
-    mlflow_experiment_name: Optional[str] = None
-    mlflow_run_name: Optional[str] = None
-    method: Optional[TrainingMethod] = None  # Training method (required for Bedrock)
-    # TODO: The mlflow config is populated in recipe for both SMTJ and SMHP but will only work fro SMHP as SMTJ support for mlfow is only through boto3, fix this wit sagemaker 3 update
+
+    return is_hub_content_arn(arn)
 
 
-class RuntimeManager(ABC):
-    def __init__(
-        self,
-        instance_type: Optional[str],
-        instance_count: Optional[int],
-        kms_key_id: Optional[str],
-        rft_lambda: Optional[str] = None,
-    ):
-        self._instance_type = instance_type
-        self._instance_count = instance_count
-        self._kms_key_id = kms_key_id
-        self._rft_lambda: Optional[str] = None
-        self._rft_lambda_arn: Optional[str] = None
-        # Use the property setter so _rft_lambda_arn is initialised correctly
-        self.rft_lambda = rft_lambda
+@dataclass
+class DataPrepJobConfig(JobConfig):
+    """Job configuration for data preparation pipelines.
 
-    @property
-    def rft_lambda(self) -> Optional[str]:
-        """Lambda ARN or local .py file path set on this manager."""
-        return self._rft_lambda
+    Extends JobConfig, mapping:
+        - job_name -> Glue job name
+        - data_s3_path -> input_path
+        - output_s3_path -> output_path
 
-    @rft_lambda.setter
+    Additional data-prep-specific fields:
+        - input_format / output_format: "parquet" or "jsonl"
+        - text_field: Column name containing the text to process
+        - extra_args: Additional kwargs forwarded to the pipeline builder.
+            Operation-specific keys (e.g. ``pipeline_id``) are passed here.
+    """
+
+    input_format: str = "parquet"
+    output_format: str = "parquet"
+    text_field: str = "text"
+    extra_args: Dict[str, Any] = field(default_factory=dict)
+
+
+_account_id_cache: Optional[str] = None
+
+
+def _get_caller_account_id(region: str = "us-east-1") -> str:
+    """Return the AWS account ID of the caller, cached to avoid redundant STS calls.
+
+    Only caches successful results — transient STS failures return "*" without poisoning
+    the cache, so subsequent calls will retry.
+    """
+    global _account_id_cache
+    if _account_id_cache is None:
+        try:
+            _account_id_cache = boto3.client("sts", region_name=region).get_caller_identity()[
+                "Account"
+            ]
+        except Exception:
+            logger.warning(
+                "Failed to retrieve caller account ID via STS in region %s; "
+                "falling back to wildcard '*'",
+                region,
+                exc_info=True,
+            )
+            return "*"
+    return _account_id_cache
+
+
+class RuntimeManager(RuntimeManagerBase):
+    """Extends core ABC with ARN validation and concrete methods.
+
+    The ``rft_lambda`` setter adds validation via a lazy import from
+    ``validation.validator``.  Concrete helper methods (deploy_lambda,
+    validate_lambda) also live here because they depend on modules
+    outside ``core/``.
+    """
+
+    # Override the parent's rft_lambda setter to add ARN validation.
+    # This replaces only the setter while inheriting the getter from
+    # the base RuntimeManager.  Python requires referencing the parent
+    # property explicitly — using @rft_lambda.setter here would fail
+    # because rft_lambda isn't defined on this class.
+    @RuntimeManagerBase.rft_lambda.setter  # type: ignore[attr-defined]
     def rft_lambda(self, value: Optional[str]) -> None:
         self._rft_lambda = value
         # Keep the resolved ARN in sync: set immediately when value is already an ARN,
@@ -115,120 +155,12 @@ class RuntimeManager(ABC):
 
         if value and is_lambda_arn(value):
             self._rft_lambda_arn = value
+        elif value and _is_hub_content_arn(value):
+            self._rft_lambda_arn = value
         else:
             self._rft_lambda_arn = None
 
-    @property
-    def rft_lambda_arn(self) -> Optional[str]:
-        """Resolved Lambda ARN. Set after deploy_lambda() is called, or immediately if rft_lambda is an ARN."""
-        return self._rft_lambda_arn
-
-    @rft_lambda_arn.setter
-    def rft_lambda_arn(self, value: Optional[str]) -> None:
-        self._rft_lambda_arn = value
-
-    @property
-    def instance_type(self) -> Optional[str]:
-        """Type of instance (e.g., ml.p5.48xlarge)."""
-        return self._instance_type
-
-    @property
-    def instance_count(self) -> Optional[int]:
-        """Number of instances used."""
-        return self._instance_count
-
-    # Needed to update the instance_count if user decides to override its value
-    @instance_count.setter
-    def instance_count(self, value: Optional[int]) -> None:
-        self._instance_count = value
-
-    @property
-    def kms_key_id(self) -> Optional[str]:
-        """Optional KMS Key Id to use in S3 Bucket encryption, training jobs and deployments."""
-        return self._kms_key_id
-
-    @property
-    @abstractmethod
-    def platform(self) -> Platform:
-        """The execution platform for this runtime manager."""
-        pass
-
-    @abstractmethod
-    def setup(self) -> None:
-        """Prepare environment and dependencies"""
-        pass
-
-    @abstractmethod
-    def execute(self, job_config: JobConfig) -> str:
-        """Launch a job and return a job id."""
-        pass
-
-    @abstractmethod
-    def cleanup(self, job_id: str) -> None:
-        """Tear down or release resources."""
-        pass
-
-    @classmethod
-    def _s3_bucket_arn_from_path(cls, s3_path):
-        """Extract S3 bucket ARN from a single S3 path."""
-        if not s3_path:
-            return None
-        bucket = s3_path.split("/")[2]
-        return f"arn:aws:s3:::{bucket}"
-
-    @classmethod
-    def _s3_object_arn_from_path(cls, s3_path):
-        """Extract S3 object ARN from a single S3 path."""
-        if not s3_path:
-            return None
-        bucket = s3_path.split("/")[2]
-        # Allow access to the specific path and subdirectories
-        if len(s3_path.split("/")) > 3:
-            # Has a path component, use it
-            path = "/".join(s3_path.split("/")[3:])
-            return f"arn:aws:s3:::{bucket}/{path}*"
-        else:
-            # Just bucket, allow all objects
-            return f"arn:aws:s3:::{bucket}/*"
-
-    @classmethod
-    def required_calling_role_permissions(cls, data_s3_path=None, output_s3_path=None):
-        """Base permissions required by all runtime managers."""
-        permissions = []
-
-        # Collect unique bucket ARNs
-        bucket_arns = set()
-        for s3_path in [data_s3_path, output_s3_path]:
-            bucket_arn = cls._s3_bucket_arn_from_path(s3_path)
-            if bucket_arn:
-                bucket_arns.add(bucket_arn)
-
-        # Add bucket-level permissions
-        for bucket_arn in bucket_arns:
-            permissions.extend(
-                [
-                    ("s3:CreateBucket", bucket_arn),
-                    ("s3:ListBucket", bucket_arn),
-                ]
-            )
-
-        # Add input-specific permissions (read-only)
-        if data_s3_path:
-            data_object_arn = cls._s3_object_arn_from_path(data_s3_path)
-            permissions.append(("s3:GetObject", data_object_arn))
-
-        # Add output-specific permissions (read-write)
-        if output_s3_path:
-            output_object_arn = cls._s3_object_arn_from_path(output_s3_path)
-            permissions.extend(
-                [
-                    ("s3:GetObject", output_object_arn),
-                    ("s3:PutObject", output_object_arn),
-                ]
-            )
-
-        return permissions
-
+    @_telemetry_emitter(Feature.INFRA, "deploy_lambda")
     def deploy_lambda(
         self,
         lambda_name: Optional[str] = None,
@@ -270,9 +202,7 @@ class RuntimeManager(ABC):
         lambda_source = self.rft_lambda
 
         if lambda_name is None:
-            lambda_name = os.path.splitext(os.path.basename(lambda_source))[0].replace(
-                "_", "-"
-            )
+            lambda_name = os.path.splitext(os.path.basename(lambda_source))[0].replace("_", "-")
 
         platform = self.platform
 
@@ -305,9 +235,7 @@ class RuntimeManager(ABC):
 
         try:
             lambda_client.get_function(FunctionName=lambda_name)
-            logger.info(
-                f"Lambda '{lambda_name}' already exists — updating function code."
-            )
+            logger.info(f"Lambda '{lambda_name}' already exists — updating function code.")
             response = lambda_client.update_function_code(
                 FunctionName=lambda_name,
                 ZipFile=zip_bytes,
@@ -332,6 +260,7 @@ class RuntimeManager(ABC):
 
         return lambda_arn
 
+    @_telemetry_emitter(Feature.INFRA, "validate_lambda")
     def validate_lambda(
         self,
         data_s3_path: str,
@@ -354,13 +283,11 @@ class RuntimeManager(ABC):
             ValueError: If rft_lambda is not set, or if validation fails.
         """
         lambda_arn = self.rft_lambda_arn
-        from amzn_nova_forge.validation.validator import (
-            is_lambda_arn,  # avoid circular import
-        )
 
+        # rft_lambda is a local file only if it's not any kind of ARN
         lambda_source = (
             self.rft_lambda
-            if self.rft_lambda and not is_lambda_arn(self.rft_lambda)
+            if self.rft_lambda and not (self.rft_lambda.startswith("arn:"))
             else None
         )
 
@@ -396,9 +323,7 @@ class RuntimeManager(ABC):
             )
         else:
             # Validate local file without deploying — executes lambda_handler directly
-            logger.info(
-                f"Validating local lambda source '{lambda_source}' without deployment..."
-            )
+            logger.info(f"Validating local lambda source '{lambda_source}' without deployment...")
             sample_data = []
             if data_s3_path:
                 from amzn_nova_forge.validation.validator import _parse_s3_uri
@@ -409,9 +334,7 @@ class RuntimeManager(ABC):
                         f"Invalid S3 path: {data_s3_path}. Expected format: s3://bucket/key"
                     )
                 bucket, key = s3_parts
-                logger.info(
-                    f"Loading up to {validation_samples} sample(s) from {data_s3_path}"
-                )
+                logger.info(f"Loading up to {validation_samples} sample(s) from {data_s3_path}")
                 try:
                     s3_client = boto3.client("s3", region_name=region)
                     response = s3_client.get_object(Bucket=bucket, Key=key)
@@ -421,14 +344,10 @@ class RuntimeManager(ABC):
                         try:
                             sample_data.append(json.loads(line.decode("utf-8")))
                         except json.JSONDecodeError as e:
-                            logger.warning(
-                                f"Skipping malformed JSON on line {i + 1}: {e}"
-                            )
+                            logger.warning(f"Skipping malformed JSON on line {i + 1}: {e}")
                     logger.info(f"Loaded {len(sample_data)} sample(s) from S3")
                 except Exception as e:
-                    raise ValueError(
-                        f"Failed to read samples from {data_s3_path}: {e}"
-                    ) from e
+                    raise ValueError(f"Failed to read samples from {data_s3_path}: {e}") from e
 
             verify_reward_function(
                 reward_function=lambda_source or "",
@@ -439,6 +358,22 @@ class RuntimeManager(ABC):
 
 
 class SMTJRuntimeManager(RuntimeManager):
+    """Runtime manager for SageMaker Training Jobs.
+
+    Standard SMTJ training manager using the SageMaker SDK ``ModelTrainer``.
+
+    Args:
+        instance_type: EC2 instance type.
+        instance_count: Number of instances.
+        execution_role: IAM role ARN.  Auto-resolved when ``None``.
+        kms_key_id: Optional KMS key for encryption.
+        encrypt_inter_container_traffic: Encrypt traffic between containers.
+        subnets: Optional VPC subnets.
+        security_group_ids: Optional VPC security group IDs.
+        max_job_runtime: Maximum runtime in seconds.
+        rft_lambda: Optional RFT reward Lambda ARN or file path.
+    """
+
     def __init__(
         self,
         instance_type: str,
@@ -460,21 +395,21 @@ class SMTJRuntimeManager(RuntimeManager):
         self.max_job_runtime = max_job_runtime
 
         super().__init__(instance_type, instance_count, kms_key_id, rft_lambda)
+
         self.setup()
 
     @classmethod
     def required_calling_role_permissions(cls, data_s3_path=None, output_s3_path=None):
         """Required permissions for SMTJ calling role operations and execution role validation."""
         # Start with base S3 permissions
-        permissions = super().required_calling_role_permissions(
-            data_s3_path, output_s3_path
-        )
+        permissions = super().required_calling_role_permissions(data_s3_path, output_s3_path)
 
         # Add SMTJ-specific permissions
         permissions.extend(
             [
                 ("sagemaker:CreateTrainingJob", "*"),
                 ("sagemaker:DescribeTrainingJob", "*"),
+                ("sagemaker:StopTrainingJob", "*"),
                 "iam:GetRole",
                 "iam:PassRole",
                 "iam:GetPolicy",
@@ -490,6 +425,10 @@ class SMTJRuntimeManager(RuntimeManager):
     @property
     def platform(self) -> Platform:
         return Platform.SMTJ
+
+    @property
+    def runtime_name(self) -> str:
+        return "SageMaker Training Job"
 
     def setup(self) -> None:
         boto_session = boto3.session.Session()
@@ -530,9 +469,7 @@ class SMTJRuntimeManager(RuntimeManager):
                 subnets=self.subnets,
                 security_group_ids=self.security_group_ids,
             )
-            stopping_condition = StoppingCondition(
-                max_runtime_in_seconds=self.max_job_runtime
-            )
+            stopping_condition = StoppingCondition(max_runtime_in_seconds=self.max_job_runtime)
 
             trainer_config = {
                 "training_recipe": job_config.recipe_path,
@@ -570,9 +507,7 @@ class SMTJRuntimeManager(RuntimeManager):
                 SortOrder="Descending",
                 MaxResults=1,
             )
-            unique_job_name = list_jobs_response["TrainingJobSummaries"][0][
-                "TrainingJobName"
-            ]
+            unique_job_name = list_jobs_response["TrainingJobSummaries"][0]["TrainingJobName"]
             return unique_job_name
 
         except Exception as e:
@@ -614,9 +549,7 @@ class SMHPRuntimeManager(RuntimeManager):
     def required_calling_role_permissions(cls, data_s3_path=None, output_s3_path=None):
         """Required permissions for HyperPod operations."""
         # Start with base S3 permissions
-        permissions = super().required_calling_role_permissions(
-            data_s3_path, output_s3_path
-        )
+        permissions = super().required_calling_role_permissions(data_s3_path, output_s3_path)
 
         # Add SMHP-specific permissions
         permissions.extend(
@@ -624,17 +557,19 @@ class SMHPRuntimeManager(RuntimeManager):
                 (
                     "sagemaker:DescribeCluster",
                     lambda infra: (
-                        f"arn:aws:sagemaker:{infra.region}:*:cluster/{infra.cluster_name}"
+                        f"arn:aws:sagemaker:{infra.region}:{_get_caller_account_id(infra.region)}:cluster/{infra.cluster_name}"
                     ),
                 ),
                 (
                     "eks:DescribeCluster",
-                    lambda infra: f"arn:aws:eks:{infra.region}:*:cluster/*",
+                    lambda infra: (
+                        f"arn:aws:eks:{infra.region}:{_get_caller_account_id(infra.region)}:cluster/*"
+                    ),
                 ),
                 (
                     "eks:ListAddons",
                     lambda infra: (
-                        f"arn:aws:eks:{infra.region}:*:cluster/{infra.cluster_name}"
+                        f"arn:aws:eks:{infra.region}:{_get_caller_account_id(infra.region)}:cluster/{infra.cluster_name}"
                     ),
                 ),
                 ("sagemaker:ListClusters", "*"),
@@ -646,6 +581,10 @@ class SMHPRuntimeManager(RuntimeManager):
     @property
     def platform(self) -> Platform:
         return Platform.SMHP
+
+    @property
+    def runtime_name(self) -> str:
+        return "SageMaker HyperPod"
 
     def setup(self) -> None:
         boto_session = boto3.session.Session()
@@ -778,9 +717,7 @@ class SMHPRuntimeManager(RuntimeManager):
 
         # Get current cluster configuration
         try:
-            describe_response = sagemaker_client.describe_cluster(
-                ClusterName=self.cluster_name
-            )
+            describe_response = sagemaker_client.describe_cluster(ClusterName=self.cluster_name)
         except ClientError as e:
             logger.error(f"Failed to describe cluster '{self.cluster_name}': {e}")
             raise
@@ -796,9 +733,7 @@ class SMHPRuntimeManager(RuntimeManager):
             raise ValueError(error_msg)
 
         # Find the Restricted Instance Group (RIG)
-        restricted_instance_groups = describe_response.get(
-            "RestrictedInstanceGroups", []
-        )
+        restricted_instance_groups = describe_response.get("RestrictedInstanceGroups", [])
         target_group = None
 
         for group in restricted_instance_groups:
@@ -822,35 +757,45 @@ class SMHPRuntimeManager(RuntimeManager):
             f"({instance_type}) from {current_count} to {target_instance_count} instances"
         )
 
-        # Update the cluster with new instance count, preserves other RIG configurations
+        # Update the cluster with new instance count.
         try:
+            # Optional fields to preserve from describe_cluster response
+            optional_fields = [
+                "ThreadsPerCore",
+                "InstanceStorageConfigs",
+                "OnStartDeepHealthChecks",
+                "TrainingPlanArn",
+                "OverrideVpcConfig",
+                "ScheduledUpdateConfig",
+                "EnvironmentConfig",
+            ]
+
             all_groups = []
             for group in restricted_instance_groups:
                 group_params = {
-                    "InstanceGroupName": group["InstanceGroupName"],
-                    "InstanceType": group["InstanceType"],
                     "InstanceCount": (
                         target_instance_count
                         if group["InstanceGroupName"] == instance_group_name
                         else group["CurrentCount"]
                     ),
+                    "InstanceGroupName": group["InstanceGroupName"],
+                    "InstanceType": group["InstanceType"],
                     "ExecutionRole": group["ExecutionRole"],
                 }
 
-                # Include OverrideVpcConfig if present (immutable field)
-                if "OverrideVpcConfig" in group:
-                    group_params["OverrideVpcConfig"] = group["OverrideVpcConfig"]
-
-                # Build EnvironmentConfig with only FSxLustreConfig if present
-                env_config = {}
-                if (
-                    "EnvironmentConfig" in group
-                    and "FSxLustreConfig" in group["EnvironmentConfig"]
-                ):
-                    env_config["FSxLustreConfig"] = group["EnvironmentConfig"][
-                        "FSxLustreConfig"
-                    ]
-                group_params["EnvironmentConfig"] = env_config
+                # Copy optional fields if present
+                for field in optional_fields:
+                    if field in group:
+                        if field == "EnvironmentConfig":
+                            env_config = {}
+                            # Only pass FSxLustreConfig which is accepted by the UpdateCluster API
+                            if "FSxLustreConfig" in group["EnvironmentConfig"]:
+                                env_config["FSxLustreConfig"] = group["EnvironmentConfig"][
+                                    "FSxLustreConfig"
+                                ]
+                            group_params[field] = env_config
+                        else:
+                            group_params[field] = group[field]
 
                 all_groups.append(group_params)
 
@@ -859,9 +804,7 @@ class SMHPRuntimeManager(RuntimeManager):
                 RestrictedInstanceGroups=all_groups,
             )
 
-            logger.info(
-                f"Successfully initiated scaling for cluster '{self.cluster_name}'. "
-            )
+            logger.info(f"Successfully initiated scaling for cluster '{self.cluster_name}'. ")
 
             return {
                 "ClusterArn": update_response["ClusterArn"],
@@ -893,9 +836,7 @@ class SMHPRuntimeManager(RuntimeManager):
 
         # Get current cluster configuration
         try:
-            describe_response = sagemaker_client.describe_cluster(
-                ClusterName=self.cluster_name
-            )
+            describe_response = sagemaker_client.describe_cluster(ClusterName=self.cluster_name)
         except ClientError as e:
             logger.error(f"Failed to describe cluster '{self.cluster_name}': {e}")
             raise
@@ -913,9 +854,7 @@ class SMHPRuntimeManager(RuntimeManager):
         ]
 
         # Log output to terminal
-        logger.info(
-            f"Found {len(rig_output)} instance group(s) in cluster '{self.cluster_name}':"
-        )
+        logger.info(f"Found {len(rig_output)} instance group(s) in cluster '{self.cluster_name}':")
         for group in rig_output:
             logger.info(
                 f"  - {group['InstanceGroupName']}: {group['InstanceType']} "
@@ -958,6 +897,10 @@ class BedrockRuntimeManager(RuntimeManager):
     def platform(self) -> Platform:
         return Platform.BEDROCK
 
+    @property
+    def runtime_name(self) -> str:
+        return "Bedrock"
+
     def setup(self) -> None:
         """Initialize Bedrock client and session.
 
@@ -971,9 +914,7 @@ class BedrockRuntimeManager(RuntimeManager):
             boto_session = boto3.session.Session()
             self.region = boto_session.region_name or "us-east-1"
             self.bedrock_client = boto3.client("bedrock", region_name=self.region)
-            logger.info(
-                f"Successfully initialized Bedrock client in region {self.region}"
-            )
+            logger.info(f"Successfully initialized Bedrock client in region {self.region}")
         except Exception as e:
             logger.error(f"Failed to initialize Bedrock client: {e}")
             raise
@@ -1002,15 +943,11 @@ class BedrockRuntimeManager(RuntimeManager):
                 str, Any
             ] = {}  # RFT hyperparameters use native types (int, float, str)
             if job_config.recipe_path is not None:
-                recipe_data = parse_bedrock_recipe_config(
-                    job_config.recipe_path, method
-                )
+                recipe_data = parse_bedrock_recipe_config(job_config.recipe_path, method)
                 hyperparameters = recipe_data["hyperparameters"]
                 rft_hyperparameters = recipe_data["rft_hyperparameters"]
             else:
-                logger.info(
-                    "No recipe provided - Bedrock will use default hyperparameters"
-                )
+                logger.info("No recipe provided - Bedrock will use default hyperparameters")
 
             # Get customization type from training method
             customization_type = get_customization_type(method)
@@ -1056,9 +993,7 @@ class BedrockRuntimeManager(RuntimeManager):
 
             # Add outputDataConfig with output_s3_path (required)
             if job_config.output_s3_path is None:
-                raise ValueError(
-                    "output_s3_path is required for Bedrock customization jobs"
-                )
+                raise ValueError("output_s3_path is required for Bedrock customization jobs")
 
             output_data_config: Dict[str, str] = {"s3Uri": job_config.output_s3_path}
 
@@ -1071,10 +1006,7 @@ class BedrockRuntimeManager(RuntimeManager):
             # Add validationDataConfig only if validation_data_s3_path is provided (optional)
             if job_config.validation_data_s3_path is not None:
                 # Warn that Nova Lite 2 doesn't support validation datasets
-                if (
-                    "nova-2-lite" in base_model_identifier
-                    or "nova-lite-2" in base_model_identifier
-                ):
+                if "nova-2-lite" in base_model_identifier or "nova-lite-2" in base_model_identifier:
                     logger.warning(
                         "Validation datasets are not supported for Nova Lite 2 models on Bedrock. "
                         "The validation_data_s3_path parameter will be ignored. "
@@ -1092,9 +1024,7 @@ class BedrockRuntimeManager(RuntimeManager):
                 if "subnet_ids" in self.vpc_config:
                     vpc_config["subnetIds"] = self.vpc_config["subnet_ids"]
                 if "security_group_ids" in self.vpc_config:
-                    vpc_config["securityGroupIds"] = self.vpc_config[
-                        "security_group_ids"
-                    ]
+                    vpc_config["securityGroupIds"] = self.vpc_config["security_group_ids"]
 
                 if vpc_config:  # Only add if we have at least one field
                     api_request["vpcConfig"] = vpc_config
@@ -1108,9 +1038,7 @@ class BedrockRuntimeManager(RuntimeManager):
                     )
 
                 rft_config: Dict[str, Any] = {
-                    "graderConfig": {
-                        "lambdaGrader": {"lambdaArn": job_config.rft_lambda_arn}
-                    }
+                    "graderConfig": {"lambdaGrader": {"lambdaArn": job_config.rft_lambda_arn}}
                 }
 
                 # Add RFT hyperparameters if provided (native types: int, float, string)
@@ -1134,17 +1062,13 @@ class BedrockRuntimeManager(RuntimeManager):
             logger.error(f"Bedrock API error ({error_code}): {error_message}")
 
             if error_code == "ValidationException":
-                raise ValueError(
-                    f"Invalid Bedrock job configuration: {error_message}"
-                ) from e
+                raise ValueError(f"Invalid Bedrock job configuration: {error_message}") from e
             elif error_code == "AccessDeniedException":
                 raise PermissionError(f"Bedrock access denied: {error_message}") from e
             elif error_code == "ResourceNotFoundException":
                 raise ValueError(f"Bedrock resource not found: {error_message}") from e
             elif error_code == "ServiceQuotaExceededException":
-                raise RuntimeError(
-                    f"Bedrock service quota exceeded: {error_message}"
-                ) from e
+                raise RuntimeError(f"Bedrock service quota exceeded: {error_message}") from e
             elif error_code == "ThrottlingException":
                 raise RuntimeError(f"Bedrock API throttled: {error_message}") from e
             else:
@@ -1163,9 +1087,7 @@ class BedrockRuntimeManager(RuntimeManager):
         except Exception as e:
             # Catch-all for unexpected errors
             logger.error(f"Unexpected error creating Bedrock customization job: {e}")
-            raise RuntimeError(
-                f"Failed to create Bedrock customization job: {e}"
-            ) from e
+            raise RuntimeError(f"Failed to create Bedrock customization job: {e}") from e
 
     def cleanup(self, job_id: str) -> None:
 
@@ -1174,9 +1096,7 @@ class BedrockRuntimeManager(RuntimeManager):
 
             # Validate job_id format (should be a Bedrock job ARN)
             if not job_id or not isinstance(job_id, str):
-                raise ValueError(
-                    f"Invalid job_id: must be a non-empty string, got {type(job_id)}"
-                )
+                raise ValueError(f"Invalid job_id: must be a non-empty string, got {type(job_id)}")
 
             if not job_id.startswith("arn:aws:bedrock:"):
                 logger.warning(
@@ -1191,9 +1111,7 @@ class BedrockRuntimeManager(RuntimeManager):
         except ClientError as e:
             error_code = e.response["Error"]["Code"]
             error_message = e.response["Error"]["Message"]
-            logger.error(
-                f"Bedrock API error while stopping job ({error_code}): {error_message}"
-            )
+            logger.error(f"Bedrock API error while stopping job ({error_code}): {error_message}")
 
             if error_code == "ValidationException":
                 raise ValueError(f"Invalid job ARN: {error_message}") from e
@@ -1207,9 +1125,7 @@ class BedrockRuntimeManager(RuntimeManager):
                 # Job may already be stopped or in a terminal state
                 logger.warning(f"Job may already be stopped: {error_message}")
             else:
-                raise RuntimeError(
-                    f"Failed to stop Bedrock job: {error_message}"
-                ) from e
+                raise RuntimeError(f"Failed to stop Bedrock job: {error_message}") from e
 
         except Exception as e:
             logger.error(f"Unexpected error stopping Bedrock job: {e}")
@@ -1228,9 +1144,7 @@ class BedrockRuntimeManager(RuntimeManager):
     def required_calling_role_permissions(cls, data_s3_path=None, output_s3_path=None):
         """Return required IAM permissions for Bedrock operations."""
         # Start with base S3 permissions
-        permissions = super().required_calling_role_permissions(
-            data_s3_path, output_s3_path
-        )
+        permissions = super().required_calling_role_permissions(data_s3_path, output_s3_path)
 
         # Add Bedrock-specific permissions
         permissions.extend(
@@ -1245,51 +1159,6 @@ class BedrockRuntimeManager(RuntimeManager):
         return permissions
 
 
-def _get_hub_content(
-    hub_name: str,
-    hub_content_name: str,
-    hub_content_type: str,
-    region: str,
-) -> Dict[str, Any]:
-    """
-     Get hub content from SageMaker via the DescribeHubContent API
-
-    Args:
-        hub_name: Name of the SageMaker Hub
-        hub_content_name: Name of the hub content
-        hub_content_type: Type of hub content
-        region: AWS region
-
-    Returns:
-        Dict containing hub content
-    """
-    sagemaker_client = boto3.client("sagemaker", region_name=region)
-
-    try:
-        response = sagemaker_client.describe_hub_content(
-            HubName=hub_name,
-            HubContentType=hub_content_type,
-            HubContentName=hub_content_name,
-        )
-
-        # Parse HubContentDocument if it's a JSON string
-        if "HubContentDocument" in response:
-            hub_content_document = response["HubContentDocument"]
-            if isinstance(hub_content_document, str):
-                try:
-                    response["HubContentDocument"] = json.loads(hub_content_document)
-                except (json.JSONDecodeError, TypeError):
-                    # If parsing fails, leave the string as is
-                    pass
-
-    except Exception as e:
-        raise RuntimeError(
-            f"Failed to get SageMaker hub content for '{hub_content_name}': {str(e)}"
-        )
-
-    return response
-
-
 class SMTJServerlessRuntimeManager(RuntimeManager):
     def __init__(
         self,
@@ -1301,10 +1170,12 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
         security_group_ids: Optional[list[str]] = None,
         max_job_runtime: Optional[int] = DEFAULT_SMTJ_JOB_MAX_RUNTIME,  # 1 day
         rft_lambda: Optional[str] = None,
+        evaluator_name: Optional[str] = None,
     ):
         # NOTE: Not setting execution_role directly due to issues with mypy type inference
         self._execution_role = execution_role
         self.model_package_group_name = model_package_group_name
+        self.evaluator_name = evaluator_name
         self.subnets = subnets
         self.security_group_ids = security_group_ids
         self.encrypt_inter_container_traffic = encrypt_inter_container_traffic
@@ -1317,9 +1188,7 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
     def required_calling_role_permissions(cls, data_s3_path=None, output_s3_path=None):
         """Required permissions for SMTJ calling role operations and execution role validation."""
         # Start with base S3 permissions
-        permissions = super().required_calling_role_permissions(
-            data_s3_path, output_s3_path
-        )
+        permissions = super().required_calling_role_permissions(data_s3_path, output_s3_path)
 
         # Add SMTJ-specific permissions
         permissions.extend(
@@ -1341,6 +1210,10 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
     @property
     def platform(self) -> Platform:
         return Platform.SMTJServerless
+
+    @property
+    def runtime_name(self) -> str:
+        return "SageMaker Serverless"
 
     def setup(self) -> None:
         boto_session = boto3.session.Session()
@@ -1371,7 +1244,7 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
 
     def _resolve_base_model_arn(self, model: Model) -> str:
         """Resolve the BaseModelArn from SageMaker Hub for the given model."""
-        hub_content = _get_hub_content(
+        hub_content = get_hub_content(
             hub_name="SageMakerPublicHub",
             hub_content_name=model.hub_content_name,
             hub_content_type="Model",
@@ -1379,50 +1252,138 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
         )
         return hub_content["HubContentArn"]
 
-    def _extract_hyperparameters(self, recipe: Dict[str, Any]) -> Dict[str, str]:
-        """Extract hyperparameters from recipe as string key-value pairs, checking two levels of keys."""
-        # Recipe keys that map to create_training_job HyperParameters
+    def _register_lambda_as_hub_content(self, lambda_arn: str) -> str:
+        """Register a Lambda ARN as a JsonDoc hub-content and return the hub-content ARN."""
+        hub_name = re.sub(r"[^a-zA-Z0-9-]", "-", self.model_package_group_name)[:63]
+        return register_lambda_as_hub_content(
+            lambda_arn=lambda_arn,
+            hub_name=hub_name,
+            sagemaker_client=self.sagemaker_client,
+            evaluator_name=self.evaluator_name,
+        )
+
+    @_telemetry_emitter(Feature.INFRA, "validate_lambda")
+    def validate_lambda(
+        self,
+        data_s3_path: str,
+        validation_samples: int = 10,
+    ) -> None:
+        """Override to support hub-content ARNs by extracting the Lambda ARN first."""
+        lambda_arn = self.rft_lambda_arn
+        if lambda_arn and _is_hub_content_arn(lambda_arn):
+            extracted = extract_lambda_arn_from_hub_content(lambda_arn, self.sagemaker_client)
+            if not extracted:
+                logger.warning(
+                    f"Hub-content document does not contain a valid Lambda ARN. "
+                    "Skipping validation."
+                )
+                return
+            logger.info(f"Extracted Lambda ARN from hub-content: {extracted}")
+            # Temporarily set rft_lambda_arn to the extracted Lambda ARN for validation
+            original_arn = self._rft_lambda_arn
+            self._rft_lambda_arn = extracted
+            try:
+                super().validate_lambda(data_s3_path, validation_samples)
+            finally:
+                self._rft_lambda_arn = original_arn
+        else:
+            super().validate_lambda(data_s3_path, validation_samples)
+
+    def _extract_hyperparameters(
+        self, recipe: Dict[str, Any], method: Optional[TrainingMethod] = None
+    ) -> Dict[str, str]:
+        """Extract hyperparameters from recipe as string key-value pairs.
+
+        Args:
+            recipe: The rendered recipe dict.
+            method: Training method — determines the HyperParameter key for max_length.
+                    RFT uses "max_length"; all others use "max_context_length".
+        """
+        is_rft = method in (TrainingMethod.RFT_LORA, TrainingMethod.RFT_FULL)
+        max_length_hp_key = "max_length" if is_rft else "max_context_length"
+        # Maps recipe key → HyperParameter key sent to the serverless API.
         hyperparameter_map = {
+            # --- Shared across all models/methods ---
             "global_batch_size": "global_batch_size",
-            "lr": "learning_rate",
-            "alpha": "lora_alpha",
-            "max_length": "max_context_length",
-            "max_steps": "max_steps",
-            "name": "name",
-            "reasoning_enabled": "reasoning_enabled",
-            "max_epochs": "max_epochs",
             "warmup_steps": "warmup_steps",
-            "lora_plus_lr_ratio": "lora_plus_lr_ratio",
+            "reasoning_effort": "reasoning_effort",
+            "top_logprobs": "top_logprobs",
+            "name": "name",
+            # --- Learning rate: all recipes use "lr" as the recipe key ---
+            "lr": "learning_rate",
+            # --- LoRA ratio: v1 uses "loraplus_lr_ratio", v2 uses "lora_plus_lr_ratio" ---
+            "loraplus_lr_ratio": "learning_rate_ratio",  # v1 (MICRO, LITE, PRO) recipe key
+            "lora_plus_lr_ratio": "learning_rate_ratio",  # v2 (LITE_2) SFT/RFT recipe key
+            # --- LoRA alpha: all recipes use "alpha" as the recipe key ---
+            "alpha": "lora_alpha",
+            # --- Sequence length: recipe key is "max_length" for all methods.
+            #     HyperParameter key differs: RFT uses "max_length", SFT/DPO use "max_context_length" ---
+            "max_length": max_length_hp_key,
+            # --- Training duration: v1 uses "max_epochs", v2 uses "max_steps" ---
+            "max_epochs": "max_epochs",  # v1 SFT/DPO
+            "max_steps": "max_steps",  # v2 SFT/RFT
+            # --- v2 SFT only ---
+            "reasoning_enabled": "reasoning_enabled",
+            # --- DPO only: recipe key is "beta" (under dpo_cfg.beta) ---
+            "beta": "adam_beta",
         }
+
         result: Dict[str, str] = {}
-        # Check up to 3 levels deep for hyperparameter keys
-        for k, v in recipe.items():
-            if k in hyperparameter_map.keys() and v is not None:
-                result[hyperparameter_map[k]] = str(v)
-            elif isinstance(v, dict):
-                for k2, v2 in v.items():
-                    if k2 in hyperparameter_map.keys() and v2 is not None:
-                        result[hyperparameter_map[k2]] = str(v2)
-                    elif isinstance(v2, dict):
-                        for k3, v3 in v2.items():
-                            if k3 in hyperparameter_map.keys() and v3 is not None:
-                                result[hyperparameter_map[k3]] = str(v3)
+
+        def _extract(obj: Dict[str, Any]) -> None:
+            for k, v in obj.items():
+                if k in hyperparameter_map and v is not None:
+                    result[hyperparameter_map[k]] = str(v)
+                elif isinstance(v, dict):
+                    _extract(v)
+
+        _extract(recipe)
+        logger.info(f"HyperParameters used for the job: {result}")
         return result
 
     def _build_serverless_job_config(
-        self, method: TrainingMethod, base_model_arn: str
+        self,
+        method: TrainingMethod,
+        base_model_arn: str,
+        eval_task: Optional[str] = None,
+        evaluator_arn: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Build ServerlessJobConfig for create_training_job."""
-        technique, peft = _METHOD_TO_SERVERLESS_CONFIG[method]
         logger.warning("Accepting End-User License Agreement by using SMTJ Serverless")
         config: Dict[str, Any] = {
             "BaseModelArn": base_model_arn,
             "AcceptEula": True,
-            "JobType": "FineTuning",
-            "CustomizationTechnique": technique,
         }
-        if peft:
-            config["Peft"] = peft
+        if method == TrainingMethod.EVALUATION:
+            config["JobType"] = "Evaluation"
+            # Map eval task to API EvaluationType enum
+            # Mapping based on serverless API contract:
+            # BenchmarkEvaluation: built-in benchmarks + llm_judge/rubric_llm_judge
+            if eval_task in SERVERLESS_CUSTOM_SCORER_EVAL_TASKS:
+                config["EvaluationType"] = "CustomScorerEvaluation"
+            else:
+                config["EvaluationType"] = "BenchmarkEvaluation"
+            # EvaluatorArn is NOT used for eval — lambda goes in HyperParameters instead
+        else:
+            if method not in _METHOD_TO_SERVERLESS_CONFIG:
+                raise ValueError(
+                    f"{method.value} is not supported on SMTJServerless. "
+                    + (
+                        "Use RFT_LORA instead."
+                        if method == TrainingMethod.RFT_FULL
+                        else f"Supported methods: {list(_METHOD_TO_SERVERLESS_CONFIG.keys())}"
+                    )
+                )
+            technique, peft = _METHOD_TO_SERVERLESS_CONFIG[method]
+            config["JobType"] = "FineTuning"
+            config["CustomizationTechnique"] = technique
+            if peft:
+                config["Peft"] = peft
+            # EvaluatorArn: reward function hub-content ARN for RLVR training.
+            # Lambda ARNs are passed via HyperParameters (reward_lambda_arn) instead.
+            if _is_hub_content_arn(evaluator_arn):
+                config["EvaluatorArn"] = evaluator_arn
+
         return config
 
     def execute(self, job_config: JobConfig) -> str:
@@ -1443,6 +1404,54 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
             # Resolve base model ARN from SageMaker Hub
             base_model_arn = self._resolve_base_model_arn(model)
 
+            # Resolve the reward ARN only for RFT and eval jobs — not SFT/DPO.
+            # For training (RLVR): auto-register Lambda ARN as hub-content for EvaluatorArn.
+            # For eval: Lambda ARN goes directly into HyperParameters — no hub-content needed.
+            _is_rft_or_eval = job_config.method in (
+                TrainingMethod.RFT_LORA,
+                TrainingMethod.RFT_FULL,
+                TrainingMethod.EVALUATION,
+            )
+            evaluator_arn = (
+                (
+                    recipe.get("rl_env", {}).get("reward_lambda_arn")
+                    or recipe.get("run", {}).get("reward_lambda_arn")
+                    or self.rft_lambda_arn
+                )
+                if _is_rft_or_eval
+                else None
+            )
+            from amzn_nova_forge.validation.validator import is_lambda_arn
+
+            if (
+                evaluator_arn
+                and is_lambda_arn(evaluator_arn)
+                and job_config.method != TrainingMethod.EVALUATION
+            ):
+                evaluator_arn = self._register_lambda_as_hub_content(evaluator_arn)
+
+            hyperparams = self._extract_hyperparameters(recipe, method=job_config.method)
+            # For eval jobs with a reward lambda, the API requires lambda_arn + lambda_type
+            # in HyperParameters. EvaluatorArn is NOT used for eval jobs.
+            if job_config.method == TrainingMethod.EVALUATION and evaluator_arn:
+                # Resolve the actual Lambda ARN — evaluator_arn may be a hub-content ARN
+                lambda_arn_for_params = evaluator_arn
+                if not is_lambda_arn(evaluator_arn):
+                    extracted = extract_lambda_arn_from_hub_content(
+                        evaluator_arn, self.sagemaker_client
+                    )
+                    if extracted:
+                        lambda_arn_for_params = extracted
+                    else:
+                        logger.warning(
+                            "Could not extract Lambda ARN from hub-content for eval. "
+                            "Skipping lambda_arn in HyperParameters."
+                        )
+                        lambda_arn_for_params = None
+                if lambda_arn_for_params:
+                    hyperparams["lambda_arn"] = lambda_arn_for_params
+                    hyperparams["lambda_type"] = "rft"
+
             # Build create_training_job request
             create_params: Dict[str, Any] = {
                 "TrainingJobName": job_config.job_name,
@@ -1454,12 +1463,21 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
                 "StoppingCondition": {
                     "MaxRuntimeInSeconds": self.max_job_runtime,
                 },
-                "HyperParameters": self._extract_hyperparameters(recipe),
+                "HyperParameters": hyperparams,
                 "ServerlessJobConfig": self._build_serverless_job_config(
-                    job_config.method, base_model_arn
+                    job_config.method,
+                    base_model_arn,
+                    eval_task=recipe.get("evaluation", {}).get("task"),
+                    evaluator_arn=evaluator_arn,
                 ),
                 "ModelPackageConfig": {
-                    "ModelPackageGroupArn": self.model_package_group_arn
+                    "ModelPackageGroupArn": self.model_package_group_arn,
+                    # model_name_or_path is a model package ARN for iterative training
+                    **(
+                        {"SourceModelPackageArn": recipe["run"]["model_name_or_path"]}
+                        if is_sagemaker_arn(recipe.get("run", {}).get("model_name_or_path", ""))
+                        else {}
+                    ),
                 },
             }
 
@@ -1467,10 +1485,18 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
                 create_params["OutputDataConfig"]["KmsKeyId"] = self.kms_key_id
 
             # Input data via DataSet
-            if job_config.data_s3_path:
-                input_dataset = DataSet.create(
-                    f"{job_config.job_name}-train-input", job_config.data_s3_path
+            # Tasks in BYOD_AVAILABLE_EVAL_TASKS require input data; built-in benchmarks don't
+            is_no_input_eval = (
+                job_config.method == TrainingMethod.EVALUATION
+                and recipe.get("evaluation", {}).get("task") not in BYOD_AVAILABLE_EVAL_TASKS
+            )
+            if job_config.data_s3_path and not is_no_input_eval:
+                from sagemaker.ai_registry.dataset import (
+                    DataSet,  # Import DataSet at call site since it crashes without AWS_DEFAULT_REGION
                 )
+
+                dataset_name = f"{job_config.job_name[:51]}-train-input"
+                input_dataset = DataSet.create(dataset_name, job_config.data_s3_path)
                 create_params["InputDataConfig"] = [
                     {
                         "ChannelName": "train",
@@ -1492,9 +1518,7 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
             if mlflow_uri:
                 create_params["MlflowConfig"] = {
                     "MlflowResourceArn": mlflow_uri,
-                    "MlflowExperimentName": run_section.get(
-                        "mlflow_experiment_name", ""
-                    ),
+                    "MlflowExperimentName": run_section.get("mlflow_experiment_name", ""),
                     "MlflowRunName": run_section.get("mlflow_run_name", ""),
                 }
 
@@ -1503,6 +1527,10 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
             return job_arn.split("/")[-1]
 
         except Exception as e:
+            if isinstance(e, NoRegionError):
+                logger.error(
+                    "Could not connect to SageMaker. Please set a region with `export AWS_DEFAULT_REGION=<your-region>`"
+                )
             logger.error(f"Failed to start training job: {str(e)}")
             raise
 
