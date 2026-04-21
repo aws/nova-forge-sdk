@@ -23,16 +23,27 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 from botocore.client import BaseClient
+from botocore.exceptions import ClientError
 
-from amzn_nova_forge.model.model_enums import (
+from amzn_nova_forge.core.constants import (
+    _BEDROCK_STATUS_MAP,
+    ESCROW_URI_TAG_KEY,
+    ModelStatus,
+    _escrow_tag_value,
+)
+from amzn_nova_forge.core.enums import (
     DeployPlatform,
     Model,
     TrainingMethod,
 )
-from amzn_nova_forge.model.result.inference_result import (
+from amzn_nova_forge.core.result.inference_result import (
     SingleInferenceResult,
 )
+from amzn_nova_forge.core.types import DeploymentResult
 from amzn_nova_forge.util.logging import logger
+
+# Deferred import: register the status checker after check_deployment_status is defined.
+# See _register_status_checker() call at end of module.
 
 DEPLOYMENT_ARN_NAME = {
     DeployPlatform.BEDROCK_OD: "customModelDeploymentArn",
@@ -47,6 +58,34 @@ METHOD_TO_CUSTOMIZATION_TYPE = {
     "sft_lora": "FINE_TUNING",
     "rft_lora": "REINFORCEMENT_FINE_TUNING",
 }
+
+
+def find_bedrock_model_by_tag(escrow_uri: str, bedrock_client: BaseClient) -> Optional[str]:
+    """Find an existing Bedrock custom model tagged with the given escrow URI.
+
+    Uses ResourceGroupsTaggingAPI for efficient tag-based lookup (single API call).
+    Returns model ARN or None. Catches permission errors gracefully.
+    """
+    tag_value = _escrow_tag_value(escrow_uri)
+    try:
+        tagging_client = boto3.client(
+            "resourcegroupstaggingapi",
+            region_name=bedrock_client.meta.region_name,
+        )
+        response = tagging_client.get_resources(
+            TagFilters=[{"Key": ESCROW_URI_TAG_KEY, "Values": [tag_value]}],
+            ResourceTypeFilters=["bedrock:custom-model"],
+        )
+        results = response.get("ResourceTagMappingList", [])
+        if results:
+            return results[0]["ResourceARN"]
+    except ClientError as e:
+        logger.warning(
+            f"Could not search Bedrock models by tag (may lack tag:GetResources permission): {e}"
+        )
+    except Exception as e:
+        logger.warning(f"Unexpected error searching Bedrock models: {e}")
+    return None
 
 
 # Mapping from SDK Model enum to Bedrock base model identifiers
@@ -95,12 +134,8 @@ def monitor_model_create(client, model: dict, endpoint_name: str) -> str:
                 logger.info(f"Model ARN: {model['modelArn']}\n\n")
                 return current_status
             elif current_status.upper() in ["FAILED", "STOPPED"]:
-                error_msg = (
-                    f"\n\nERROR! Model '{endpoint_name}' status is: {current_status}\n"
-                )
-                logger.error(
-                    f"{error_msg}\nPlease check the AWS console for more details.\n"
-                )
+                error_msg = f"\n\nERROR! Model '{endpoint_name}' status is: {current_status}\n"
+                logger.error(f"{error_msg}\nPlease check the AWS console for more details.\n")
                 raise Exception(error_msg)
         except Exception as e:
             logger.error(f"Error checking status: {str(e)}\n")
@@ -108,9 +143,36 @@ def monitor_model_create(client, model: dict, endpoint_name: str) -> str:
         time.sleep(60)  # Sleep for a minute.
 
 
-def check_deployment_status(
-    deployment_arn: str, platform: DeployPlatform
-) -> Optional[str]:
+def wait_for_model_ready(
+    bedrock_client,
+    model_arn: str,
+    poll_interval: int = 30,
+    timeout: int = 900,
+) -> ModelStatus:
+    """Poll GetCustomModel until terminal state.
+
+    Returns ModelStatus.ACTIVE on success.
+    Raises ValueError if model reaches FAILED.
+    Raises TimeoutError if timeout exceeded.
+    """
+    start = time.time()
+    while True:
+        resp = bedrock_client.get_custom_model(modelIdentifier=model_arn)
+        raw = resp.get("modelStatus", "")
+        status = _BEDROCK_STATUS_MAP.get(raw, ModelStatus.UNKNOWN)
+
+        if status == ModelStatus.ACTIVE:
+            return status
+        if status == ModelStatus.FAILED:
+            raise ValueError(f"Model '{model_arn}' reached FAILED status.")
+        if time.time() - start > timeout:
+            raise TimeoutError(f"Model '{model_arn}' still {raw} after {timeout}s.")
+
+        logger.info("Model %s status: %s. Waiting %ds...", model_arn, raw, poll_interval)
+        time.sleep(poll_interval)
+
+
+def check_deployment_status(deployment_arn: str, platform: DeployPlatform) -> Optional[str]:
     """
     Checks the current status of a Bedrock deployment.
 
@@ -194,9 +256,7 @@ def get_required_bedrock_update_permissions(
     return []
 
 
-def check_existing_deployment(
-    endpoint_name: str, platform: DeployPlatform
-) -> Optional[str]:
+def check_existing_deployment(endpoint_name: str, platform: DeployPlatform) -> Optional[str]:
     """
     Check if a deployment with the given name exists.
 
@@ -211,25 +271,19 @@ def check_existing_deployment(
 
     try:
         if platform == DeployPlatform.BEDROCK_OD:
-            response = bedrock_client.list_custom_model_deployments(
-                nameContains=endpoint_name
-            )
+            response = bedrock_client.list_custom_model_deployments(nameContains=endpoint_name)
             for deployment in response.get("modelDeploymentSummaries", []):
                 if deployment["customModelDeploymentName"] == endpoint_name:
                     return deployment["customModelDeploymentArn"]
 
         elif platform == DeployPlatform.BEDROCK_PT:
-            response = bedrock_client.list_provisioned_model_throughputs(
-                nameContains=endpoint_name
-            )
+            response = bedrock_client.list_provisioned_model_throughputs(nameContains=endpoint_name)
             for deployment in response.get("provisionedModelSummaries", []):
                 if deployment["provisionedModelName"] == endpoint_name:
                     return deployment["provisionedModelArn"]
 
     except Exception as e:
-        logger.warning(
-            f"Failed to check for existing deployment '{endpoint_name}': {e}"
-        )
+        logger.warning(f"Failed to check for existing deployment '{endpoint_name}': {e}")
         return None
 
     return None
@@ -259,9 +313,7 @@ def delete_existing_deployment(
                 customModelDeploymentIdentifier=deployment_arn
             )
         elif platform == DeployPlatform.BEDROCK_PT:
-            bedrock_client.delete_provisioned_model_throughput(
-                provisionedModelId=deployment_arn
-            )
+            bedrock_client.delete_provisioned_model_throughput(provisionedModelId=deployment_arn)
 
         # Wait for deletion to complete
         start_time = datetime.now(timezone.utc)
@@ -337,9 +389,7 @@ def update_provisioned_throughput_model(
         bedrock_client.update_provisioned_model_throughput(
             provisionedModelId=deployment_arn, desiredModelId=new_model_arn
         )
-        logger.info(
-            f"Successfully initiated PT deployment update for '{endpoint_name}'"
-        )
+        logger.info(f"Successfully initiated PT deployment update for '{endpoint_name}'")
 
     except Exception as e:
         raise Exception(f"Failed to update PT deployment '{endpoint_name}': {e}")
@@ -352,9 +402,7 @@ def invoke_model(
 
     # TODO: Add support for invoke_model_with_response_stream
     try:
-        response = bedrock_runtime.invoke_model(
-            modelId=model_id, body=json.dumps(request_body)
-        )
+        response = bedrock_runtime.invoke_model(modelId=model_id, body=json.dumps(request_body))
         body = response["body"].read().decode("utf-8")
 
         return SingleInferenceResult(
@@ -430,9 +478,7 @@ def resolve_base_model_identifier(
 
     # If base_model_identifier was explicitly provided, use it
     if base_model_identifier is not None:
-        logger.info(
-            f"Using explicitly provided base_model_identifier: {base_model_identifier}"
-        )
+        logger.info(f"Using explicitly provided base_model_identifier: {base_model_identifier}")
         return base_model_identifier
 
     # Otherwise, extract model from recipe config
@@ -469,9 +515,7 @@ def resolve_base_model_identifier(
         raise
 
 
-def parse_bedrock_recipe_config(
-    recipe_path: str, method: TrainingMethod
-) -> Dict[str, Any]:
+def parse_bedrock_recipe_config(recipe_path: str, method: TrainingMethod) -> Dict[str, Any]:
     """Extract hyperparameters from a built recipe YAML for Bedrock API.
 
     This function reads a recipe that has already been built and validated by RecipeBuilder,
@@ -520,9 +564,7 @@ def parse_bedrock_recipe_config(
     rft_hyperparameters: Dict[str, Any] = {}  # RFT hyperparameters use native types
 
     if not recipe_config or "training_config" not in recipe_config:
-        logger.warning(
-            "No training_config found in recipe - using empty hyperparameters"
-        )
+        logger.warning("No training_config found in recipe - using empty hyperparameters")
         return {
             "hyperparameters": hyperparameters,
             "rft_hyperparameters": rft_hyperparameters,
@@ -625,3 +667,18 @@ def log_bedrock_job_status(response: Dict[str, Any]) -> None:
     if status == "Failed":
         failure_msg = response.get("failureMessage", "No failure message available")
         logger.error(f"  Failure Message: {failure_msg}")
+
+
+# Register the deployment status checker on DeploymentResult so that
+# core/types.py doesn't need to import from util/bedrock (breaking the
+# zero-import rule for core/).
+DeploymentResult._register_status_checker(check_deployment_status)
+
+# Register bedrock job helpers on BedrockStatusManager so that
+# core/result/job_result.py doesn't need to import from util/bedrock.
+from amzn_nova_forge.core.result.job_result import BedrockStatusManager
+
+BedrockStatusManager._register_bedrock_helpers(
+    get_job_details=get_bedrock_job_details,
+    log_job_status=log_bedrock_job_status,
+)

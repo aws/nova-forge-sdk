@@ -5,7 +5,7 @@ Tests for platform detection and validation utilities
 import unittest
 from unittest.mock import patch
 
-from amzn_nova_forge.model.model_enums import Platform
+from amzn_nova_forge.core.enums import Platform
 from amzn_nova_forge.util.platform_util import (
     detect_platform_from_path,
     validate_platform_compatibility,
@@ -95,6 +95,32 @@ class TestPlatformValidation(unittest.TestCase):
         warning_msg = mock_logger.warning.call_args[0][0]
         self.assertIn("Cannot determine platform", warning_msg)
         self.assertIn("test checkpoint", warning_msg)
+
+    def test_validate_platform_compatibility_smtj_serverless_to_smtj(self):
+        """Test SMTJ and SMTJServerless are treated as compatible."""
+        # Should not raise — same escrow bucket and checkpoint format
+        validate_platform_compatibility(
+            checkpoint_platform=Platform.SMTJ,
+            execution_platform=Platform.SMTJServerless,
+            checkpoint_source="test checkpoint",
+        )
+
+    def test_validate_platform_compatibility_serverless_to_smtj(self):
+        """Test SMTJServerless checkpoint can be evaluated on SMTJ."""
+        validate_platform_compatibility(
+            checkpoint_platform=Platform.SMTJServerless,
+            execution_platform=Platform.SMTJ,
+            checkpoint_source="test checkpoint",
+        )
+
+    def test_validate_platform_compatibility_smhp_to_serverless_fails(self):
+        """Test SMHP checkpoint on SMTJServerless still raises."""
+        with self.assertRaises(ValueError):
+            validate_platform_compatibility(
+                checkpoint_platform=Platform.SMHP,
+                execution_platform=Platform.SMTJServerless,
+                checkpoint_source="test checkpoint",
+            )
 
 
 if __name__ == "__main__":

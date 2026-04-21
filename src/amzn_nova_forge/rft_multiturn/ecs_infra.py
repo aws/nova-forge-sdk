@@ -95,9 +95,7 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         self.user_cpu = cpu
         self.user_memory = memory
         self.ecs_client = boto3.client("ecs", region_name=region)
-        self.ec2_client = boto3.client(
-            "ec2", region_name=region
-        )  # Needed for VPC discovery
+        self.ec2_client = boto3.client("ec2", region_name=region)  # Needed for VPC discovery
 
         # Use self.stack_name which already has NovaSDK suffix from BaseRFTInfrastructure
         self.task_family = f"{self.stack_name}-task"
@@ -125,9 +123,7 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
             "yum install -y python3.12 python3.12-pip git awscli tar",
         ]
 
-    def _build_sam_deploy_command(
-        self, custom_starter_kit_s3: Optional[str] = None
-    ) -> List[str]:
+    def _build_sam_deploy_command(self, custom_starter_kit_s3: Optional[str] = None) -> List[str]:
         """
         Build SAM deployment command for ECS
 
@@ -166,9 +162,7 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
             service_detail = self.ecs_client.describe_services(
                 cluster=self.cluster_arn, services=[services["serviceArns"][0]]
             )
-            network_config = service_detail["services"][0].get(
-                "networkConfiguration", {}
-            )
+            network_config = service_detail["services"][0].get("networkConfiguration", {})
             awsvpc_config = network_config.get("awsvpcConfiguration", {})
 
             return {
@@ -176,16 +170,12 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
                 "security_groups": awsvpc_config.get("securityGroups", []),
             }
 
-        vpcs = self.ec2_client.describe_vpcs(
-            Filters=[{"Name": "isDefault", "Values": ["true"]}]
-        )
+        vpcs = self.ec2_client.describe_vpcs(Filters=[{"Name": "isDefault", "Values": ["true"]}])
         if not vpcs["Vpcs"]:
             raise RuntimeError("No VPC configuration found for cluster")
 
         vpc_id = vpcs["Vpcs"][0]["VpcId"]
-        subnets = self.ec2_client.describe_subnets(
-            Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
-        )
+        subnets = self.ec2_client.describe_subnets(Filters=[{"Name": "vpc-id", "Values": [vpc_id]}])
 
         return {
             "subnets": [s["SubnetId"] for s in subnets["Subnets"][:2]],
@@ -208,9 +198,7 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         except iam_client.exceptions.NoSuchEntityException:
             # Role doesn't exist, create it
             logger.info(f"Creating RFT role: {role_name}")
-            role_arn = create_rft_execution_role(
-                region=self.region, role_name=role_name
-            )
+            role_arn = create_rft_execution_role(region=self.region, role_name=role_name)
             logger.info(f"Created role: {role_arn}")
 
         # Ensure the combined policy is attached using shared method
@@ -370,9 +358,7 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
             s3_etag = self._get_s3_etag(s3_uri) if s3_uri else None
 
             # Extract starter kit S3 URI
-            starter_kit_s3 = self._extract_s3_uri_from_command(
-                command, uri_type="starter_kit"
-            )
+            starter_kit_s3 = self._extract_s3_uri_from_command(command, uri_type="starter_kit")
 
             normalized["container"] = {
                 "image": container.get("image"),
@@ -394,21 +380,15 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         """
         try:
             # Get latest task definition for this family
-            response = self.ecs_client.describe_task_definition(
-                taskDefinition=self.task_family
-            )
+            response = self.ecs_client.describe_task_definition(taskDefinition=self.task_family)
             existing_task_def = response["taskDefinition"]
 
             # Normalize both for comparison
-            existing_normalized = self._normalize_task_def_for_comparison(
-                existing_task_def
-            )
+            existing_normalized = self._normalize_task_def_for_comparison(existing_task_def)
             new_normalized = self._normalize_task_def_for_comparison(task_def)
 
             # Log S3 ETags for debugging
-            existing_etag = existing_normalized.get("container", {}).get(
-                "custom_env_s3_etag"
-            )
+            existing_etag = existing_normalized.get("container", {}).get("custom_env_s3_etag")
             new_etag = new_normalized.get("container", {}).get("custom_env_s3_etag")
 
             # Compare all relevant fields
@@ -499,9 +479,7 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
             elif env_type == EnvType.SAM:
                 self.latest_sam_task_id = task_id
 
-            logger.info(
-                f"{env_type.value.capitalize()} task started with ID: {task_id}"
-            )
+            logger.info(f"{env_type.value.capitalize()} task started with ID: {task_id}")
             return task_id
 
         logger.warning(f"Failed to start {env_type.value} task")
@@ -517,9 +495,7 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         # Ensure starter kit is available
         self._ensure_starter_kit_available(s3_bucket)
 
-        command = self._build_sam_deploy_command(
-            custom_starter_kit_s3=self._starter_kit_s3_uri
-        )
+        command = self._build_sam_deploy_command(custom_starter_kit_s3=self._starter_kit_s3_uri)
         task_id = self._run_one_time_task(EnvType.SAM, command, "sam-deploy")
         if task_id:
             self.latest_sam_task_id = task_id
@@ -529,15 +505,15 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         """
         Wait for SAM deployment task to complete
         """
-        task_arn = f"arn:aws:ecs:{region}:{self.account_id}:task/{cluster_arn.split('/')[-1]}/{task_id}"
+        task_arn = (
+            f"arn:aws:ecs:{region}:{self.account_id}:task/{cluster_arn.split('/')[-1]}/{task_id}"
+        )
 
         logger.info(f"Waiting for SAM deployment task {task_id} to complete...")
         start_time = time.time()
 
         while time.time() - start_time < SAM_WAIT_TIME:
-            response = self.ecs_client.describe_tasks(
-                cluster=cluster_arn, tasks=[task_arn]
-            )
+            response = self.ecs_client.describe_tasks(cluster=cluster_arn, tasks=[task_arn])
 
             if not response["tasks"]:
                 raise RuntimeError(f"Task {task_id} not found")
@@ -551,9 +527,7 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
                     logger.info("SAM deployment completed successfully")
                     return
                 else:
-                    raise RuntimeError(
-                        f"SAM deployment failed with exit code {exit_code}"
-                    )
+                    raise RuntimeError(f"SAM deployment failed with exit code {exit_code}")
 
             time.sleep(10)
 
@@ -573,9 +547,7 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
             return False
 
         try:
-            response = self.ecs_client.describe_tasks(
-                cluster=self.cluster_arn, tasks=[task_id]
-            )
+            response = self.ecs_client.describe_tasks(cluster=self.cluster_arn, tasks=[task_id])
 
             if not response.get("tasks"):
                 return False
@@ -601,9 +573,7 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         try:
             base_stack = self._extract_base_stack_name(stack_name)
 
-            response = self.ecs_client.list_tasks(
-                cluster=self.cluster_arn, desiredStatus="RUNNING"
-            )
+            response = self.ecs_client.list_tasks(cluster=self.cluster_arn, desiredStatus="RUNNING")
 
             if not response.get("taskArns"):
                 return None
@@ -807,9 +777,7 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
             logger.info(f"Reading logs from stream: {stream_name}")
 
         if tail:
-            logger.info(
-                f"Tailing CloudWatch logs from {stream_name} (Press Ctrl+C to stop)"
-            )
+            logger.info(f"Tailing CloudWatch logs from {stream_name} (Press Ctrl+C to stop)")
             try:
                 next_token = None
                 while True:
@@ -888,9 +856,7 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         """
         if kill_all_for_stack:
             base_stack = self._extract_base_stack_name(self.stack_name)
-            logger.info(
-                f"Killing ALL {env_type.value} tasks for stack '{self.stack_name}' on ECS"
-            )
+            logger.info(f"Killing ALL {env_type.value} tasks for stack '{self.stack_name}' on ECS")
 
             try:
                 response = self.ecs_client.list_tasks(
@@ -949,9 +915,7 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
                                     taskDefinition=task_def_arn
                                 )
                             except Exception as e:
-                                logger.warning(
-                                    f"Could not deregister task definition: {e}"
-                                )
+                                logger.warning(f"Could not deregister task definition: {e}")
 
                     except Exception as e:
                         logger.warning(f"Could not process task {task_id}: {e}")
@@ -1000,14 +964,10 @@ class ECSRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
             # Deregister task definition if requested
             if deregister_task_def and task_def_arn:
                 try:
-                    self.ecs_client.deregister_task_definition(
-                        taskDefinition=task_def_arn
-                    )
+                    self.ecs_client.deregister_task_definition(taskDefinition=task_def_arn)
                     logger.info(f"Deregistered task definition: {task_def_arn}")
                 except Exception as e:
-                    logger.warning(
-                        f"Could not deregister task definition {task_def_arn}: {e}"
-                    )
+                    logger.warning(f"Could not deregister task definition {task_def_arn}: {e}")
 
         except self.ecs_client.exceptions.ClientException as e:
             logger.warning(f"Could not stop task {task_id}: {e}")

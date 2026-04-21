@@ -383,9 +383,7 @@ class TestEC2RFTInfrastructure:
         mock_ssm.send_command.return_value = {"Command": {"CommandId": "cmd-123"}}
         mock_ssm.get_command_invocation.return_value = {"Status": "Success"}
 
-        get_client, mocks = create_mock_boto_client_with_ami_validation(
-            {"ssm": mock_ssm}
-        )
+        get_client, mocks = create_mock_boto_client_with_ami_validation({"ssm": mock_ssm})
         mock_boto_client.side_effect = get_client
 
         infra = EC2RFTInfrastructure(
@@ -407,9 +405,7 @@ class TestEC2RFTInfrastructure:
         """Test task killing."""
         mock_ssm = MagicMock()
 
-        get_client, mocks = create_mock_boto_client_with_ami_validation(
-            {"ssm": mock_ssm}
-        )
+        get_client, mocks = create_mock_boto_client_with_ami_validation({"ssm": mock_ssm})
         mock_boto_client.side_effect = get_client
 
         infra = EC2RFTInfrastructure(
@@ -433,9 +429,7 @@ class TestEC2RFTInfrastructure:
         """Test cleanup without environment deletion."""
         mock_ssm = MagicMock()
 
-        get_client, mocks = create_mock_boto_client_with_ami_validation(
-            {"ssm": mock_ssm}
-        )
+        get_client, mocks = create_mock_boto_client_with_ami_validation({"ssm": mock_ssm})
         mock_boto_client.side_effect = get_client
 
         infra = EC2RFTInfrastructure(
@@ -456,9 +450,7 @@ class TestEC2RFTInfrastructure:
         """Test cleanup with environment deletion."""
         mock_ssm = MagicMock()
 
-        get_client, mocks = create_mock_boto_client_with_ami_validation(
-            {"ssm": mock_ssm}
-        )
+        get_client, mocks = create_mock_boto_client_with_ami_validation({"ssm": mock_ssm})
         mock_boto_client.side_effect = get_client
 
         infra = EC2RFTInfrastructure(
@@ -490,9 +482,7 @@ class TestEC2RFTInfrastructure:
             "StandardOutputContent": "log line 1\nlog line 2\nlog line 3",
         }
 
-        get_client, mocks = create_mock_boto_client_with_ami_validation(
-            {"ssm": mock_ssm}
-        )
+        get_client, mocks = create_mock_boto_client_with_ami_validation({"ssm": mock_ssm})
         mock_boto_client.side_effect = get_client
 
         infra = EC2RFTInfrastructure(

@@ -122,7 +122,9 @@ def validate_mlflow_tracking_uri_format(tracking_uri: str) -> bool:
         return True
 
     # Check for MLflow tracking server ARN format
-    tracking_server_pattern = r"^arn:aws:sagemaker:[a-z0-9-]+:\d{12}:mlflow-tracking-server/[a-zA-Z0-9][\w-]*$"
+    tracking_server_pattern = (
+        r"^arn:aws:sagemaker:[a-z0-9-]+:\d{12}:mlflow-tracking-server/[a-zA-Z0-9][\w-]*$"
+    )
     if re.match(tracking_server_pattern, tracking_uri):
         return True
 
@@ -155,10 +157,10 @@ def validate_mlflow_arn_exists(
         return False, "MLflow tracking URI is empty"
 
     # Check for MLflow tracking server ARN format
-    tracking_server_pattern = r"^arn:aws:sagemaker:([a-z0-9-]+):(\d{12}):mlflow-tracking-server/([a-zA-Z0-9][\w-]*)$"
-    app_pattern = (
-        r"^arn:aws:sagemaker:([a-z0-9-]+):(\d{12}):mlflow-app/(app-[A-Z0-9]+)$"
+    tracking_server_pattern = (
+        r"^arn:aws:sagemaker:([a-z0-9-]+):(\d{12}):mlflow-tracking-server/([a-zA-Z0-9][\w-]*)$"
     )
+    app_pattern = r"^arn:aws:sagemaker:([a-z0-9-]+):(\d{12}):mlflow-app/(app-[A-Z0-9]+)$"
 
     tracking_server_match = re.match(tracking_server_pattern, tracking_uri)
     app_match = re.match(app_pattern, tracking_uri)
@@ -242,9 +244,7 @@ def validate_mlflow_arn_exists(
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
             if error_code == "AccessDeniedException":
-                logger.warning(
-                    "Access denied to list MLflow apps - cannot validate existence"
-                )
+                logger.warning("Access denied to list MLflow apps - cannot validate existence")
                 return True, "Access denied - assuming ARN is valid"
             else:
                 return False, f"Error checking MLflow resource: {e}"

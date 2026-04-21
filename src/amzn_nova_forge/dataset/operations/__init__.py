@@ -13,11 +13,17 @@
 # limitations under the License.
 from .base import (
     BaseOperation,
+    NovaForgeAnalyzeOperation,
+    NovaForgeFilterOperation,
     NovaForgeSaveOperation,
     NovaForgeShowOperation,
     NovaForgeSplitOperation,
     NovaForgeTransformOperation,
     NovaForgeValidateOperation,
+)
+from .filter_operation import (
+    FilterMethod,
+    get_filter_operation,
 )
 from .save_operation import SaveOperation
 from .show_operation import ShowOperation
@@ -33,8 +39,16 @@ from .validate_operation import (
     get_validate_operation,
 )
 
+# Filter operation classes are lazily imported to avoid circular imports.
+# They depend on manager.runtime_manager, which depends on this package
+# during amzn_nova_forge init. Use get_filter_operation(FilterMethod.X)
+# or import directly from their modules when needed.
+
 __all__ = [
     "BaseOperation",
+    "FilterMethod",
+    "NovaForgeAnalyzeOperation",
+    "NovaForgeFilterOperation",
     "NovaForgeSaveOperation",
     "NovaForgeShowOperation",
     "NovaForgeSplitOperation",
@@ -47,6 +61,7 @@ __all__ = [
     "SplitOperation",
     "TransformMethod",
     "ValidateMethod",
+    "get_filter_operation",
     "get_transform_operation",
     "get_validate_operation",
 ]

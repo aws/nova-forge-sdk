@@ -11,17 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .model_enums import (
+from amzn_nova_forge.core.enums import (
     DeployPlatform,
     Model,
     Platform,
     TrainingMethod,
 )
-from .nova_model_customizer import NovaModelCustomizer
-from .result.job_result import (
+from amzn_nova_forge.core.result.job_result import (
     BaseJobResult,
     JobStatus,
 )
+
+from .nova_model_customizer import NovaModelCustomizer
 
 __all__ = [
     "Model",

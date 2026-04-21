@@ -11,12 +11,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from amzn_nova_forge.core.enums import Model, TrainingMethod
 from amzn_nova_forge.dataset.dataset_loader import (
     CSVDatasetLoader,
     JSONDatasetLoader,
     JSONLDatasetLoader,
 )
-from amzn_nova_forge.model.model_enums import Model, TrainingMethod
 
 LOGGER_NAME = "nova_forge_sdk"
 
@@ -147,9 +147,5 @@ class TestBackwardCompatSaveAndSplit(unittest.TestCase):
             train, val, test = loader.split_data(0.7, 0.2, 0.1)
         self.assertTrue(any("deprecated" in msg.lower() for msg in cm.output))
 
-        total = (
-            len(list(train.dataset()))
-            + len(list(val.dataset()))
-            + len(list(test.dataset()))
-        )
+        total = len(list(train.dataset())) + len(list(val.dataset())) + len(list(test.dataset()))
         self.assertEqual(total, 10)

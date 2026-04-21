@@ -25,30 +25,23 @@ class SchemaValidateOperation(NovaForgeValidateOperation):
     """Validate the dataset against schema requirements for a training method and model."""
 
     def execute(self, loader: Any, **kwargs) -> None:
-        from ...model.model_enums import Model, TrainingMethod
+        from ...model.model_enums import Model, Platform, TrainingMethod
         from ...recipe.recipe_config import EvaluationTask
-        from ..dataset_validator import (
-            CPTDatasetValidator,
-            EvalDatasetValidator,
-            RFTDatasetValidator,
-            RFTMultiturnDatasetValidator,
-            SFTDatasetValidator,
-        )
+        from ..dataset_validator.dataset_schema_resolver import resolve_schema_validator
 
         training_method: Optional[TrainingMethod] = kwargs.get("training_method")
         model: Optional[Model] = kwargs.get("model")
         eval_task: Optional[EvaluationTask] = kwargs.get("eval_task")
+        platform: Optional[Platform] = kwargs.get("platform")
 
         if training_method is None or model is None:
-            raise ValueError(
-                "training_method and model are required for schema validation."
-            )
+            raise ValueError("training_method and model are required for schema validation.")
 
         dataset_iter = loader.dataset()
         peeked_value, dataset_iter = peek(dataset_iter)
 
         if peeked_value is None:
-            logger.info("Dataset is empty. Call load() method to load data first")
+            logger.info("Validate: dataset is empty")
             return
 
         if training_method == TrainingMethod.EVALUATION and eval_task is None:
@@ -58,38 +51,37 @@ class SchemaValidateOperation(NovaForgeValidateOperation):
                 "For RFT Multiturn evaluation, pass eval_task=EvaluationTask.RFT_MULTITURN_EVAL"
             )
 
-        if training_method in (TrainingMethod.SFT_LORA, TrainingMethod.SFT_FULL):
-            SFTDatasetValidator().validate(dataset_iter, model)
-        elif training_method == TrainingMethod.EVALUATION:
-            if eval_task == EvaluationTask.RFT_MULTITURN_EVAL:
-                RFTMultiturnDatasetValidator(model).validate(dataset_iter, model)
-            else:
-                EvalDatasetValidator(eval_task).validate(dataset_iter, model)
-        elif training_method in (TrainingMethod.RFT_FULL, TrainingMethod.RFT_LORA):
-            RFTDatasetValidator(model).validate(dataset_iter, model)
-        elif training_method in (
-            TrainingMethod.RFT_MULTITURN_FULL,
-            TrainingMethod.RFT_MULTITURN_LORA,
-        ):
-            RFTMultiturnDatasetValidator(model).validate(dataset_iter, model)
-        elif training_method == TrainingMethod.CPT:
-            CPTDatasetValidator().validate(dataset_iter, model)
-        else:
+        validator = resolve_schema_validator(training_method, model, eval_task)
+        if validator is None:
             logger.info(
-                "Skipping validation. Validation isn't available for that model/method combo right now."
+                "Validate: skipped — not available for model=%s / method=%s",
+                model,
+                training_method,
             )
+            return
+
+        row_kwargs: dict[str, Any] = dict(
+            platform=platform,
+            training_method=training_method,
+        )
+        validator.validate(dataset_iter, model, **row_kwargs)
+        logger.info(
+            "Validate: schema passed (model=%s, method=%s)", model.value, training_method.value
+        )
 
 
 class ValidateMethod(Enum):
     """Supported dataset validation methods."""
 
-    SCHEMA = "schema"
+    SCHEMA = "schema"  # Deprecated, kept for backwards compatibility
+    INVALID_RECORDS = "invalid_records"
 
 
 def get_validate_operation(method: ValidateMethod) -> NovaForgeValidateOperation:
     """Factory that returns the operation instance for a given ValidateMethod."""
     registry = {
-        ValidateMethod.SCHEMA: SchemaValidateOperation,
+        ValidateMethod.SCHEMA: SchemaValidateOperation,  # Deprecated, kept for backwards compatibility
+        ValidateMethod.INVALID_RECORDS: SchemaValidateOperation,
     }
     op_class = registry.get(method)
     if op_class is None:

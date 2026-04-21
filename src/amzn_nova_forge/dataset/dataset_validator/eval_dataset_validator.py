@@ -22,16 +22,11 @@ from typing import Dict, Iterator, List, Optional
 
 from pydantic import BaseModel, field_validator
 
-from amzn_nova_forge.model.model_enums import Model
-from amzn_nova_forge.recipe.recipe_config import EvaluationTask
+from amzn_nova_forge.core.enums import EvaluationTask, Model
 
 from ...util.logging import logger
-from .dataset_validator import (
-    BaseDatasetValidator,
-    check_forbidden_keywords,
-)
+from .dataset_validator import BaseDatasetValidator
 
-FORBIDDEN_KEYWORDS = ["Bot:", "<image>", "<video>", "[EOS]", "Assistant:", "User:"]
 OPTIONAL_FIELDS = ["system", "images"]  # Check if metadata should be included here
 # TODO: Find and add restrictions for image type and metadata.
 
@@ -67,12 +62,6 @@ class EvalDatasetSample(BaseModel):
         """Validates query field."""
         if not query.strip():
             raise ValueError("Query cannot be empty")
-        found_keywords = check_forbidden_keywords(query)
-        if found_keywords:
-            keywords_str = ", ".join(found_keywords)
-            raise ValueError(
-                f"Invalid query, please do not use these keywords: {keywords_str}"
-            )
         return query
 
     @field_validator("response")
@@ -81,12 +70,6 @@ class EvalDatasetSample(BaseModel):
         """Validates response field."""
         if not response.strip():
             raise ValueError("Response cannot be empty")
-        found_keywords = check_forbidden_keywords(response)
-        if found_keywords:
-            keywords_str = ", ".join(found_keywords)
-            raise ValueError(
-                f"Invalid response, please do not use these keywords: {keywords_str}"
-            )
         return response
 
     @field_validator("metadata")
@@ -95,25 +78,12 @@ class EvalDatasetSample(BaseModel):
         """Validates metadata field if it exists, else return."""
         if not metadata.strip():
             return metadata
-        found_keywords = check_forbidden_keywords(metadata)
-        if found_keywords:
-            keywords_str = ", ".join(found_keywords)
-            raise ValueError(
-                f"Invalid response, please do not use these keywords: {keywords_str}"
-            )
         return metadata
 
     @field_validator("system")
     @classmethod
     def validate_system(cls, system):
         """Validates system field."""
-        if system is not None:
-            found_keywords = check_forbidden_keywords(system)
-            if found_keywords:
-                keywords_str = ", ".join(found_keywords)
-                raise ValueError(
-                    f"Invalid system prompt, please do not use these keywords: {keywords_str}"
-                )
         return system
 
 
@@ -142,16 +112,14 @@ class EvalDatasetValidator(BaseDatasetValidator):
     def get_success_message(self) -> str:
         return f"Validation succeeded for {self.num_samples} samples on an Evaluation BYOD dataset."
 
-    def validate(self, dataset: Iterator[Dict], model: Model) -> None:
+    def validate(self, dataset: Iterator[Dict], model: Model, **kwargs) -> None:
         if self.eval_task and self.eval_task in (
             EvaluationTask.LLM_JUDGE,
             EvaluationTask.RUBRIC_LLM_JUDGE,
         ):
-            logger.warning(
-                "LLM Judge validation not yet implemented, skipping validation."
-            )
+            logger.warning("LLM Judge validation not yet implemented, skipping validation.")
             return
-        super().validate(dataset, model)
+        super().validate(dataset, model, **kwargs)
 
     def get_optional_fields(self) -> List[str]:
         """

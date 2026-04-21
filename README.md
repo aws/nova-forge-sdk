@@ -7,8 +7,10 @@ A comprehensive Python SDK for fine-tuning and customizing Amazon Nova models. T
 - [Installation](#installation)
 - [Setup](#setup)
 - [Supported Models and Training Methods](#supported-models-and-training-methods)
+- [Data Preparation](#data-preparation)
 - [Core Modules Overview](#core-modules-overview)
 - [Additional Features](#additional-features)
+- [Telemetry](#telemetry)
 - [Getting Started](#getting-started)
 - [Security Best Practices for SDK Users](#security-best-practices-for-sdk-users)
 
@@ -26,8 +28,9 @@ In most cases, the SDK will inform you if the environment lacks the required set
 
 Below are some common requirements which you can set up in advance before trying to run a job.
 
-### Python Version
-* The SDK also requires at least Python 3.12.
+### Supported Python Versions
+Nova Forge SDK is tested on:
+* Python 3.12
 
 ### IAM Roles/Policies
 * You will need an IAM role with sufficient permissions in order to use the Nova Forge SDK. You can find a list of these permissions in the `docs/iam_setup.md` file. 
@@ -44,34 +47,50 @@ Nova customization jobs also require access to enough of the right instance type
 
 For HyperPod-based customization jobs, the SDK uses the [SageMaker HyperPod CLI](https://github.com/aws/sagemaker-hyperpod-cli/) to connect to HyperPod Clusters and start jobs.
 
+#### Prerequisites (required for both Forge and Non-Forge customers)
+
+1. **Install Helm 3.** Verify with `helm version`. If not installed:
+    ```bash
+    curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+    chmod 700 get_helm.sh
+    ./get_helm.sh
+    rm -f ./get_helm.sh
+    ```
+
+2. If you are using a Python virtual environment, activate it before installing the CLI:
+    ```bash
+    source <path to venv>/bin/activate
+    ```
+
 #### For Non-Forge Customers
 
-1. Please use [the `release_v2` branch](https://github.com/aws/sagemaker-hyperpod-cli/tree/release_v2). 
-```
-git clone -b release_v2 https://github.com/aws/sagemaker-hyperpod-cli.git
-```
-2. If you are using a Python virtual environment to use the Nova Forge SDK, activate that environment with `source <path to venv>/bin/activate`
+1. Clone the `release_v2` branch of the HyperPod CLI:
+    ```bash
+    git clone -b release_v2 https://github.com/aws/sagemaker-hyperpod-cli.git
+    ```
+2. Install the CLI:
+    ```bash
+    cd sagemaker-hyperpod-cli
+    pip install .
+    ```
+3. Verify the installation:
+    ```bash
+    hyperpod --help
+    ```
 
 #### For Forge Customers
-1. Download the latest Hyperpod CLI repo with Forge feature support from remote s3.
-```
-aws s3 cp s3://nova-forge-c7363-206080352451-us-east-1/v1/ ./ --recursive 
-mkdir -p src/hyperpod_cli/sagemaker_hyperpod_recipes/launcher/nemo
-git clone https://github.com/NVIDIA/NeMo-Framework-Launcher.git src/hyperpod_cli/sagemaker_hyperpod_recipes/launcher/nemo/nemo_framework_launcher --recursive 
-pip install -e .
-```
 
-2. Follow the installation instructions [in the HyperPod CLI README](https://github.com/aws/sagemaker-hyperpod-cli/tree/release_v2?tab=readme-ov-file#installation) to set up the CLI. As of November 2025, the steps are as follows:
-   1. Make sure that `helm` is installed with `helm --help`. If it isn't, use the below script to install it:
-        ```
-        curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
-        chmod 700 get_helm.sh
-        ./get_helm.sh
-        rm -f ./get_helm.sh
-        ```
-    2. `cd` into the directory where you cloned the HyperPod CLI
-    3. Run `pip install .` to install the CLI
-    4. Run `hyperpod --help` to verify that the CLI was installed
+1. Download the latest HyperPod CLI repo with Forge feature support from S3:
+    ```bash
+    aws s3 cp s3://nova-forge-c7363-206080352451-us-east-1/v1/ ./ --recursive
+    mkdir -p src/hyperpod_cli/sagemaker_hyperpod_recipes/launcher/nemo
+    git clone https://github.com/NVIDIA/NeMo-Framework-Launcher.git src/hyperpod_cli/sagemaker_hyperpod_recipes/launcher/nemo/nemo_framework_launcher --recursive
+    pip install -e .
+    ```
+2. Verify the installation:
+    ```bash
+    hyperpod --help
+    ```
 ---
 ## Supported Models and Training Methods
 
@@ -101,20 +120,43 @@ pip install -e .
 
 ### Platform Support
 
-| Platform  | Description                      | Models Supported |
-| --------- | -------------------------------- | ---------------- |
-| `SMTJ`    | SageMaker Training Jobs          | All models       |
-| `SMHP`    | SageMaker HyperPod               | All models       |
-| `BEDROCK` | Amazon Bedrock (Managed Service) | All models       |
+| Platform          | Description                                | Models Supported | Supported Methods                        |
+| ----------------- | ------------------------------------------ | ---------------- | ---------------------------------------- |
+| `SMTJ`            | SageMaker Training Jobs                    | All models       | All methods                              |
+| `SMTJServerless`  | SageMaker Serverless Training (no infra)   | All models       | SFT, DPO, RFT_LORA, EVALUATION           |
+| `SMHP`            | SageMaker HyperPod                         | All models       | All methods                              |
+| `BEDROCK`         | Amazon Bedrock (Managed Service)           | All models       | SFT, DPO, RFT                            |
 
+## Data Preparation
+
+Before launching a training job, your data needs to be in the right format. The SDK's dataset module handles loading, transforming, validating, filtering, and saving training data — supporting JSONL, JSON, CSV, Parquet, and Arrow formats from local files or S3.
+
+A typical data preparation workflow:
+
+```python
+from amzn_nova_forge.dataset import JSONLDatasetLoader
+from amzn_nova_forge.model import TrainingMethod, Model, TransformMethod, ValidateMethod
+
+loader = JSONLDatasetLoader()
+loader.load("s3://my-bucket/raw-data.jsonl")
+loader.transform(method=TransformMethod.SCHEMA, training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2)
+loader.validate(method=ValidateMethod.INVALID_RECORDS, training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2)
+loader.save("s3://my-bucket/prepared-data.jsonl")
+```
+
+For the complete guide — including column mappings, dataset splitting, filtering, chaining operations, and end-to-end examples — see **[Data Preparation Guide](docs/data_prep.md)**.
+
+For a hands-on notebook walkthrough, see [`samples/dataprep_quickstart.ipynb`](samples/dataprep_quickstart.ipynb).
+
+---
 ## Core Modules Overview
 
 The Nova Forge SDK is organized into the following modules:
 
 | Module             | Purpose                                       | Key Components                                                   |
 | ------------------ | --------------------------------------------- | ---------------------------------------------------------------- |
-| **Dataset**        | Data loading, transformation, and preparation | `JSONLDatasetLoader`, `JSONDatasetLoader`, `CSVDatasetLoader`    |
-| **Manager**        | Runtime infrastructure management             | `SMTJRuntimeManager`, `SMHPRuntimeManager`, `BedrockRuntimeManager` |
+| **Dataset**        | Data loading, transformation, filtering, and preparation | `JSONLDatasetLoader`, `JSONDatasetLoader`, `CSVDatasetLoader`    |
+| **Manager**        | Runtime infrastructure management             | `SMTJRuntimeManager`, `SMTJServerlessRuntimeManager`, `SMHPRuntimeManager`, `BedrockRuntimeManager` |
 | **Model**          | Main SDK entrypoint and orchestration         | `NovaModelCustomizer`                                             |
 | **Monitor**        | Job monitoring and logging                    | `CloudWatchLogMonitor`, `MLflowMonitor`                          |
 | **RFT Multiturn**  | Reinforcement fine-tuning infrastructure      | `RFTMultiturnInfrastructure`                                      |
@@ -126,17 +168,9 @@ The Nova Forge SDK is organized into the following modules:
 * For RFT Multiturn examples: See [`samples/rft_multiturn_quickstart.ipynb`](samples/rft_multiturn_quickstart.ipynb)
 
 ### Dataset Module
-Handles data loading, transformation, validation, and persistence for training datasets. Supports JSONL, JSON, and CSV formats from local files or S3.
+Handles data loading, transformation, validation, filtering, and persistence for training datasets. Supports JSONL, JSON, CSV, Parquet, and Arrow formats from local files or S3.
 
-```python
-loader = JSONLDatasetLoader()
-loader.load("data.jsonl")
-loader.transform(method=TransformMethod.SCHEMA, training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2)
-loader.validate(method=ValidateMethod.SCHEMA, training_method=TrainingMethod.SFT_LORA, model=Model.NOVA_LITE_2)
-loader.save("output.jsonl")
-```
-
-For the full data preparation guide including column mappings, splitting, and end-to-end examples, see [docs/data_prep.md](docs/data_prep.md).
+See the [Data Preparation](#data-preparation) section above for usage overview, or the full **[Data Preparation Guide](docs/data_prep.md)** for detailed documentation.
 
 ### Manager Module
 Manages runtime infrastructure for executing training and evaluation jobs.
@@ -313,7 +347,7 @@ customizer = NovaModelCustomizer(
     method=TrainingMethod.SFT_LORA,
     infra=SMHPRuntimeManager(...),  # Must use HyperPod
     data_s3_path="s3://bucket/data.jsonl",
-    output_s3_path="s3://bucket/output/",  # Optional
+    output_s3_path="s3://bucket/output",  # Optional
     data_mixing_enabled=True
 )
 
@@ -349,7 +383,9 @@ Get email notifications when your training jobs complete, fail, or are stopped. 
 
 **Platform Support:**
 - **SMTJ** (SageMaker Training Jobs): Minimal configuration required
+- **SMTJServerless** (SageMaker Serverless): No instance type needed — SageMaker manages compute automatically
 - **SMHP** (SageMaker HyperPod): Requires kubectl Lambda layer + additional parameters (see [`docs/spec.md`](spec.md) for more details)
+- **Bedrock** (Amazon Bedrock): Fully managed, no infrastructure configuration required
 
 **Quick Example:**
 ```python
@@ -375,6 +411,15 @@ result.enable_job_notifications(
 - Notification infrastructure is created once per region (SMTJ) or once per cluster (SMHP) and shared across jobs.
 - See [`docs/job_notifications.md`](docs/job_notifications.md) for detailed setup instructions, troubleshooting, and advanced usage
 - See [`docs/spec.md`](docs/spec.md) for complete API documentation on job notifications. 
+
+---
+## Telemetry
+
+The Nova Forge SDK has telemetry enabled to help us better understand user needs, diagnose issues, and deliver new features. This telemetry tracks the usage of various SDK functions. If you prefer to opt out of telemetry, you can do so by setting the `TELEMETRY_OPT_OUT` environment variable to `true`:
+
+```bash
+export TELEMETRY_OPT_OUT=true
+```
 
 ---
 ## Getting Started
@@ -445,8 +490,8 @@ customizer = NovaModelCustomizer(
     model=Model.NOVA_LITE_2,
     method=TrainingMethod.SFT_LORA,
     infra=runtime,
-    data_s3_path="s3://secure-training-bucket/encrypted-data/",
-    output_s3_path="s3://secure-output-bucket/results/"
+    data_s3_path="s3://secure-training-bucket/encrypted-data/data.jsonl",
+    output_s3_path="s3://secure-output-bucket/results"
 )
 ```
 

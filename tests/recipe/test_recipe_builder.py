@@ -6,16 +6,16 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 import yaml
 
-from amzn_nova_forge.manager.runtime_manager import RuntimeManager
-from amzn_nova_forge.model.model_enums import (
+from amzn_nova_forge.core.enums import (
+    EvaluationTask,
     Model,
     Platform,
     TrainingMethod,
     Version,
 )
+from amzn_nova_forge.manager.runtime_manager import RuntimeManager
 from amzn_nova_forge.monitor import MLflowMonitor
 from amzn_nova_forge.recipe.recipe_builder import RecipeBuilder
-from amzn_nova_forge.recipe.recipe_config import EvaluationTask
 from amzn_nova_forge.util.data_mixing import DataMixing
 
 
@@ -150,9 +150,7 @@ class TestRecipeBuilder(unittest.TestCase):
         self.assertEqual(builder.rft_lambda_arn, rft_lambda)
 
     @patch("amzn_nova_forge.recipe.recipe_builder.logger")
-    def test_initialization_rft_lambda_arn_ignored_for_non_rft_method(
-        self, mock_logger
-    ):
+    def test_initialization_rft_lambda_arn_ignored_for_non_rft_method(self, mock_logger):
         rft_lambda = "arn:aws:lambda:us-east-1:123456789012:function:reward"
         builder = RecipeBuilder(
             region=self.region,
@@ -232,9 +230,7 @@ class TestRecipeBuilder(unittest.TestCase):
         self.assertEqual(builder.validation_data_s3_path, validation_data_s3)
 
     @patch("amzn_nova_forge.recipe.recipe_builder.logger")
-    def test_initialization_validation_data_s3_path_ignored_for_non_cpt_method(
-        self, mock_logger
-    ):
+    def test_initialization_validation_data_s3_path_ignored_for_non_cpt_method(self, mock_logger):
         validation_data_s3 = "s3://bucket/validation-data"
         builder = RecipeBuilder(
             region=self.region,
@@ -403,9 +399,7 @@ class TestRecipeBuilder(unittest.TestCase):
         self.assertIn(self.job_name, path)
         self.assertTrue(recipe_path.temp)
 
-    @patch(
-        "builtins.__import__", side_effect=ModuleNotFoundError("hyperpod_cli missing")
-    )
+    @patch("builtins.__import__", side_effect=ModuleNotFoundError("hyperpod_cli missing"))
     def test_generate_recipe_path_missing_hyperpod_cli(self, _):
         builder = RecipeBuilder(
             region=self.region,
@@ -624,9 +618,7 @@ class TestRecipeBuilder(unittest.TestCase):
     @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_forge.recipe.recipe_builder.Validator")
-    def test_build_and_validate_success(
-        self, mock_validator, mock_download, mock_metadata
-    ):
+    def test_build_and_validate_success(self, mock_validator, mock_download, mock_metadata):
         # Setup mocks
         mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
 
@@ -687,9 +679,7 @@ class TestRecipeBuilder(unittest.TestCase):
     @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_forge.recipe.recipe_builder.Validator")
-    def test_build_and_validate_with_overrides(
-        self, mock_validator, mock_download, mock_metadata
-    ):
+    def test_build_and_validate_with_overrides(self, mock_validator, mock_download, mock_metadata):
         mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
 
         recipe_template = {
@@ -874,9 +864,7 @@ class TestRecipeBuilder(unittest.TestCase):
     @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_forge.recipe.recipe_builder.Validator")
-    def test_build_and_validate_with_mlflow(
-        self, mock_validator, mock_download, mock_metadata
-    ):
+    def test_build_and_validate_with_mlflow(self, mock_validator, mock_download, mock_metadata):
         mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
 
         recipe_template = {
@@ -1309,9 +1297,7 @@ class TestRecipeBuilder(unittest.TestCase):
             with open(recipe_path, "r") as f:
                 config = yaml.safe_load(f)
 
-            self.assertEqual(
-                config["run"]["validation_data_s3_path"], validation_data_s3
-            )
+            self.assertEqual(config["run"]["validation_data_s3_path"], validation_data_s3)
 
     @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
@@ -1362,9 +1348,7 @@ class TestRecipeBuilder(unittest.TestCase):
     @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_forge.recipe.recipe_builder.Validator")
-    def test_build_and_validate_dpo_lora(
-        self, mock_validator, mock_download, mock_metadata
-    ):
+    def test_build_and_validate_dpo_lora(self, mock_validator, mock_download, mock_metadata):
         mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
 
         recipe_template = {
@@ -1407,9 +1391,7 @@ class TestRecipeBuilder(unittest.TestCase):
     @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_forge.recipe.recipe_builder.Validator")
-    def test_build_and_validate_dpo_full(
-        self, mock_validator, mock_download, mock_metadata
-    ):
+    def test_build_and_validate_dpo_full(self, mock_validator, mock_download, mock_metadata):
         mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
 
         recipe_template = {
@@ -1603,13 +1585,9 @@ class TestRecipeBuilder(unittest.TestCase):
 
             self.assertEqual(config["run"]["name"], "custom-job-name")
             self.assertEqual(config["run"]["data_s3_path"], "s3://bucket/custom-data")
-            self.assertEqual(
-                config["run"]["output_s3_path"], "s3://bucket/custom-output"
-            )
+            self.assertEqual(config["run"]["output_s3_path"], "s3://bucket/custom-output")
             self.assertEqual(config["training_config"]["epochs"], 20)
-            self.assertEqual(
-                config["training_config"]["name"], "distributed_fused_adam"
-            )
+            self.assertEqual(config["training_config"]["name"], "distributed_fused_adam")
 
             mock_validator.validate.assert_called_once()
 
@@ -1653,16 +1631,12 @@ class TestRecipeBuilder(unittest.TestCase):
 
         builder._load_input_recipe("test_path.yaml")
 
-        self.assertEqual(
-            builder.input_recipe_dict["training_config"]["model"]["optim"]["lr"], 1e-5
-        )
+        self.assertEqual(builder.input_recipe_dict["training_config"]["model"]["optim"]["lr"], 1e-5)
         self.assertEqual(
             builder.input_recipe_dict["training_config"]["model"]["optim"]["eps"], 1e-06
         )
         self.assertEqual(
-            builder.input_recipe_dict["training_config"]["model"]["optim"]["sched"][
-                "min_lr"
-            ],
+            builder.input_recipe_dict["training_config"]["model"]["optim"]["sched"]["min_lr"],
             1e-6,
         )
 
@@ -1673,9 +1647,7 @@ class TestRecipeBuilder(unittest.TestCase):
             builder.input_recipe_dict["training_config"]["model"]["optim"]["eps"], float
         )
         self.assertIsInstance(
-            builder.input_recipe_dict["training_config"]["model"]["optim"]["sched"][
-                "min_lr"
-            ],
+            builder.input_recipe_dict["training_config"]["model"]["optim"]["sched"]["min_lr"],
             float,
         )
 
@@ -1686,16 +1658,12 @@ class TestRecipeBuilder(unittest.TestCase):
             "adam",
         )
         self.assertEqual(
-            builder.input_recipe_dict["training_config"]["model"]["optim"]["sched"][
-                "warmup_steps"
-            ],
+            builder.input_recipe_dict["training_config"]["model"]["optim"]["sched"]["warmup_steps"],
             10,
         )
 
     @patch("amzn_nova_forge.recipe.recipe_builder.load_file_as_string")
-    def test_load_input_recipe_handles_lists_with_scientific_notation(
-        self, mock_load_file
-    ):
+    def test_load_input_recipe_handles_lists_with_scientific_notation(self, mock_load_file):
         builder = RecipeBuilder(
             region=self.region,
             job_name=self.job_name,
@@ -1734,9 +1702,7 @@ class TestRecipeBuilder(unittest.TestCase):
             builder.input_recipe_dict["training_config"]["learning_rates"][2], float
         )
 
-        self.assertEqual(
-            builder.input_recipe_dict["training_config"]["other_values"], [0.9, 0.999]
-        )
+        self.assertEqual(builder.input_recipe_dict["training_config"]["other_values"], [0.9, 0.999])
         self.assertEqual(
             builder.input_recipe_dict["training_config"]["names"],
             ["config1", "config2"],
@@ -1793,9 +1759,7 @@ class TestRecipeBuilder(unittest.TestCase):
         self.assertIsInstance(builder.input_recipe_dict["scientific_string"], float)
 
     @patch("amzn_nova_forge.recipe.recipe_builder.load_file_as_string")
-    def test_load_input_recipe_handles_uppercase_scientific_notation(
-        self, mock_load_file
-    ):
+    def test_load_input_recipe_handles_uppercase_scientific_notation(self, mock_load_file):
         builder = RecipeBuilder(
             region=self.region,
             job_name=self.job_name,
@@ -1826,9 +1790,7 @@ class TestRecipeBuilder(unittest.TestCase):
         self.assertIsInstance(builder.input_recipe_dict["mixed_case"], float)
 
     @patch("amzn_nova_forge.recipe.recipe_builder.load_file_as_string")
-    def test_load_input_recipe_handles_invalid_scientific_notation_gracefully(
-        self, mock_load_file
-    ):
+    def test_load_input_recipe_handles_invalid_scientific_notation_gracefully(self, mock_load_file):
         builder = RecipeBuilder(
             region=self.region,
             job_name=self.job_name,
@@ -1994,9 +1956,7 @@ class TestRecipeBuilder(unittest.TestCase):
 
             self.assertEqual(config["run"]["name"], "custom-job-name")
             self.assertEqual(config["run"]["data_s3_path"], "s3://bucket/custom-data")
-            self.assertEqual(
-                config["run"]["output_s3_path"], "s3://bucket/custom-output"
-            )
+            self.assertEqual(config["run"]["output_s3_path"], "s3://bucket/custom-output")
             self.assertEqual(config["training_config"]["alpha"], 20)
 
             mock_validator.validate.assert_called_once()
@@ -2607,9 +2567,7 @@ class TestRecipeBuilder(unittest.TestCase):
             with open(recipe_path, "r") as f:
                 config = yaml.safe_load(f)
 
-            self.assertEqual(
-                config["training_config"]["model"]["peft"]["peft_scheme"], "lora"
-            )
+            self.assertEqual(config["training_config"]["model"]["peft"]["peft_scheme"], "lora")
 
     @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_forge.util.recipe.download_templates_from_local")
@@ -2676,13 +2634,9 @@ class TestRecipeBuilder(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as tmpdir:
                     output_path = os.path.join(tmpdir, "recipe.yaml")
 
-                    recipe_path, *_ = builder.build_and_validate(
-                        output_recipe_path=output_path
-                    )
+                    recipe_path, *_ = builder.build_and_validate(output_recipe_path=output_path)
 
-                    mock_download_local.assert_called_once_with(
-                        mock_metadata.return_value
-                    )
+                    mock_download_local.assert_called_once_with(mock_metadata.return_value)
 
                     self.assertTrue(os.path.exists(recipe_path))
 
@@ -2694,9 +2648,7 @@ class TestRecipeBuilder(unittest.TestCase):
     @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_forge.util.recipe.download_templates_from_local")
     @patch("amzn_nova_forge.recipe.recipe_builder.Validator")
-    def test_data_s3_path_never_null(
-        self, mock_validator, mock_download_local, mock_metadata
-    ):
+    def test_data_s3_path_never_null(self, mock_validator, mock_download_local, mock_metadata):
         """
         Ensure data_s3_path defaults to empty string, not null.
 
@@ -3270,9 +3222,7 @@ class TestRecipeBuilder(unittest.TestCase):
     @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_forge.recipe.recipe_builder.Validator")
-    def test_save_steps_override_with_integer(
-        self, mock_validator, mock_download, mock_metadata
-    ):
+    def test_save_steps_override_with_integer(self, mock_validator, mock_download, mock_metadata):
         """Test that save_steps can be overridden with an integer value"""
         mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
 
@@ -3325,15 +3275,11 @@ class TestRecipeBuilder(unittest.TestCase):
 
             # save_steps should be an integer, not a string
             self.assertEqual(config["training_config"]["trainer"]["save_steps"], 100)
-            self.assertIsInstance(
-                config["training_config"]["trainer"]["save_steps"], int
-            )
+            self.assertIsInstance(config["training_config"]["trainer"]["save_steps"], int)
 
     @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
-    def test_save_steps_override_with_numeric_string(
-        self, mock_download, mock_metadata
-    ):
+    def test_save_steps_override_with_numeric_string(self, mock_download, mock_metadata):
         """Test that save_steps numeric string raises validation error"""
         mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
 
@@ -3470,9 +3416,7 @@ class TestRecipeBuilder(unittest.TestCase):
                 config["training_config"]["trainer"]["save_steps"],
                 "${oc.select:training_config.trainer.max_steps}",
             )
-            self.assertIsInstance(
-                config["training_config"]["trainer"]["save_steps"], str
-            )
+            self.assertIsInstance(config["training_config"]["trainer"]["save_steps"], str)
 
     @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_forge.recipe.recipe_builder.load_file_as_string")
@@ -3565,9 +3509,7 @@ class TestRecipeBuilder(unittest.TestCase):
 
     @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
-    def test_save_steps_override_does_not_affect_other_params(
-        self, mock_download, mock_metadata
-    ):
+    def test_save_steps_override_does_not_affect_other_params(self, mock_download, mock_metadata):
         """Test that save_steps validation doesn't affect other string parameters"""
         mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
 
@@ -3641,6 +3583,157 @@ class TestRecipeBuilder(unittest.TestCase):
 
             # Verify the recipe was created successfully
             self.assertTrue(os.path.exists(recipe_path))
+
+    @patch("amzn_nova_forge.recipe.recipe_builder.logger")
+    @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
+    @patch("amzn_nova_forge.recipe.recipe_builder.Validator")
+    def test_data_s3_path_override_ignored_when_multimodal(
+        self, mock_validator, mock_download, mock_metadata, mock_logger
+    ):
+        """data_s3_path in overrides is ignored when is_multimodal=True (used for datamix recipe selection)."""
+        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+
+        recipe_template = {
+            "run": {"name": "{{name}}"},
+            "data": {"data_s3_path": "{{data_s3_path}}"},
+        }
+        overrides_template = {
+            "name": {"default": "", "type": "string"},
+            "data_s3_path": {"default": "s3://bucket/original", "type": "string"},
+        }
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=self.platform,
+            model=self.mock_model,
+            method=self.method,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path="s3://bucket/original",
+            is_multimodal=True,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "recipe.yaml")
+            builder.build_and_validate(
+                overrides={"data_s3_path": "s3://bucket/override"},
+                output_recipe_path=output_path,
+            )
+
+            mock_logger.warning.assert_any_call(
+                "Override for 'data_s3_path' will be ignored. If you wish to pass 'data_s3_path', please update your NovaModelCustomizer object."
+            )
+
+    @patch("amzn_nova_forge.recipe.recipe_builder.logger")
+    @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
+    @patch("amzn_nova_forge.recipe.recipe_builder.Validator")
+    @patch("amzn_nova_forge.recipe.recipe_builder.load_file_as_string")
+    def test_data_s3_path_in_input_recipe_ignored_when_multimodal(
+        self, mock_load_file, mock_validator, mock_download, mock_metadata, mock_logger
+    ):
+        """data_s3_path in input recipe is ignored when is_multimodal=True."""
+        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+
+        recipe_template = {
+            "run": {"name": "{{name}}"},
+            "data": {"data_s3_path": "{{data_s3_path}}"},
+        }
+        overrides_template = {
+            "name": {"default": "", "type": "string"},
+            "data_s3_path": {"default": "s3://bucket/original", "type": "string"},
+        }
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        input_recipe = {
+            "run": {"name": "test"},
+            "data": {"data_s3_path": "s3://bucket/from-recipe"},
+        }
+        mock_load_file.return_value = yaml.dump(input_recipe)
+
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=self.platform,
+            model=self.mock_model,
+            method=self.method,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path="s3://bucket/original",
+            is_multimodal=True,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "recipe.yaml")
+            input_recipe_path = os.path.join(tmpdir, "input_recipe.yaml")
+
+            builder.build_and_validate(
+                input_recipe_path=input_recipe_path,
+                output_recipe_path=output_path,
+            )
+
+            mock_logger.warning.assert_any_call(
+                "Override for 'data_s3_path' will be ignored. If you wish to pass 'data_s3_path', please update your NovaModelCustomizer object."
+            )
+
+    @patch("amzn_nova_forge.recipe.recipe_builder.logger")
+    @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
+    @patch("amzn_nova_forge.recipe.recipe_builder.Validator")
+    def test_data_s3_path_override_allowed_when_not_multimodal(
+        self, mock_validator, mock_download, mock_metadata, mock_logger
+    ):
+        """data_s3_path in overrides is applied normally when is_multimodal=False."""
+        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+
+        recipe_template = {
+            "run": {"name": "{{name}}"},
+            "data": {"data_s3_path": "{{data_s3_path}}"},
+        }
+        overrides_template = {
+            "name": {"default": "", "type": "string"},
+            "data_s3_path": {"default": "s3://bucket/original", "type": "string"},
+        }
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=self.platform,
+            model=self.mock_model,
+            method=self.method,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path="s3://bucket/original",
+            is_multimodal=False,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "recipe.yaml")
+            builder.build_and_validate(
+                overrides={"data_s3_path": "s3://bucket/override"},
+                output_recipe_path=output_path,
+            )
+
+            # Warning should NOT be emitted
+            warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
+            self.assertFalse(
+                any("data_s3_path" in c for c in warning_calls),
+                "data_s3_path warning should not be emitted when is_multimodal=False",
+            )
+
+            with open(output_path, "r") as f:
+                config = yaml.safe_load(f)
+            self.assertEqual(config["data"]["data_s3_path"], "s3://bucket/override")
 
 
 if __name__ == "__main__":

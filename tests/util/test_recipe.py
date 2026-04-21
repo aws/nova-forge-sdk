@@ -8,22 +8,23 @@ from unittest.mock import MagicMock, Mock, mock_open, patch
 
 from botocore.exceptions import ClientError
 
-from amzn_nova_forge.model.model_enums import (
+from amzn_nova_forge.core.enums import (
+    EvaluationTask,
     Model,
     Platform,
     TrainingMethod,
 )
-from amzn_nova_forge.recipe.recipe_config import EvaluationTask
 from amzn_nova_forge.util.recipe import (
     FileLoadError,
     RecipePath,
-    _get_hub_content_name,
+    _get_smhp_replicas_enum,
     _parse_s3_uri,
     _validate_extension,
     download_templates_from_local,
     download_templates_from_s3,
     get_hub_recipe_metadata,
     load_file_content,
+    load_recipe_templates,
 )
 
 
@@ -142,9 +143,7 @@ class TestLoadFileContent(unittest.TestCase):
 
     @patch("amzn_nova_forge.util.recipe.boto3.client")
     @patch("amzn_nova_forge.util.recipe._parse_s3_uri")
-    def test_load_file_content_s3_client_error(
-        self, mock_parse_s3_uri, mock_boto_client
-    ):
+    def test_load_file_content_s3_client_error(self, mock_parse_s3_uri, mock_boto_client):
         mock_parse_s3_uri.return_value = ("bucket", "key.yaml")
         mock_s3 = MagicMock()
 
@@ -181,33 +180,8 @@ class TestLoadFileContent(unittest.TestCase):
         self.assertIn("must have .yaml extension", str(context.exception))
 
 
-class TestGetHubContentName(unittest.TestCase):
-    def test_get_hub_content_name_nova_micro(self):
-        result = _get_hub_content_name(Model.NOVA_MICRO)
-        self.assertEqual(result, "nova-textgeneration-micro")
-
-    def test_get_hub_content_name_nova_lite(self):
-        result = _get_hub_content_name(Model.NOVA_LITE)
-        self.assertEqual(result, "nova-textgeneration-lite")
-
-    def test_get_hub_content_name_nova_lite_2(self):
-        result = _get_hub_content_name(Model.NOVA_LITE_2)
-        self.assertEqual(result, "nova-textgeneration-lite-v2")
-
-    def test_get_hub_content_name_nova_pro(self):
-        result = _get_hub_content_name(Model.NOVA_PRO)
-        self.assertEqual(result, "nova-textgeneration-pro")
-
-    def test_get_hub_content_name_unsupported_model(self):
-        mock_model = Mock(spec=Model)
-        mock_model.value = "unsupported"
-        with self.assertRaises(ValueError) as context:
-            _get_hub_content_name(mock_model)
-        self.assertIn("Unsupported model", str(context.exception))
-
-
 class TestGetHubRecipeMetadata(unittest.TestCase):
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     def test_get_hub_recipe_metadata_sft_lora_smtj(self, mock_get_hub_content):
         mock_get_hub_content.return_value = {
             "HubContentDocument": {
@@ -248,7 +222,45 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
         self.assertIn("SmtjRecipeTemplateS3Uri", result)
         self.assertIn("SmtjOverrideParamsS3Uri", result)
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
+    def test_get_hub_recipe_metadata_smtj_serverless_accepts_none_instance_type(
+        self, mock_get_hub_content
+    ):
+        """SMTJServerless allows instance_type=None in get_hub_recipe_metadata."""
+        mock_get_hub_content.return_value = {
+            "HubContentDocument": {
+                "RecipeCollection": [
+                    {
+                        "DisplayName": "Nova Lite LoRA SFT on GPU",
+                        "Name": "nova_lite_1_0_p5_p4d_gpu_lora_sft",
+                        "CustomizationTechnique": "SFT",
+                        "InstanceCount": 1,
+                        "Type": "FineTuning",
+                        "Hardware": "GPU",
+                        "SupportedInstanceTypes": ["ml.p5.48xlarge"],
+                        "Peft": "LORA",
+                        "SequenceLength": "8K",
+                        "SmtjRecipeTemplateS3Uri": "s3://bucket/recipe.yaml",
+                        "SmtjOverrideParamsS3Uri": "s3://bucket/override.json",
+                        "SmtjImageUri": "123.dkr.ecr.us-east-1.amazonaws.com/repo:tag",
+                    }
+                ]
+            }
+        }
+
+        # Should not raise even with instance_type=None
+        result = get_hub_recipe_metadata(
+            model=Model.NOVA_LITE,
+            method=TrainingMethod.SFT_LORA,
+            platform=Platform.SMTJServerless,
+            instance_type=None,
+            region="us-east-1",
+        )
+
+        self.assertIn("SmtjRecipeTemplateS3Uri", result)
+        self.assertEqual(result["Peft"], "LORA")
+
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     def test_get_hub_recipe_metadata_sft_full_smtj(self, mock_get_hub_content):
         mock_get_hub_content.return_value = {
             "HubContentDocument": {
@@ -282,7 +294,7 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
         self.assertNotIn("Peft", result)
         self.assertEqual(result["SequenceLength"], "32K")
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     def test_get_hub_recipe_metadata_smhp_platform(self, mock_get_hub_content):
         mock_get_hub_content.return_value = {
             "HubContentDocument": {
@@ -318,7 +330,7 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
         self.assertIn("HpEksPayloadTemplateS3Uri", result)
         self.assertIn("HpEksOverrideParamsS3Uri", result)
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     def test_get_hub_recipe_metadata_filters_forge_recipes(self, mock_get_hub_content):
         mock_get_hub_content.return_value = {
             "HubContentDocument": {
@@ -355,7 +367,7 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
         self.assertEqual(result["Name"], "nova_lite_1_0_p5_p4d_gpu_lora_sft")
         self.assertNotIn("IsSubscriptionModel", result)
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     def test_get_hub_recipe_metadata_with_data_mixing_includes_forge_recipes(
         self, mock_get_hub_content
     ):
@@ -394,17 +406,13 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
             data_mixing=True,
         )
 
-        self.assertEqual(
-            result["Name"], "nova_lite_1_0_p5_gpu_lora_sft_text_with_datamix"
-        )
+        self.assertEqual(result["Name"], "nova_lite_1_0_p5_gpu_lora_sft_text_with_datamix")
         self.assertTrue(result.get("IsSubscriptionModel"))
         self.assertIn("text_with_datamix", result["Name"])
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     def test_get_hub_recipe_metadata_no_recipes_for_method(self, mock_get_hub_content):
-        mock_get_hub_content.return_value = {
-            "HubContentDocument": {"RecipeCollection": []}
-        }
+        mock_get_hub_content.return_value = {"HubContentDocument": {"RecipeCollection": []}}
 
         with self.assertRaises(ValueError) as context:
             get_hub_recipe_metadata(
@@ -416,10 +424,8 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
             )
         self.assertIn("is not supported", str(context.exception))
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
-    def test_get_hub_recipe_metadata_no_recipes_for_platform(
-        self, mock_get_hub_content
-    ):
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
+    def test_get_hub_recipe_metadata_no_recipes_for_platform(self, mock_get_hub_content):
         mock_get_hub_content.return_value = {
             "HubContentDocument": {
                 "RecipeCollection": [
@@ -442,10 +448,8 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
             )
         self.assertIn("is not supported on", str(context.exception))
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
-    def test_get_hub_recipe_metadata_no_matching_training_type(
-        self, mock_get_hub_content
-    ):
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
+    def test_get_hub_recipe_metadata_no_matching_training_type(self, mock_get_hub_content):
         mock_get_hub_content.return_value = {
             "HubContentDocument": {
                 "RecipeCollection": [
@@ -469,7 +473,7 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
             )
         self.assertIn("is not supported on", str(context.exception))
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     def test_get_hub_recipe_metadata_multiple_recipes_selects_correct_one(
         self, mock_get_hub_content
     ):
@@ -509,7 +513,7 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
         self.assertEqual(result["Name"], "nova_lite_1_0_g5_g6_12x_gpu_lora_sft")
         self.assertEqual(result["Peft"], "LORA")
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     def test_get_hub_recipe_metadata_rft_converts_to_rlvr(self, mock_get_hub_content):
         mock_get_hub_content.return_value = {
             "HubContentDocument": {
@@ -536,10 +540,8 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
         self.assertEqual(result["CustomizationTechnique"], "RLVR")
         self.assertNotIn("Peft", result)
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
-    def test_get_hub_recipe_metadata_evaluation_missing_task(
-        self, mock_get_hub_content
-    ):
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
+    def test_get_hub_recipe_metadata_evaluation_missing_task(self, mock_get_hub_content):
         mock_get_hub_content.return_value = {
             "HubContentDocument": {
                 "RecipeCollection": [
@@ -571,7 +573,7 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
             "'eval_task' is a required parameter when calling evaluate().",
         )
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     def test_get_hub_recipe_metadata_evaluation_gen_qa(self, mock_get_hub_content):
         mock_get_hub_content.return_value = {
             "HubContentDocument": {
@@ -610,11 +612,9 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
         self.assertEqual(result["Name"], "nova_lite_eval_byo")
         self.assertIn("bring your own dataset", result["DisplayName"].lower())
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     @patch("amzn_nova_forge.util.recipe.os.path.dirname")
-    def test_get_hub_recipe_metadata_evaluation_llm_judge(
-        self, mock_dirname, mock_get_hub_content
-    ):
+    def test_get_hub_recipe_metadata_evaluation_llm_judge(self, mock_dirname, mock_get_hub_content):
         mock_dirname.return_value = "/mock/sdk/path"
         mock_get_hub_content.return_value = {
             "HubContentDocument": {
@@ -646,7 +646,7 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
         self.assertIn("llm_judge", result["RecipeTemplatePath"])
         self.assertIn("llm_judge", result["OverrideParamsPath"])
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     @patch("amzn_nova_forge.util.recipe.os.path.dirname")
     def test_get_hub_recipe_metadata_evaluation_rubric_llm_judge(
         self, mock_dirname, mock_get_hub_content
@@ -682,11 +682,9 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
         self.assertIn("rubric_llm_judge", result["RecipeTemplatePath"])
         self.assertIn("rubric_llm_judge", result["OverrideParamsPath"])
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     @patch("amzn_nova_forge.util.recipe.os.path.dirname")
-    def test_get_hub_recipe_metadata_evaluation_rft_eval(
-        self, mock_dirname, mock_get_hub_content
-    ):
+    def test_get_hub_recipe_metadata_evaluation_rft_eval(self, mock_dirname, mock_get_hub_content):
         mock_dirname.return_value = "/mock/sdk/path"
         mock_get_hub_content.return_value = {
             "HubContentDocument": {
@@ -718,10 +716,8 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
         self.assertIn("rft_eval", result["RecipeTemplatePath"])
         self.assertIn("rft_eval", result["OverrideParamsPath"])
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
-    def test_get_hub_recipe_metadata_evaluation_general_benchmark(
-        self, mock_get_hub_content
-    ):
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
+    def test_get_hub_recipe_metadata_evaluation_general_benchmark(self, mock_get_hub_content):
         mock_get_hub_content.return_value = {
             "HubContentDocument": {
                 "RecipeCollection": [
@@ -759,10 +755,8 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
         self.assertEqual(result["Name"], "nova_lite_eval_benchmark")
         self.assertIn("general text benchmark", result["DisplayName"].lower())
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
-    def test_get_hub_recipe_metadata_evaluation_no_matching_recipe(
-        self, mock_get_hub_content
-    ):
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
+    def test_get_hub_recipe_metadata_evaluation_no_matching_recipe(self, mock_get_hub_content):
         mock_get_hub_content.return_value = {
             "HubContentDocument": {
                 "RecipeCollection": [
@@ -789,7 +783,7 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
 
         self.assertIn("is not supported on", str(context.exception))
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     @patch("amzn_nova_forge.util.recipe.os.path.dirname")
     def test_get_hub_recipe_metadata_evaluation_nova_lite_2_model_version(
         self, mock_dirname, mock_get_hub_content
@@ -821,7 +815,7 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
         self.assertIn("RecipeTemplatePath", result)
         self.assertIn("llm_judge", result["RecipeTemplatePath"])
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     @patch("amzn_nova_forge.util.recipe.os.path.dirname")
     def test_get_hub_recipe_metadata_evaluation_path_construction(
         self, mock_dirname, mock_get_hub_content
@@ -850,17 +844,13 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
             task=EvaluationTask.LLM_JUDGE,
         )
 
-        expected_recipe_path = (
-            "/mock/sdk/path/recipe/templates/recipe/llm_judge_one.yaml"
-        )
-        expected_override_path = (
-            "/mock/sdk/path/recipe/templates/override/llm_judge_one.json"
-        )
+        expected_recipe_path = "/mock/sdk/path/recipe/templates/recipe/llm_judge_one.yaml"
+        expected_override_path = "/mock/sdk/path/recipe/templates/override/llm_judge_one.json"
 
         self.assertEqual(result["RecipeTemplatePath"], expected_recipe_path)
         self.assertEqual(result["OverrideParamsPath"], expected_override_path)
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     @patch("amzn_nova_forge.util.recipe.os.path.dirname")
     @patch(
         "amzn_nova_forge.util.recipe.REGION_TO_ESCROW_ACCOUNT_MAPPING",
@@ -893,10 +883,12 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
             task=EvaluationTask.LLM_JUDGE,
         )
 
-        expected_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/nova-evaluation-repo:SM-TJ-Eval-latest"
+        expected_image_uri = (
+            "123456789012.dkr.ecr.us-east-1.amazonaws.com/nova-evaluation-repo:SM-TJ-Eval-latest"
+        )
         self.assertEqual(result["ImageUri"], expected_image_uri)
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     @patch("amzn_nova_forge.util.recipe.os.path.dirname")
     @patch(
         "amzn_nova_forge.util.recipe.REGION_TO_ESCROW_ACCOUNT_MAPPING",
@@ -929,10 +921,12 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
             task=EvaluationTask.RUBRIC_LLM_JUDGE,
         )
 
-        expected_image_uri = "123456789012.dkr.ecr.us-west-2.amazonaws.com/nova-evaluation-repo:SM-HP-Eval-latest"
+        expected_image_uri = (
+            "123456789012.dkr.ecr.us-west-2.amazonaws.com/nova-evaluation-repo:SM-HP-Eval-latest"
+        )
         self.assertEqual(result["ImageUri"], expected_image_uri)
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     @patch("amzn_nova_forge.util.recipe.os.path.dirname")
     @patch(
         "amzn_nova_forge.util.recipe.REGION_TO_ESCROW_ACCOUNT_MAPPING",
@@ -965,10 +959,12 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
             task=EvaluationTask.RFT_EVAL,
         )
 
-        expected_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/nova-evaluation-repo:SM-TJ-Eval-V2-latest"
+        expected_image_uri = (
+            "123456789012.dkr.ecr.us-east-1.amazonaws.com/nova-evaluation-repo:SM-TJ-Eval-V2-latest"
+        )
         self.assertEqual(result["ImageUri"], expected_image_uri)
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     @patch("amzn_nova_forge.util.recipe.os.path.dirname")
     @patch(
         "amzn_nova_forge.util.recipe.REGION_TO_ESCROW_ACCOUNT_MAPPING",
@@ -992,7 +988,9 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
             }
         }
 
-        expected_image_uri = "111222333444.dkr.ecr.eu-west-1.amazonaws.com/nova-evaluation-repo:SM-TJ-Eval-latest"
+        expected_image_uri = (
+            "111222333444.dkr.ecr.eu-west-1.amazonaws.com/nova-evaluation-repo:SM-TJ-Eval-latest"
+        )
 
         for task in [
             EvaluationTask.LLM_JUDGE,
@@ -1014,7 +1012,7 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
                 f"ImageUri mismatch for task {task.value}",
             )
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     def test_get_hub_recipe_metadata_cpt(self, mock_get_hub_content):
         mock_get_hub_content.return_value = {
             "HubContentDocument": {
@@ -1049,10 +1047,8 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
         self.assertIn("HpEksPayloadTemplateS3Uri", result)
         self.assertIn("HpEksOverrideParamsS3Uri", result)
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
-    def test_get_hub_recipe_metadata_cpt_not_supported_on_smtj(
-        self, mock_get_hub_content
-    ):
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
+    def test_get_hub_recipe_metadata_cpt_not_supported_on_smtj(self, mock_get_hub_content):
         mock_get_hub_content.return_value = {
             "HubContentDocument": {
                 "RecipeCollection": [
@@ -1085,7 +1081,7 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
 
         self.assertIn("CPT is not supported on SMTJ", str(context.exception))
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     def test_get_hub_recipe_metadata_dpo_lora(self, mock_get_hub_content):
         mock_get_hub_content.return_value = {
             "HubContentDocument": {
@@ -1127,7 +1123,7 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
         self.assertIn("HpEksPayloadTemplateS3Uri", result)
         self.assertIn("HpEksOverrideParamsS3Uri", result)
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     def test_get_hub_recipe_metadata_dpo_full(self, mock_get_hub_content):
         mock_get_hub_content.return_value = {
             "HubContentDocument": {
@@ -1168,7 +1164,7 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
         self.assertIn("HpEksPayloadTemplateS3Uri", result)
         self.assertIn("HpEksOverrideParamsS3Uri", result)
 
-    @patch("amzn_nova_forge.util.recipe._get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
     def test_get_hub_recipe_metadata_checks_instance_type(self, mock_get_hub_content):
         mock_get_hub_content.return_value = {
             "HubContentDocument": {
@@ -1224,6 +1220,235 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
 
         self.assertEqual(result["DisplayName"], "Nova Lite LoRA SFT on GPU P5 P5en")
         self.assertIn("ml.p5.48xlarge", result["SupportedInstanceTypes"])
+
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
+    def test_get_hub_recipe_metadata_multimodal_selects_mm_datamix(self, mock_get_hub_content):
+        """is_multimodal=True selects mm_with_datamix recipe."""
+        mock_get_hub_content.return_value = {
+            "HubContentDocument": {
+                "RecipeCollection": [
+                    {
+                        "Name": "nova_lite_smtj_p5_sft_text_with_datamix",
+                        "DisplayName": "Text datamix",
+                        "CustomizationTechnique": "SFT",
+                        "SmtjRecipeTemplateS3Uri": "s3://bucket/text.yaml",
+                        "SmtjOverrideParamsS3Uri": "s3://bucket/text.json",
+                        "SupportedInstanceTypes": ["ml.p5.48xlarge"],
+                        "Peft": "LORA",
+                        "IsSubscriptionModel": True,
+                    },
+                    {
+                        "Name": "nova_lite_smtj_p5_sft_mm_with_datamix",
+                        "DisplayName": "Multimodal datamix",
+                        "CustomizationTechnique": "SFT",
+                        "SmtjRecipeTemplateS3Uri": "s3://bucket/mm.yaml",
+                        "SmtjOverrideParamsS3Uri": "s3://bucket/mm.json",
+                        "SupportedInstanceTypes": ["ml.p5.48xlarge"],
+                        "Peft": "LORA",
+                        "IsSubscriptionModel": True,
+                    },
+                ]
+            }
+        }
+
+        result = get_hub_recipe_metadata(
+            model=Model.NOVA_LITE,
+            method=TrainingMethod.SFT_LORA,
+            platform=Platform.SMTJ,
+            instance_type="ml.p5.48xlarge",
+            region="us-east-1",
+            data_mixing=True,
+            is_multimodal=True,
+        )
+
+        self.assertIn("mm_with_datamix", result["Name"])
+
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
+    def test_get_hub_recipe_metadata_text_only_selects_text_datamix(self, mock_get_hub_content):
+        """is_multimodal=False selects text_with_datamix recipe."""
+        mock_get_hub_content.return_value = {
+            "HubContentDocument": {
+                "RecipeCollection": [
+                    {
+                        "Name": "nova_lite_smtj_p5_sft_text_with_datamix",
+                        "DisplayName": "Text datamix",
+                        "CustomizationTechnique": "SFT",
+                        "SmtjRecipeTemplateS3Uri": "s3://bucket/text.yaml",
+                        "SmtjOverrideParamsS3Uri": "s3://bucket/text.json",
+                        "SupportedInstanceTypes": ["ml.p5.48xlarge"],
+                        "Peft": "LORA",
+                        "IsSubscriptionModel": True,
+                    },
+                    {
+                        "Name": "nova_lite_smtj_p5_sft_mm_with_datamix",
+                        "DisplayName": "Multimodal datamix",
+                        "CustomizationTechnique": "SFT",
+                        "SmtjRecipeTemplateS3Uri": "s3://bucket/mm.yaml",
+                        "SmtjOverrideParamsS3Uri": "s3://bucket/mm.json",
+                        "SupportedInstanceTypes": ["ml.p5.48xlarge"],
+                        "Peft": "LORA",
+                        "IsSubscriptionModel": True,
+                    },
+                ]
+            }
+        }
+
+        result = get_hub_recipe_metadata(
+            model=Model.NOVA_LITE,
+            method=TrainingMethod.SFT_LORA,
+            platform=Platform.SMTJ,
+            instance_type="ml.p5.48xlarge",
+            region="us-east-1",
+            data_mixing=True,
+            is_multimodal=False,
+        )
+
+        self.assertIn("text_with_datamix", result["Name"])
+
+    @patch("amzn_nova_forge.util.recipe.logger")
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
+    def test_get_hub_recipe_metadata_multimodal_fallback_when_no_mm_recipe(
+        self, mock_get_hub_content, mock_logger
+    ):
+        """Falls back to standard recipe and logs warning when no mm_with_datamix recipe exists."""
+        mock_get_hub_content.return_value = {
+            "HubContentDocument": {
+                "RecipeCollection": [
+                    {
+                        "Name": "nova_lite_smtj_p5_sft_lora",
+                        "DisplayName": "Standard SFT LoRA",
+                        "CustomizationTechnique": "SFT",
+                        "SmtjRecipeTemplateS3Uri": "s3://bucket/standard.yaml",
+                        "SmtjOverrideParamsS3Uri": "s3://bucket/standard.json",
+                        "SupportedInstanceTypes": ["ml.p5.48xlarge"],
+                        "Peft": "LORA",
+                        "IsSubscriptionModel": True,
+                    },
+                ]
+            }
+        }
+
+        result = get_hub_recipe_metadata(
+            model=Model.NOVA_LITE,
+            method=TrainingMethod.SFT_LORA,
+            platform=Platform.SMTJ,
+            instance_type="ml.p5.48xlarge",
+            region="us-east-1",
+            data_mixing=True,
+            is_multimodal=True,
+        )
+
+        # Should fall back to the only available recipe
+        self.assertEqual(result["Name"], "nova_lite_smtj_p5_sft_lora")
+        # Warning should mention multimodal
+        warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
+        self.assertTrue(any("multimodal" in c for c in warning_calls))
+
+    # --- _get_smhp_replicas_enum tests ---
+
+    def _make_smhp_hub_content_for_enum(self, instance_type: str = "ml.p5.48xlarge"):
+        return {
+            "HubContentDocument": {
+                "RecipeCollection": [
+                    {
+                        "DisplayName": "Nova Lite LoRA SFT on P5 SMHP",
+                        "Name": "nova_lite_smhp_p5_lora_sft",
+                        "CustomizationTechnique": "SFT",
+                        "Peft": "LORA",
+                        "SupportedInstanceTypes": [instance_type],
+                        "HpEksPayloadTemplateS3Uri": "s3://bucket/hp-recipe.yaml",
+                        "HpEksOverrideParamsS3Uri": "s3://bucket/hp-overrides.json",
+                    }
+                ]
+            }
+        }
+
+    def _make_smhp_recipe_bytes(self) -> bytes:
+        recipe_yaml = """---
+            # Source: sagemaker-training/templates/training-config.yaml
+            apiVersion: v1
+            kind: ConfigMap
+            metadata:
+            name: training-config-test
+            containers:
+            - name: pytorch
+            image: test-image
+            data:
+            config.yaml: |-
+                run:
+                name: test
+                replicas: 4
+        """
+        return recipe_yaml.encode("utf-8")
+
+    def _make_smhp_overrides_bytes(self, replicas_enum=None) -> bytes:
+        overrides = {
+            "replicas": {"type": "integer", "required": True, "default": 4},
+            "namespace": {"type": "string", "required": True, "default": "kubeflow"},
+        }
+        if replicas_enum is not None:
+            overrides["replicas"]["enum"] = replicas_enum
+        return json.dumps(overrides).encode("utf-8")
+
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.boto3.client")
+    def test_get_smhp_replicas_enum_returns_enum(self, mock_boto_client, mock_hub_content):
+        """Returns the replicas enum from the SMHP overrides template."""
+        mock_hub_content.return_value = self._make_smhp_hub_content_for_enum()
+        mock_s3 = MagicMock()
+        mock_s3.get_object.side_effect = [
+            {"Body": BytesIO(self._make_smhp_recipe_bytes())},
+            {"Body": BytesIO(self._make_smhp_overrides_bytes(replicas_enum=[2, 4, 8, 16]))},
+        ]
+        mock_boto_client.return_value = mock_s3
+
+        result = _get_smhp_replicas_enum(
+            model=Model.NOVA_LITE,
+            method=TrainingMethod.SFT_LORA,
+            region="us-east-1",
+            instance_type="ml.p5.48xlarge",
+        )
+
+        self.assertEqual(result, [2, 4, 8, 16])
+
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.boto3.client")
+    def test_get_smhp_replicas_enum_returns_none_when_no_enum(
+        self, mock_boto_client, mock_hub_content
+    ):
+        """Returns None when SMHP overrides template has no replicas enum."""
+        mock_hub_content.return_value = self._make_smhp_hub_content_for_enum()
+        mock_s3 = MagicMock()
+        mock_s3.get_object.side_effect = [
+            {"Body": BytesIO(self._make_smhp_recipe_bytes())},
+            {"Body": BytesIO(self._make_smhp_overrides_bytes(replicas_enum=None))},
+        ]
+        mock_boto_client.return_value = mock_s3
+
+        result = _get_smhp_replicas_enum(
+            model=Model.NOVA_LITE,
+            method=TrainingMethod.SFT_LORA,
+            region="us-east-1",
+            instance_type="ml.p5.48xlarge",
+        )
+
+        self.assertIsNone(result)
+
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
+    def test_get_smhp_replicas_enum_returns_none_on_client_error(self, mock_hub_content):
+        """Returns None gracefully when SMHP recipe fetch fails for any reason."""
+        mock_hub_content.side_effect = ValueError(
+            "SFT_LORA using ml.p5.48xlarge is not supported on SMHP"
+        )
+
+        result = _get_smhp_replicas_enum(
+            model=Model.NOVA_LITE,
+            method=TrainingMethod.SFT_LORA,
+            region="us-east-1",
+            instance_type="ml.p5.48xlarge",
+        )
+
+        self.assertIsNone(result)
 
 
 class TestDownloadRecipeTemplatesFromS3(unittest.TestCase):
@@ -1348,9 +1573,7 @@ kind: PyTorchJob"""
         }
 
         with self.assertRaises(ValueError) as context:
-            download_templates_from_s3(
-                recipe_metadata, Platform.SMTJ, TrainingMethod.SFT_LORA
-            )
+            download_templates_from_s3(recipe_metadata, Platform.SMTJ, TrainingMethod.SFT_LORA)
 
         self.assertIn("Unable to find recipe", str(context.exception))
 
@@ -1362,9 +1585,7 @@ kind: PyTorchJob"""
         }
 
         with self.assertRaises(ValueError) as context:
-            download_templates_from_s3(
-                recipe_metadata, Platform.SMHP, TrainingMethod.SFT_LORA
-            )
+            download_templates_from_s3(recipe_metadata, Platform.SMHP, TrainingMethod.SFT_LORA)
 
         self.assertIn("Unable to find recipe", str(context.exception))
 
@@ -1383,14 +1604,10 @@ kind: PyTorchJob"""
         }
 
         with self.assertRaises(FileLoadError):
-            download_templates_from_s3(
-                recipe_metadata, Platform.SMTJ, TrainingMethod.SFT_LORA
-            )
+            download_templates_from_s3(recipe_metadata, Platform.SMTJ, TrainingMethod.SFT_LORA)
 
     @patch("amzn_nova_forge.util.recipe.boto3.client")
-    def test_download_recipe_templates_smhp_missing_training_config(
-        self, mock_boto_client
-    ):
+    def test_download_recipe_templates_smhp_missing_training_config(self, mock_boto_client):
         # SMHP template without training-config.yaml should raise ValueError
         recipe_yaml = """---
 apiVersion: v1
@@ -1416,9 +1633,7 @@ data:
         }
 
         with self.assertRaises(ValueError) as context:
-            download_templates_from_s3(
-                recipe_metadata, Platform.SMHP, TrainingMethod.SFT_LORA
-            )
+            download_templates_from_s3(recipe_metadata, Platform.SMHP, TrainingMethod.SFT_LORA)
 
         self.assertIn("Unable to generate HyperPod recipe", str(context.exception))
 
@@ -1458,18 +1673,12 @@ data:
         }
 
         with self.assertRaises(ValueError) as context:
-            download_templates_from_s3(
-                recipe_metadata, Platform.SMTJ, TrainingMethod.SFT_LORA
-            )
+            download_templates_from_s3(recipe_metadata, Platform.SMTJ, TrainingMethod.SFT_LORA)
 
-        self.assertIn(
-            "SDK does not yet support 'sft_lora' on 'SMTJ'", str(context.exception)
-        )
+        self.assertIn("SDK does not yet support 'sft_lora' on 'SMTJ'", str(context.exception))
 
     @patch("amzn_nova_forge.util.recipe.boto3.client")
-    def test_download_recipe_templates_smhp_missing_image_in_template(
-        self, mock_boto_client
-    ):
+    def test_download_recipe_templates_smhp_missing_image_in_template(self, mock_boto_client):
         config = json.dumps(
             {
                 "run": {
@@ -1523,9 +1732,7 @@ data:
         }
 
         with self.assertRaises(ValueError) as context:
-            download_templates_from_s3(
-                recipe_metadata, Platform.SMHP, TrainingMethod.SFT_LORA
-            )
+            download_templates_from_s3(recipe_metadata, Platform.SMHP, TrainingMethod.SFT_LORA)
 
         self.assertIn("Unable to generate image URI", str(context.exception))
 
@@ -1570,14 +1777,10 @@ data:
             recipe_metadata, Platform.SMHP, TrainingMethod.SFT_LORA
         )
 
-        self.assertEqual(
-            "123456789.dkr.ecr.us-east-1.amazonaws.com/my-image:latest", image_uri
-        )
+        self.assertEqual("123456789.dkr.ecr.us-east-1.amazonaws.com/my-image:latest", image_uri)
 
     @patch("amzn_nova_forge.util.recipe.boto3.client")
-    def test_download_recipe_templates_smhp_rft_removes_task_type(
-        self, mock_boto_client
-    ):
+    def test_download_recipe_templates_smhp_rft_removes_task_type(self, mock_boto_client):
         config = """run:
       name: "{{name}}"
       model_type: "amazon.nova-2-lite-v1:0:256k"
@@ -1628,14 +1831,10 @@ data:
         self.assertIsInstance(recipe_template, dict)
         self.assertIn("training_config", recipe_template)
         self.assertNotIn("task_type", recipe_template["training_config"])
-        self.assertEqual(
-            "123456789.dkr.ecr.us-east-1.amazonaws.com/rft-image:latest", image_uri
-        )
+        self.assertEqual("123456789.dkr.ecr.us-east-1.amazonaws.com/rft-image:latest", image_uri)
 
     @patch("amzn_nova_forge.util.recipe.boto3.client")
-    def test_download_recipe_templates_smhp_cpt_preserves_task_type(
-        self, mock_boto_client
-    ):
+    def test_download_recipe_templates_smhp_cpt_preserves_task_type(self, mock_boto_client):
         config = json.dumps(
             {
                 "run": {
@@ -1691,9 +1890,7 @@ data:
         self.assertIn("training_config", recipe_template)
         self.assertIn("task_type", recipe_template["training_config"])
         self.assertEqual("cpt", recipe_template["training_config"]["task_type"])
-        self.assertEqual(
-            "123456789.dkr.ecr.us-east-1.amazonaws.com/cpt-image:latest", image_uri
-        )
+        self.assertEqual("123456789.dkr.ecr.us-east-1.amazonaws.com/cpt-image:latest", image_uri)
 
 
 class TestDownloadRecipeTemplatesFromLocal(unittest.TestCase):
@@ -1717,9 +1914,7 @@ evaluation:
             "ImageUri": "test-image-uri",
         }
 
-        with patch(
-            "builtins.open", mock_open(read_data=recipe_yaml_content)
-        ) as mock_file:
+        with patch("builtins.open", mock_open(read_data=recipe_yaml_content)) as mock_file:
             mock_file.return_value.read.return_value = recipe_yaml_content
 
             with patch("builtins.open", mock_open(read_data=overrides_json_content)):
@@ -1745,8 +1940,8 @@ evaluation:
                         }
                     }
 
-                    recipe_template, overrides_template, image_uri = (
-                        download_templates_from_local(recipe_metadata)
+                    recipe_template, overrides_template, image_uri = download_templates_from_local(
+                        recipe_metadata
                     )
 
                     self.assertIsInstance(recipe_template, dict)
@@ -1799,6 +1994,249 @@ evaluation:
                 f"{recipe_metadata['Platform']} for {recipe_metadata['Model']}"
             )
             self.assertEqual(str(context.exception), expected_message)
+
+
+class TestLoadRecipeTemplatesSmtjServerless(unittest.TestCase):
+    """Tests for load_recipe_templates with Platform.SMTJServerless."""
+
+    @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
+    def test_smtj_serverless_uses_p5_as_default_instance_type(
+        self, mock_download_s3, mock_get_hub_metadata
+    ):
+        """SMTJServerless passes ml.p5.48xlarge as default instance_type to get_hub_recipe_metadata."""
+        mock_get_hub_metadata.return_value = {
+            "SmtjRecipeTemplateS3Uri": "s3://bucket/recipe.yaml",
+            "SmtjOverrideParamsS3Uri": "s3://bucket/override.json",
+            "SmtjImageUri": "123.dkr.ecr.us-east-1.amazonaws.com/repo:tag",
+        }
+        mock_download_s3.return_value = ({"run": {}}, {}, "image-uri")
+
+        load_recipe_templates(
+            model=Model.NOVA_LITE,
+            method=TrainingMethod.SFT_LORA,
+            platform=Platform.SMTJServerless,
+            region="us-east-1",
+            instance_type=None,
+        )
+
+        call_kwargs = mock_get_hub_metadata.call_args.kwargs
+        self.assertEqual(call_kwargs["instance_type"], "ml.p5.48xlarge")
+        self.assertEqual(call_kwargs["platform"], Platform.SMTJServerless)
+
+
+class TestLoadRecipeTemplatesSmtjReplicasEnum(unittest.TestCase):
+    """Tests that load_recipe_templates injects replicas enum into SMTJ overrides."""
+
+    def _make_smtj_hub_content(self, instance_type: str = "ml.p5.48xlarge"):
+        return {
+            "HubContentDocument": {
+                "RecipeCollection": [
+                    {
+                        "DisplayName": "Nova Lite LoRA SFT on P5 SMTJ",
+                        "Name": "nova_lite_smtj_p5_lora_sft",
+                        "CustomizationTechnique": "SFT",
+                        "Peft": "LORA",
+                        "SupportedInstanceTypes": [instance_type],
+                        "SmtjRecipeTemplateS3Uri": "s3://bucket/smtj-recipe.yaml",
+                        "SmtjOverrideParamsS3Uri": "s3://bucket/smtj-overrides.json",
+                        "SmtjImageUri": "123456789.dkr.ecr.us-east-1.amazonaws.com/nova:latest",
+                    }
+                ]
+            }
+        }
+
+    def _make_smhp_hub_content(self, instance_type: str = "ml.p5.48xlarge"):
+        return {
+            "HubContentDocument": {
+                "RecipeCollection": [
+                    {
+                        "DisplayName": "Nova Lite LoRA SFT on P5 SMHP",
+                        "Name": "nova_lite_smhp_p5_lora_sft",
+                        "CustomizationTechnique": "SFT",
+                        "Peft": "LORA",
+                        "SupportedInstanceTypes": [instance_type],
+                        "HpEksPayloadTemplateS3Uri": "s3://bucket/hp-recipe.yaml",
+                        "HpEksOverrideParamsS3Uri": "s3://bucket/hp-overrides.json",
+                    }
+                ]
+            }
+        }
+
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.boto3.client")
+    def test_smtj_overrides_template_gets_replicas_enum_from_smhp(
+        self, mock_boto_client, mock_hub_content
+    ):
+        """For SMTJ, load_recipe_templates injects replicas.enum from the SMHP recipe."""
+        smtj_recipe = {"run": {"name": "{{name}}", "replicas": "{{replicas}}"}}
+        smtj_overrides = {"name": {"default": "", "type": "string"}}
+        smhp_recipe_yaml = """---
+# Source: sagemaker-training/templates/training-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: training-config-test
+containers:
+- name: pytorch
+  image: smhp-image
+data:
+  config.yaml: |-
+    run:
+      name: test
+      replicas: 4
+"""
+        smhp_overrides = {
+            "replicas": {
+                "type": "integer",
+                "required": True,
+                "default": 4,
+                "enum": [2, 4, 8, 16],
+            },
+            "namespace": {"type": "string", "required": True, "default": "kubeflow"},
+        }
+
+        # hub content is called twice: once for SMTJ, once for SMHP (inside _get_smhp_replicas_enum)
+        mock_hub_content.side_effect = [
+            self._make_smtj_hub_content(),
+            self._make_smhp_hub_content(),
+        ]
+
+        mock_s3 = MagicMock()
+        mock_s3.get_object.side_effect = [
+            # SMTJ recipe + overrides
+            {"Body": BytesIO(json.dumps(smtj_recipe).encode())},
+            {"Body": BytesIO(json.dumps(smtj_overrides).encode())},
+            # SMHP recipe + overrides (for _get_smhp_replicas_enum)
+            {"Body": BytesIO(smhp_recipe_yaml.encode())},
+            {"Body": BytesIO(json.dumps(smhp_overrides).encode())},
+        ]
+        mock_boto_client.return_value = mock_s3
+
+        _, _, overrides_template, _ = load_recipe_templates(
+            model=Model.NOVA_LITE,
+            method=TrainingMethod.SFT_LORA,
+            platform=Platform.SMTJ,
+            region="us-east-1",
+            instance_type="ml.p5.48xlarge",
+        )
+
+        self.assertIn("replicas", overrides_template)
+        self.assertEqual(overrides_template["replicas"]["enum"], [2, 4, 8, 16])
+
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.boto3.client")
+    def test_smtj_overrides_template_unaffected_when_smhp_unavailable(
+        self, mock_boto_client, mock_hub_content
+    ):
+        """For SMTJ, if SMHP recipe fetch fails, overrides template is unchanged."""
+        smtj_recipe = {"run": {"name": "{{name}}", "replicas": "{{replicas}}"}}
+        smtj_overrides = {"name": {"default": "", "type": "string"}}
+
+        # First call succeeds (SMTJ), second call raises ValueError (SMHP lookup — unsupported combo)
+        mock_hub_content.side_effect = [
+            self._make_smtj_hub_content(),
+            ValueError("SMHP not available for this instance type"),
+        ]
+
+        mock_s3 = MagicMock()
+        mock_s3.get_object.side_effect = [
+            {"Body": BytesIO(json.dumps(smtj_recipe).encode())},
+            {"Body": BytesIO(json.dumps(smtj_overrides).encode())},
+        ]
+        mock_boto_client.return_value = mock_s3
+
+        _, _, overrides_template, _ = load_recipe_templates(
+            model=Model.NOVA_LITE,
+            method=TrainingMethod.SFT_LORA,
+            platform=Platform.SMTJ,
+            region="us-east-1",
+            instance_type="ml.p5.48xlarge",
+        )
+
+        # replicas key should not have an enum injected
+        self.assertNotIn("enum", overrides_template.get("replicas", {}))
+
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
+    @patch("amzn_nova_forge.util.recipe.boto3.client")
+    def test_smhp_platform_does_not_trigger_smhp_enum_lookup(
+        self, mock_boto_client, mock_hub_content
+    ):
+        """For SMHP platform, _get_smhp_replicas_enum is NOT called (no double-fetch)."""
+        smhp_recipe_yaml = """---
+# Source: sagemaker-training/templates/training-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: training-config-test
+containers:
+- name: pytorch
+  image: smhp-image
+data:
+  config.yaml: |-
+    run:
+      name: test
+      replicas: 4
+"""
+        smhp_overrides = {
+            "replicas": {
+                "type": "integer",
+                "required": True,
+                "default": 4,
+                "enum": [2, 4, 8, 16],
+            },
+        }
+
+        mock_hub_content.return_value = self._make_smhp_hub_content()
+        mock_s3 = MagicMock()
+        mock_s3.get_object.side_effect = [
+            {"Body": BytesIO(smhp_recipe_yaml.encode())},
+            {"Body": BytesIO(json.dumps(smhp_overrides).encode())},
+        ]
+        mock_boto_client.return_value = mock_s3
+
+        load_recipe_templates(
+            model=Model.NOVA_LITE,
+            method=TrainingMethod.SFT_LORA,
+            platform=Platform.SMHP,
+            region="us-east-1",
+            instance_type="ml.p5.48xlarge",
+        )
+
+        # hub content should only be called once (for SMHP itself, not a second time for enum lookup)
+        mock_hub_content.assert_called_once()
+
+    @patch("amzn_nova_forge.util.recipe._get_smhp_replicas_enum")
+    @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
+    def test_evaluation_method_skips_smhp_enum_lookup(
+        self, mock_download, mock_metadata, mock_smhp_enum
+    ):
+        """For EVALUATION method on SMTJ, _get_smhp_replicas_enum is NOT called."""
+        mock_metadata.return_value = {
+            "RecipeTemplatePath": "/path/to/recipe.yaml",
+            "OverrideParamsPath": "/path/to/override.json",
+            "ImageUri": "image_uri",
+            "EvaluationTask": "mmlu",
+            "Platform": "SMTJ",
+            "Model": "nova_lite",
+        }
+        recipe_template = {"run": {"name": "{{name}}", "replicas": 1}}
+        overrides_template = {"name": {"default": "", "type": "string"}}
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        with patch("amzn_nova_forge.util.recipe.download_templates_from_local") as mock_local:
+            mock_local.return_value = (recipe_template, overrides_template, "image_uri")
+            load_recipe_templates(
+                model=Model.NOVA_LITE,
+                method=TrainingMethod.EVALUATION,
+                platform=Platform.SMTJ,
+                region="us-east-1",
+                instance_type="ml.p5.48xlarge",
+                eval_task=EvaluationTask.GEN_QA,
+            )
+
+        mock_smhp_enum.assert_not_called()
 
 
 if __name__ == "__main__":

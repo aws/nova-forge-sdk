@@ -22,7 +22,7 @@ from typing import Any, Dict, Iterator, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from amzn_nova_forge.model.model_enums import Model
+from amzn_nova_forge.core.enums import Model
 
 from .dataset_validator import BaseDatasetValidator
 
@@ -76,9 +76,7 @@ class OpenAIMessage(BaseModel):
         """Validate role is one of the allowed values."""
         allowed_roles = {"system", "user", "assistant", "tool"}
         if v not in allowed_roles:
-            raise ValueError(
-                f"Invalid role '{v}'. Must be one of: {', '.join(allowed_roles)}"
-            )
+            raise ValueError(f"Invalid role '{v}'. Must be one of: {', '.join(allowed_roles)}")
         return v
 
     @model_validator(mode="after")
@@ -89,9 +87,7 @@ class OpenAIMessage(BaseModel):
         # Assistant messages can have content and/or tool_calls
         if role == "assistant":
             if self.content is None and self.tool_calls is None:
-                raise ValueError(
-                    "Assistant message must have either 'content' or 'tool_calls'"
-                )
+                raise ValueError("Assistant message must have either 'content' or 'tool_calls'")
             if self.tool_calls is not None and len(self.tool_calls) == 0:
                 raise ValueError("Assistant 'tool_calls' cannot be empty list")
 
@@ -105,9 +101,7 @@ class OpenAIMessage(BaseModel):
         # System and user messages must have content
         elif role in ("system", "user"):
             if self.content is None or not self.content.strip():
-                raise ValueError(
-                    f"{role.capitalize()} message must have non-empty 'content'"
-                )
+                raise ValueError(f"{role.capitalize()} message must have non-empty 'content'")
 
         return self
 
@@ -188,14 +182,11 @@ class RFTMultiturnMetadata(BaseModel):
                 return v
             except json.JSONDecodeError as e:
                 raise ValueError(
-                    f"'info' string must be valid JSON. "
-                    f"Got: {v!r}. "
-                    f"JSON parse error: {str(e)}"
+                    f"'info' string must be valid JSON. Got: {v!r}. JSON parse error: {str(e)}"
                 )
 
         raise ValueError(
-            f"'info' must be either a dictionary or a valid JSON string, "
-            f"got {type(v).__name__}"
+            f"'info' must be either a dictionary or a valid JSON string, got {type(v).__name__}"
         )
 
 

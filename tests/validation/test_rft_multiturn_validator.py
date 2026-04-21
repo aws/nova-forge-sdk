@@ -350,9 +350,7 @@ class TestValidateStackName:
         """Test that non-string types are rejected."""
         invalid_names = [None, 123, [], {}, True]
         for name in invalid_names:
-            with pytest.raises(
-                ValueError, match="Stack name must be a non-empty string"
-            ):
+            with pytest.raises(ValueError, match="Stack name must be a non-empty string"):
                 validate_stack_name(name)
 
     def test_rejects_names_starting_with_number(self):
@@ -874,9 +872,7 @@ class TestValidateEc2InstanceIdentifier:
             validate_ec2_instance_identifier,
         )
 
-        with pytest.raises(
-            ValueError, match="EC2 instance identifier must be a non-empty string"
-        ):
+        with pytest.raises(ValueError, match="EC2 instance identifier must be a non-empty string"):
             validate_ec2_instance_identifier("")
 
     def test_rejects_non_string(self):
@@ -942,9 +938,7 @@ class TestValidateEcsClusterArn:
             validate_ecs_cluster_arn,
         )
 
-        with pytest.raises(
-            ValueError, match="ECS cluster ARN must be a non-empty string"
-        ):
+        with pytest.raises(ValueError, match="ECS cluster ARN must be a non-empty string"):
             validate_ecs_cluster_arn("")
 
     def test_rejects_non_string(self):
@@ -955,7 +949,5 @@ class TestValidateEcsClusterArn:
 
         invalid_arns = [None, 123, [], {}, True]
         for arn in invalid_arns:
-            with pytest.raises(
-                ValueError, match="ECS cluster ARN must be a non-empty string"
-            ):
+            with pytest.raises(ValueError, match="ECS cluster ARN must be a non-empty string"):
                 validate_ecs_cluster_arn(arn)

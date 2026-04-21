@@ -23,20 +23,20 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from amzn_nova_forge.manager.runtime_manager import RuntimeManager
-from amzn_nova_forge.model.model_enums import (
+from amzn_nova_forge.core.constants import (
+    EVAL_TASK_METRIC_MAP,
+    EVAL_TASK_STRATEGY_MAP,
+    HYPERPOD_RECIPE_PATH,
+)
+from amzn_nova_forge.core.enums import (
+    EvaluationTask,
     Model,
     Platform,
     TrainingMethod,
     Version,
 )
+from amzn_nova_forge.core.runtime import RuntimeManager
 from amzn_nova_forge.monitor import MLflowMonitor
-from amzn_nova_forge.recipe.recipe_config import (
-    EVAL_TASK_METRIC_MAP,
-    EVAL_TASK_STRATEGY_MAP,
-    HYPERPOD_RECIPE_PATH,
-    EvaluationTask,
-)
 from amzn_nova_forge.rft_multiturn import RFTMultiturnInfrastructure
 from amzn_nova_forge.util.checkpoint_util import validate_checkpoint_uri
 from amzn_nova_forge.util.data_mixing import DataMixing
@@ -76,6 +76,7 @@ class RecipeBuilder:
         rl_env_config: Optional[Dict[str, Any]] = None,
         data_mixing_instance: Optional[DataMixing] = None,
         image_uri_override: Optional[str] = None,
+        is_multimodal: bool = False,
     ):
         self.region = region
         self.job_name = job_name
@@ -103,12 +104,13 @@ class RecipeBuilder:
         # Image URI override
         self.image_uri_override = image_uri_override
 
+        # Multimodal flag
+        self.is_multimodal = is_multimodal
+
         # MLflow
         if mlflow_monitor:
             self.mlflow_tracking_uri = mlflow_monitor.tracking_uri
-            self.mlflow_experiment_name = (
-                mlflow_monitor.experiment_name or self.job_name
-            )
+            self.mlflow_experiment_name = mlflow_monitor.experiment_name or self.job_name
             self.mlflow_run_name = (
                 mlflow_monitor.run_name or f"{self.job_name}-{str(uuid.uuid4())[:8]}"
             )
@@ -133,17 +135,10 @@ class RecipeBuilder:
                     f"You provided {model}. Please use Model.NOVA_LITE_2."
                 )
             if not rft_multiturn_infra:
-                raise ValueError(
-                    "'rft_multiturn_infra' is required for RFT multiturn training"
-                )
-        elif (
-            method == TrainingMethod.EVALUATION
-            and eval_task == EvaluationTask.RFT_MULTITURN_EVAL
-        ):
+                raise ValueError("'rft_multiturn_infra' is required for RFT multiturn training")
+        elif method == TrainingMethod.EVALUATION and eval_task == EvaluationTask.RFT_MULTITURN_EVAL:
             if not rft_multiturn_infra:
-                raise ValueError(
-                    "'rft_multiturn_infra' is required for RFT multiturn evaluation"
-                )
+                raise ValueError("'rft_multiturn_infra' is required for RFT multiturn evaluation")
 
         # Validation data handling
         # CPT: Uses validation_data_s3_path in recipe configuration
@@ -155,9 +150,7 @@ class RecipeBuilder:
             # For Bedrock, store validation_data_s3_path to pass to JobConfig
             # It will be added to the Bedrock API request in BedrockRuntimeManager.execute()
             self.validation_data_s3_path = validation_data_s3_path
-            logger.info(
-                f"Validation data will be used for Bedrock job: {validation_data_s3_path}"
-            )
+            logger.info(f"Validation data will be used for Bedrock job: {validation_data_s3_path}")
         elif validation_data_s3_path is not None:
             # For SMTJ/SMHP non-CPT jobs, validation data is not supported
             logger.info(
@@ -167,9 +160,7 @@ class RecipeBuilder:
         # Eval
         if method == TrainingMethod.EVALUATION:
             if eval_task is None:
-                raise ValueError(
-                    "'eval_task' is a required parameter when calling evaluate()."
-                )
+                raise ValueError("'eval_task' is a required parameter when calling evaluate().")
 
             self.eval_task = eval_task
             self.strategy = EVAL_TASK_STRATEGY_MAP[eval_task]
@@ -181,9 +172,7 @@ class RecipeBuilder:
             EVAL_PARAMS = [eval_task, subtask, processor_config, rl_env_config]
             for param in EVAL_PARAMS:
                 if param is not None:
-                    logger.info(
-                        f"'{param}' is only required for evaluation. Will ignore."
-                    )
+                    logger.info(f"'{param}' is only required for evaluation. Will ignore.")
 
     def _load_input_recipe(self, input_recipe_path: str):
         """
@@ -201,9 +190,7 @@ class RecipeBuilder:
                 obj: The object to convert
             """
             if isinstance(obj, dict):
-                return {
-                    k: convert_scientific_notation_strings(v) for k, v in obj.items()
-                }
+                return {k: convert_scientific_notation_strings(v) for k, v in obj.items()}
             elif isinstance(obj, list):
                 return [convert_scientific_notation_strings(item) for item in obj]
             elif isinstance(obj, str):
@@ -305,12 +292,8 @@ class RecipeBuilder:
             )
 
             # Input and output S3 paths
-            overrides_template.setdefault("data_s3_path", {})["default"] = (
-                self.data_s3_path or ""
-            )
-            overrides_template.setdefault("output_s3_path", {})["default"] = (
-                self.output_s3_path
-            )
+            overrides_template.setdefault("data_s3_path", {})["default"] = self.data_s3_path or ""
+            overrides_template.setdefault("output_s3_path", {})["default"] = self.output_s3_path
 
             # Instance count
             if (
@@ -324,9 +307,7 @@ class RecipeBuilder:
                     "type": "integer",
                 }
             else:
-                overrides_template.setdefault("replicas", {})["default"] = (
-                    self.infra.instance_count
-                )
+                overrides_template.setdefault("replicas", {})["default"] = self.infra.instance_count
             if (
                 allowed_instance_count is not None
                 and "replicas" in overrides_template
@@ -344,27 +325,21 @@ class RecipeBuilder:
                 overrides_template.setdefault("mlflow_tracking_uri", {})["default"] = (
                     self.mlflow_tracking_uri
                 )
-                overrides_template.setdefault("mlflow_experiment_name", {})[
-                    "default"
-                ] = self.mlflow_experiment_name
+                overrides_template.setdefault("mlflow_experiment_name", {})["default"] = (
+                    self.mlflow_experiment_name
+                )
                 overrides_template.setdefault("mlflow_run_name", {})["default"] = (
                     self.mlflow_run_name
                 )
 
             # RFT
-            if (
-                self.method == TrainingMethod.RFT_LORA
-                or self.method == TrainingMethod.RFT_FULL
-            ):
+            if self.method == TrainingMethod.RFT_LORA or self.method == TrainingMethod.RFT_FULL:
                 overrides_template.setdefault("reward_lambda_arn", {})["default"] = (
                     self.rft_lambda_arn
                 )
 
             # CPT
-            if (
-                self.method == TrainingMethod.CPT
-                and self.validation_data_s3_path is not None
-            ):
+            if self.method == TrainingMethod.CPT and self.validation_data_s3_path is not None:
                 overrides_template.setdefault("validation_s3_path", {})["default"] = (
                     self.validation_data_s3_path
                 )
@@ -374,16 +349,10 @@ class RecipeBuilder:
                 overrides_template.setdefault("task", {})["default"] = (
                     self.eval_task.get_recipe_value()
                 )
-                overrides_template.setdefault("strategy", {})["default"] = (
-                    self.strategy.value
-                )
-                overrides_template.setdefault("metric", {})["default"] = (
-                    self.metric.value
-                )
+                overrides_template.setdefault("strategy", {})["default"] = self.strategy.value
+                overrides_template.setdefault("metric", {})["default"] = self.metric.value
                 if self.subtask is not None:
-                    overrides_template.setdefault("subtask", {})["default"] = (
-                        self.subtask
-                    )
+                    overrides_template.setdefault("subtask", {})["default"] = self.subtask
                 if self.processor_config is not None:
                     if self.processor_config.get("lambda_arn"):
                         overrides_template.setdefault("lambda_arn", {})["default"] = (
@@ -395,21 +364,19 @@ class RecipeBuilder:
                         )
                     if (
                         self.processor_config.get("preprocessing")
-                        and self.processor_config["preprocessing"].get("enabled")
-                        is not None
+                        and self.processor_config["preprocessing"].get("enabled") is not None
                     ):
-                        overrides_template.setdefault("preprocessing", {})[
-                            "default"
-                        ] = self.processor_config["preprocessing"]["enabled"]
+                        overrides_template.setdefault("preprocessing", {})["default"] = (
+                            self.processor_config["preprocessing"]["enabled"]
+                        )
                         overrides_template.setdefault("enabled", {})["type"] = "boolean"
                     if (
                         self.processor_config.get("postprocessing")
-                        and self.processor_config["postprocessing"].get("enabled")
-                        is not None
+                        and self.processor_config["postprocessing"].get("enabled") is not None
                     ):
-                        overrides_template.setdefault("postprocessing", {})[
-                            "default"
-                        ] = self.processor_config["postprocessing"]["enabled"]
+                        overrides_template.setdefault("postprocessing", {})["default"] = (
+                            self.processor_config["postprocessing"]["enabled"]
+                        )
                         overrides_template.setdefault("enabled", {})["type"] = "boolean"
                     if self.processor_config.get("aggregation"):
                         overrides_template.setdefault("aggregation", {})["default"] = (
@@ -427,9 +394,9 @@ class RecipeBuilder:
                     and self.rl_env_config.get("reward_lambda_arn")
                     and getattr(self, "eval_task", None) is EvaluationTask.RFT_EVAL
                 ):
-                    overrides_template.setdefault("reward_lambda_arn", {})[
-                        "default"
-                    ] = self.rl_env_config["reward_lambda_arn"]
+                    overrides_template.setdefault("reward_lambda_arn", {})["default"] = (
+                        self.rl_env_config["reward_lambda_arn"]
+                    )
 
         def handle_edge_case_keys(key: str) -> bool:
             """
@@ -480,6 +447,13 @@ class RecipeBuilder:
                             checkpoint_uri=str(input_recipe_key_values[key]),
                             region=self.region,
                         )
+            # ignoring data_s3_path as we use it to determine modality of data for getting Datamixing recipes
+            if key == "data_s3_path" and self.is_multimodal:
+                if key in overrides or key in input_recipe_key_values:
+                    logger.warning(
+                        f"Override for '{key}' will be ignored. If you wish to pass '{key}', please update your NovaModelCustomizer object."
+                    )
+                    return False
             # We won't allow overriding of the evaluation task because it gets too confusing on how to validate. We just want to use the eval_task parameter from evaluate().
             if key == "task":
                 if key in overrides:
@@ -490,8 +464,7 @@ class RecipeBuilder:
                 elif key in input_recipe_key_values:
                     if (
                         self.eval_task
-                        and self.eval_task.get_recipe_value()
-                        != input_recipe_key_values[key]
+                        and self.eval_task.get_recipe_value() != input_recipe_key_values[key]
                     ):
                         logger.warning(
                             f"{key} '{input_recipe_key_values[key]}' will be ignored from your input recipe. If you wish to use a different evaluation task than {self.eval_task.name}, please pass a different value for 'eval_task' when calling evaluate()."
@@ -502,9 +475,7 @@ class RecipeBuilder:
             NON_OVERRIDEABLE_PARAMS = ["peft_scheme"]
             for param in NON_OVERRIDEABLE_PARAMS:
                 if (overrides.pop(param, None)) is not None:
-                    logger.warning(
-                        f"'{param}' is not an overrideable parameter. Will be ignored."
-                    )
+                    logger.warning(f"'{param}' is not an overrideable parameter. Will be ignored.")
                     return False
 
             return True
@@ -538,9 +509,7 @@ class RecipeBuilder:
                         # we only use datamixing values from data_mixing_instance
                         if (
                             self.data_mixing_instance
-                            and self.data_mixing_instance._is_data_mixing_field(
-                                recipe_template_key
-                            )
+                            and self.data_mixing_instance._is_data_mixing_field(recipe_template_key)
                         ):
                             logger.warning(
                                 f"The following data mixing keys in overrides recipe will be ignored: {recipe_template_key}. "
@@ -556,41 +525,35 @@ class RecipeBuilder:
                                 .removesuffix("'")
                             )
                             if recipe_template_key == overrides_template_key:
-                                overrides_template[overrides_template_key][
-                                    "default"
-                                ] = overrides[recipe_template_key]
+                                overrides_template[overrides_template_key]["default"] = overrides[
+                                    recipe_template_key
+                                ]
                             else:
                                 # Create a deep copy to avoid shared references
-                                overrides_template[recipe_template_key] = (
-                                    overrides_template[overrides_template_key].copy()
-                                )
-                                overrides_template[overrides_template_key][
-                                    "required"
-                                ] = False
-                                overrides_template[recipe_template_key]["default"] = (
-                                    overrides[recipe_template_key]
-                                )
+                                overrides_template[recipe_template_key] = overrides_template[
+                                    overrides_template_key
+                                ].copy()
+                                overrides_template[overrides_template_key]["required"] = False
+                                overrides_template[recipe_template_key]["default"] = overrides[
+                                    recipe_template_key
+                                ]
                         else:
-                            existing_enum = overrides_template.get(
-                                recipe_template_key, {}
-                            ).get("enum")
+                            existing_enum = overrides_template.get(recipe_template_key, {}).get(
+                                "enum"
+                            )
                             overrides_template[recipe_template_key] = {
                                 "default": overrides[recipe_template_key],
                                 "type": type(recipe_template_value).__name__,
                                 "required": True,
                             }
                             if existing_enum is not None:
-                                overrides_template[recipe_template_key]["enum"] = (
-                                    existing_enum
-                                )
+                                overrides_template[recipe_template_key]["enum"] = existing_enum
                     # If no override, check input recipe
                     # we only use datamixing values from data_mixing_instance
                     elif recipe_template_key in input_recipe_key_values:
                         if (
                             self.data_mixing_instance
-                            and self.data_mixing_instance._is_data_mixing_field(
-                                recipe_template_key
-                            )
+                            and self.data_mixing_instance._is_data_mixing_field(recipe_template_key)
                         ):
                             logger.warning(
                                 f"The following data mixing keys in input recipe will be ignored: {recipe_template_key}. "
@@ -606,33 +569,29 @@ class RecipeBuilder:
                                 .removesuffix("'")
                             )
                             if recipe_template_key == overrides_template_key:
-                                overrides_template[overrides_template_key][
-                                    "default"
-                                ] = input_recipe_key_values[recipe_template_key]
+                                overrides_template[overrides_template_key]["default"] = (
+                                    input_recipe_key_values[recipe_template_key]
+                                )
                             else:
                                 # Create a deep copy to avoid shared references
-                                overrides_template[recipe_template_key] = (
-                                    overrides_template[overrides_template_key].copy()
-                                )
-                                overrides_template[overrides_template_key][
-                                    "required"
-                                ] = False
+                                overrides_template[recipe_template_key] = overrides_template[
+                                    overrides_template_key
+                                ].copy()
+                                overrides_template[overrides_template_key]["required"] = False
                                 overrides_template[recipe_template_key]["default"] = (
                                     input_recipe_key_values[recipe_template_key]
                                 )
                         else:
-                            existing_enum = overrides_template.get(
-                                recipe_template_key, {}
-                            ).get("enum")
+                            existing_enum = overrides_template.get(recipe_template_key, {}).get(
+                                "enum"
+                            )
                             overrides_template[recipe_template_key] = {
                                 "default": input_recipe_key_values[recipe_template_key],
                                 "type": type(recipe_template_value).__name__,
                                 "required": True,
                             }
                             if existing_enum is not None:
-                                overrides_template[recipe_template_key]["enum"] = (
-                                    existing_enum
-                                )
+                                overrides_template[recipe_template_key]["enum"] = existing_enum
                     # If no override or input recipe, use default value from recipe template
                     else:
                         if "{{" in str(recipe_template_value):
@@ -652,14 +611,10 @@ class RecipeBuilder:
                             ):
                                 if recipe_template_key != overrides_template_key:
                                     # Create a deep copy to avoid shared references
-                                    overrides_template[recipe_template_key] = (
-                                        overrides_template[
-                                            overrides_template_key
-                                        ].copy()
-                                    )
-                                    overrides_template[overrides_template_key][
-                                        "required"
-                                    ] = False
+                                    overrides_template[recipe_template_key] = overrides_template[
+                                        overrides_template_key
+                                    ].copy()
+                                    overrides_template[overrides_template_key]["required"] = False
 
         input_recipe_key_values = {}
 
@@ -679,9 +634,7 @@ class RecipeBuilder:
         if self.data_mixing_instance:
             data_mixing_config = self.data_mixing_instance.get_config()
             override_keys = {
-                k
-                for k in overrides.keys()
-                if self.data_mixing_instance._is_data_mixing_field(k)
+                k for k in overrides.keys() if self.data_mixing_instance._is_data_mixing_field(k)
             }
             for datamixing_override_key in override_keys:
                 del overrides[datamixing_override_key]
@@ -694,16 +647,11 @@ class RecipeBuilder:
             # TODO Investigate some percent params are integer type but default value is float
             # Changing all to float right now
             for key, value in data_mixing_config.items():
-                if (
-                    key in overrides_template
-                    and key != DataMixing.DATASET_CATALOG_FIELD
-                ):
+                if key in overrides_template and key != DataMixing.DATASET_CATALOG_FIELD:
                     if key == DataMixing.CUSTOMER_DATA_FIELD:
                         data_mixing_recipe_key = "percent"
                     else:
-                        data_mixing_recipe_key = key.removeprefix(
-                            DataMixing.NOVA_PREFIX
-                        )
+                        data_mixing_recipe_key = key.removeprefix(DataMixing.NOVA_PREFIX)
                         data_mixing_recipe_key = data_mixing_recipe_key.removesuffix(
                             DataMixing.PERCENT_SUFFIX
                         )
@@ -744,14 +692,12 @@ class RecipeBuilder:
                     # Edge case in Eval BYOD where preprocessing and postprocessing have same subkey
                     if key == "preprocessing" or key == "postprocessing":
                         if key in overrides_template:
-                            recipe.setdefault(key, {})["enabled"] = overrides_template[
-                                key
-                            ]["default"]
+                            recipe.setdefault(key, {})["enabled"] = overrides_template[key][
+                                "default"
+                            ]
                         continue
                     else:
-                        recipe[key] = apply_overrides_template_to_recipe_template(
-                            recipe=value
-                        )
+                        recipe[key] = apply_overrides_template_to_recipe_template(recipe=value)
                 else:
                     # If the original value is "distributed_fused_adam", never replace it
                     if key == "name" and value == "distributed_fused_adam":
@@ -769,9 +715,7 @@ class RecipeBuilder:
 
         return apply_overrides_template_to_recipe_template(recipe=recipe_template)
 
-    def _generate_recipe_path(
-        self, provided_recipe_path: Optional[str] = None
-    ) -> RecipePath:
+    def _generate_recipe_path(self, provided_recipe_path: Optional[str] = None) -> RecipePath:
         """
         Generate a path to save a recipe YAML file at
 
@@ -782,11 +726,14 @@ class RecipeBuilder:
             The path where the file will be saved at
         """
         if provided_recipe_path is not None and (
-            os.path.isfile(provided_recipe_path)
-            or provided_recipe_path.endswith(".yaml")
+            os.path.isfile(provided_recipe_path) or provided_recipe_path.endswith(".yaml")
         ):
             return RecipePath(provided_recipe_path)
-        elif self.platform == Platform.SMTJ or self.platform == Platform.BEDROCK:
+        elif self.platform in (
+            Platform.SMTJ,
+            Platform.SMTJServerless,
+            Platform.BEDROCK,
+        ):
             try:
                 root = mkdtemp()
             except Exception as e:
@@ -811,9 +758,7 @@ class RecipeBuilder:
                 ) from e
 
             path_components = [
-                os.path.join(
-                    os.path.dirname(hyperpod_cli.__file__), HYPERPOD_RECIPE_PATH
-                )
+                os.path.join(os.path.dirname(hyperpod_cli.__file__), HYPERPOD_RECIPE_PATH)
             ]
 
             match self.method:
@@ -850,9 +795,7 @@ class RecipeBuilder:
                 case Version.TWO:
                     path_components.append("nova_2_0")
                 case _:
-                    raise ValueError(
-                        f"Unsupported Nova version: {self.model.version.name}"
-                    )
+                    raise ValueError(f"Unsupported Nova version: {self.model.version.name}")
 
             path_components.append(
                 "nova_lite" if self.model == Model.NOVA_LITE_2 else self.model.value,
@@ -888,18 +831,17 @@ class RecipeBuilder:
             ValueError: If the training method is not supported or configuration is invalid
         """
 
-        recipe_metadata, recipe_template, overrides_template, image_uri = (
-            load_recipe_templates(
-                model=self.model,
-                method=self.method,
-                platform=self.platform,
-                region=self.region,
-                instance_type=self.instance_type,
-                data_mixing_enabled=True if self.data_mixing_instance else False,
-                eval_task=getattr(self, "eval_task", None),
-                image_uri_override=self.image_uri_override,
-                rft_multiturn_infra=self.rft_multiturn_infra,
-            )
+        recipe_metadata, recipe_template, overrides_template, image_uri = load_recipe_templates(
+            model=self.model,
+            method=self.method,
+            platform=self.platform,
+            region=self.region,
+            instance_type=self.instance_type,
+            data_mixing_enabled=True if self.data_mixing_instance else False,
+            eval_task=getattr(self, "eval_task", None),
+            image_uri_override=self.image_uri_override,
+            rft_multiturn_infra=self.rft_multiturn_infra,
+            is_multimodal=self.is_multimodal,
         )
 
         # Resolve user inputs
@@ -934,17 +876,13 @@ class RecipeBuilder:
             infra=self.infra,
             recipe=final_recipe_dict,
             overrides_template=overrides_template,
-            output_s3_path=overrides_template.get("output_s3_path", {}).get(
-                "default", None
-            )
+            output_s3_path=overrides_template.get("output_s3_path", {}).get("default", None)
             or None,
             data_s3_path=overrides_template.get("data_s3_path", {}).get("default", None)
             if overrides_template
             else None,
             validation_config=validation_config,
-            rft_lambda_arn=overrides_template.get("reward_lambda_arn", {}).get(
-                "default", None
-            )
+            rft_lambda_arn=overrides_template.get("reward_lambda_arn", {}).get("default", None)
             if overrides_template
             else None,
             eval_task=getattr(self, "eval_task", None),
@@ -956,46 +894,36 @@ class RecipeBuilder:
                 getattr(self, "eval_task", None) != EvaluationTask.GEN_QA
                 or (
                     overrides_template
-                    and overrides_template.get("lambda_arn", {}).get("default", None)
-                    is not None
+                    and overrides_template.get("lambda_arn", {}).get("default", None) is not None
                 )
             )
             else {
-                "lambda_arn": overrides_template.get("lambda_arn", {}).get(
-                    "default", None
-                )
+                "lambda_arn": overrides_template.get("lambda_arn", {}).get("default", None)
                 if overrides_template
                 else None,
-                "lambda_type": overrides_template.get("lambda_type", {}).get(
-                    "default", None
-                )
+                "lambda_type": overrides_template.get("lambda_type", {}).get("default", None)
                 if overrides_template
                 else None,
-                "preprocessing": overrides_template.get("preprocessing", {}).get(
-                    "default", None
-                )
+                "preprocessing": overrides_template.get("preprocessing", {}).get("default", None)
                 if overrides_template
                 else None,
-                "postprocessing": overrides_template.get("postprocessing", {}).get(
-                    "default", None
-                )
+                "postprocessing": overrides_template.get("postprocessing", {}).get("default", None)
                 if overrides_template
                 else None,
-                "aggregation": overrides_template.get("aggregation", {}).get(
-                    "default", None
-                )
+                "aggregation": overrides_template.get("aggregation", {}).get("default", None)
                 if overrides_template
                 else None,
             },
             rl_env_config=None
             if (getattr(self, "eval_task", None) is not EvaluationTask.RFT_EVAL)
             else {
-                "reward_lambda_arn": overrides_template.get(
-                    "reward_lambda_arn", {}
-                ).get("default", None)
+                "reward_lambda_arn": overrides_template.get("reward_lambda_arn", {}).get(
+                    "default", None
+                )
                 if overrides_template
                 else None
             },
+            model=self.model,
         )
 
         # Remove reward_lambda_arn from recipe if RFT_MULTITURN_EVAL
@@ -1003,10 +931,7 @@ class RecipeBuilder:
             getattr(self, "eval_task", None) is EvaluationTask.RFT_MULTITURN_EVAL
             and getattr(self, "rft_multiturn_infra", None) is not None
         ):
-            if (
-                "rl_env" in final_recipe_dict
-                and "reward_lambda_arn" in final_recipe_dict["rl_env"]
-            ):
+            if "rl_env" in final_recipe_dict and "reward_lambda_arn" in final_recipe_dict["rl_env"]:
                 del final_recipe_dict["rl_env"]["reward_lambda_arn"]
 
         # Serialize the generated recipe to YAML
@@ -1019,9 +944,7 @@ class RecipeBuilder:
         os.makedirs(os.path.dirname(output_recipe_path), exist_ok=True)
         with open(output_recipe_path, "w") as f:
             f.write(final_recipe_str)
-        logger.info(
-            f"Successfully generated recipe and saved it to '{output_recipe_path}'"
-        )
+        logger.info(f"Successfully generated recipe and saved it to '{output_recipe_path}'")
 
         # Return resolved config so RuntimeManager has the information it needs to start a job
         return (

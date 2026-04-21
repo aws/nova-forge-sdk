@@ -104,4 +104,18 @@ _All allow 1, 2, 4, 8, or 16 instances_
 | Micro      | ml.g5.4xlarge, ml.g5.8xlarge, ml.g5.12xlarge, ml.g5.16xlarge, ml.g5.24xlarge, ml.g6.4xlarge, ml.g6.8xlarge, ml.g6.12xlarge, ml.g6.16xlarge, ml.g6.24xlarge, ml.g6.48xlarge, ml.p5.48xlarge  |
 | Lite       | ml.g5.12xlarge, ml.g5.24xlarge, ml.g6.12xlarge, ml.g6.24xlarge, ml.g6.48xlarge, ml.p5.48xlarge                                                                                              |
 | Lite 2.0   | ml.p4d.24xlarge, ml.p5.48xlarge                                                                                                                                                             |
-| Pro        | ml.p5.48xlarge                                                               
+| Pro        | ml.p5.48xlarge                                                                                                                                                                              |
+
+---------------------
+
+### SageMaker Inference
+
+**Supported Instance Types:**
+
+| Model    | Allowed Instance Types                                                                                                                        |
+|----------|-----------------------------------------------------------------------------------------------------------------------------------------------|
+| Micro    | ml.g5.12xlarge, ml.g5.24xlarge, ml.g6e.xlarge, ml.g6e.2xlarge, ml.g6e.4xlarge, ml.g6.12xlarge, ml.g6.24xlarge, ml.g6.48xlarge, ml.p5.48xlarge |
+| Lite     | ml.g6.12xlarge, ml.g6.24xlarge, ml.g6.48xlarge, ml.p5.48xlarge                                                                                |
+| Lite 2.0 | ml.g6.48xlarge, ml.p5.48xlarge                                                                                                                |
+
+SageMaker Inference configuration for max_context_length and max_concurrency for each model/instance combination can be found in the [SageMaker Inference AWS documentation](https://docs.aws.amazon.com/nova/latest/userguide/nova-model-sagemaker-inference.html).

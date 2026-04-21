@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from amzn_nova_forge.core.enums import Model, TrainingMethod
 from amzn_nova_forge.dataset.dataset_format_schema import (
     CPT_FORMAT,
     EVALUATION_FORMAT,
@@ -20,7 +21,6 @@ from amzn_nova_forge.dataset.dataset_format_schema import (
     SFT_NOVA_ONE_CONVERSE_2024,
     SFT_NOVA_TWO_CONVERSE_2024,
 )
-from amzn_nova_forge.model.model_enums import Model, TrainingMethod
 
 TRANSFORM_CONFIG = {
     (

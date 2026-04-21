@@ -15,9 +15,7 @@
 
 # Shared role and policy names
 RFT_EXECUTION_ROLE_NAME = "RFTExecutionRoleNovaSDK"
-RFT_POLICY_NAME = (
-    "RFTPolicyNovaSDK"  # Used for both task role name and inline policy name
-)
+RFT_POLICY_NAME = "RFTPolicyNovaSDK"  # Used for both task role name and inline policy name
 
 # Stack name suffix
 STACK_NAME_SUFFIX = "NovaForgeSDK"
@@ -53,9 +51,7 @@ EC2_SCRIPTS_PATH = f"{EC2_BASE_PATH}/{SDK_RFT_SCRIPTS_DIR}"
 BASE_PYTHON_COMMAND = "python3.12"
 
 # CloudFormation stack states that are unrecoverable — treat as non-existent
-CFN_UNUSABLE_STACK_STATES = frozenset(
-    {"DELETE_FAILED", "ROLLBACK_COMPLETE", "ROLLBACK_FAILED"}
-)
+CFN_UNUSABLE_STACK_STATES = frozenset({"DELETE_FAILED", "ROLLBACK_COMPLETE", "ROLLBACK_FAILED"})
 
 # SSM command polling interval in seconds
 SSM_COMMAND_POLL_INTERVAL = 0.5

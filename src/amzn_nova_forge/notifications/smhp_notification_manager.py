@@ -16,11 +16,12 @@ from typing import Any, Dict, List, Optional
 
 import boto3
 
-from amzn_nova_forge.model.model_enums import Platform
+from amzn_nova_forge.core.enums import Platform
 from amzn_nova_forge.notifications.notification_manager import (
     NotificationManager,
     NotificationManagerInfraError,
 )
+from amzn_nova_forge.telemetry import Feature, _telemetry_emitter
 from amzn_nova_forge.util.logging import logger
 
 
@@ -69,9 +70,7 @@ class SMHPNotificationManager(NotificationManager):
             NotificationManagerInfraError: If cluster info cannot be retrieved
         """
         try:
-            response = self._sagemaker_client.describe_cluster(
-                ClusterName=self.cluster_name
-            )
+            response = self._sagemaker_client.describe_cluster(ClusterName=self.cluster_name)
             return response
         except Exception as e:
             raise NotificationManagerInfraError(
@@ -126,9 +125,7 @@ class SMHPNotificationManager(NotificationManager):
                     )
                 elif "s3" in service_name:
                     existing["s3"] = True
-                    logger.info(
-                        f"Found existing S3 VPC endpoint: {endpoint.get('VpcEndpointId')}"
-                    )
+                    logger.info(f"Found existing S3 VPC endpoint: {endpoint.get('VpcEndpointId')}")
 
             return existing
 
@@ -251,12 +248,17 @@ class SMHPNotificationManager(NotificationManager):
         ]
 
         if kms_key_id:
-            parameters.append(
-                {"ParameterKey": "KmsKeyId", "ParameterValue": kms_key_id}
-            )
+            parameters.append({"ParameterKey": "KmsKeyId", "ParameterValue": kms_key_id})
 
         return parameters
 
+    @_telemetry_emitter(
+        Feature.INFRA,
+        "enable_notifications",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "platform": self.platform,
+        },
+    )
     def enable_notifications(
         self,
         job_name: str,
@@ -301,9 +303,7 @@ class SMHPNotificationManager(NotificationManager):
 
         # If any required parameter is missing, try to auto-detect from cluster
         if not all([eks_cluster_arn, vpc_id, subnet_ids, security_group_id]):
-            logger.info(
-                f"Auto-detecting cluster configuration for {self.cluster_name}..."
-            )
+            logger.info(f"Auto-detecting cluster configuration for {self.cluster_name}...")
             try:
                 cluster_info = self._get_cluster_info()
 
@@ -337,9 +337,7 @@ class SMHPNotificationManager(NotificationManager):
                     if security_groups:
                         # Use the first security group
                         security_group_id = security_groups[0]
-                        logger.info(
-                            f"Auto-detected security group: {security_group_id}"
-                        )
+                        logger.info(f"Auto-detected security group: {security_group_id}")
                         platform_kwargs["security_group_id"] = security_group_id
 
             except Exception as e:
@@ -351,9 +349,7 @@ class SMHPNotificationManager(NotificationManager):
         # Auto-detect route table IDs if not provided and we have subnet_ids
         if not route_table_ids and platform_kwargs.get("subnet_ids"):
             logger.info("Auto-detecting route table IDs from subnets...")
-            route_table_ids = self._get_route_table_ids_from_subnets(
-                platform_kwargs["subnet_ids"]
-            )
+            route_table_ids = self._get_route_table_ids_from_subnets(platform_kwargs["subnet_ids"])
             if route_table_ids:
                 logger.info(
                     f"Auto-detected {len(route_table_ids)} route table(s): {', '.join(route_table_ids)}"
@@ -367,14 +363,10 @@ class SMHPNotificationManager(NotificationManager):
         # Check for existing Gateway VPC endpoints
         if platform_kwargs.get("vpc_id"):
             logger.info("Checking for existing Gateway VPC endpoints...")
-            existing_endpoints = self._check_existing_vpc_endpoints(
-                platform_kwargs["vpc_id"]
-            )
+            existing_endpoints = self._check_existing_vpc_endpoints(platform_kwargs["vpc_id"])
 
             if existing_endpoints["dynamodb"]:
-                logger.info(
-                    "DynamoDB Gateway endpoint already exists, will skip creation"
-                )
+                logger.info("DynamoDB Gateway endpoint already exists, will skip creation")
                 platform_kwargs["create_dynamodb_endpoint"] = False
             else:
                 platform_kwargs["create_dynamodb_endpoint"] = True

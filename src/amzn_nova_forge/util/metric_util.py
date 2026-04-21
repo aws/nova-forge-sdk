@@ -16,7 +16,7 @@ from typing import Dict, List, Optional
 
 import pandas
 
-from amzn_nova_forge.model.model_enums import Platform, TrainingMethod
+from amzn_nova_forge.core.enums import Platform, TrainingMethod
 
 GLOBAL_STEP_REGEX = r"global_step[=:]\s*([\d.]+)"
 TRAINING_LOSS_REGEX = r"reduced_train_loss[=:]\s*(-?[\d.]+(?:[eE][+-]?\d+)?)"

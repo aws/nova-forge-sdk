@@ -21,7 +21,8 @@ from typing import List, Optional
 import boto3
 from botocore.exceptions import ClientError
 
-from amzn_nova_forge.model.model_enums import Platform
+from amzn_nova_forge.core.enums import Platform
+from amzn_nova_forge.telemetry import Feature, _telemetry_emitter
 from amzn_nova_forge.util.logging import logger
 
 
@@ -133,9 +134,7 @@ class NotificationManager(ABC):
                 waiter.wait(StackName=stack_name)
                 # Creation complete
                 response = self.cfn.describe_stacks(StackName=stack_name)
-                return self._parse_stack_outputs(
-                    response["Stacks"][0].get("Outputs", [])
-                )
+                return self._parse_stack_outputs(response["Stacks"][0].get("Outputs", []))
             elif status == "UPDATE_IN_PROGRESS":
                 # Wait for stack update
                 logger.info(f"Stack {stack_name} is being updated. Waiting...")
@@ -143,9 +142,7 @@ class NotificationManager(ABC):
                 waiter.wait(StackName=stack_name)
                 # Update complete
                 response = self.cfn.describe_stacks(StackName=stack_name)
-                return self._parse_stack_outputs(
-                    response["Stacks"][0].get("Outputs", [])
-                )
+                return self._parse_stack_outputs(response["Stacks"][0].get("Outputs", []))
             else:
                 raise NotificationManagerInfraError(
                     f"Stack {stack_name} is in unexpected state: {status}"
@@ -188,13 +185,18 @@ class NotificationManager(ABC):
 
                 # Get stack outputs
                 response = self.cfn.describe_stacks(StackName=stack_name)
-                return self._parse_stack_outputs(
-                    response["Stacks"][0].get("Outputs", [])
-                )
+                return self._parse_stack_outputs(response["Stacks"][0].get("Outputs", []))
 
             except ClientError as e:
                 raise NotificationManagerInfraError(f"Failed to create stack: {e}")
 
+    @_telemetry_emitter(
+        Feature.INFRA,
+        "enable_notifications",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "platform": self.platform,
+        },
+    )
     def enable_notifications(
         self,
         job_name: str,
@@ -260,9 +262,7 @@ class NotificationManager(ABC):
             self.dynamodb.put_item(TableName=table_name, Item=item)
             logger.info(f"Stored notification config for job {job_name}")
         except ClientError as e:
-            raise NotificationManagerInfraError(
-                f"Failed to store job configuration: {e}"
-            )
+            raise NotificationManagerInfraError(f"Failed to store job configuration: {e}")
 
         # Subscribe emails to SNS topic (check for existing subscriptions first)
         subscribed_emails = []
@@ -296,14 +296,19 @@ class NotificationManager(ABC):
                 except ClientError as e:
                     logger.warning(f"Failed to subscribe {email}: {e}")
 
-        logger.info(
-            f"Notifications enabled for {self.get_platform_name()} job: {job_name}"
-        )
+        logger.info(f"Notifications enabled for {self.get_platform_name()} job: {job_name}")
         logger.info(f"Emails: {', '.join(emails)}")
         logger.info(
             "Note: Users must confirm their email subscriptions by clicking the link in the confirmation email from AWS."
         )
 
+    @_telemetry_emitter(
+        Feature.INFRA,
+        "delete_notification_stack",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "platform": self.platform,
+        },
+    )
     def delete_notification_stack(self) -> None:
         """
         Delete the CloudFormation stack and all associated resources for this platform.
@@ -328,9 +333,7 @@ class NotificationManager(ABC):
 
                 # Check if stack is already being deleted or doesn't exist
                 if stack_status in ["DELETE_IN_PROGRESS", "DELETE_COMPLETE"]:
-                    logger.info(
-                        f"Stack {stack_name} is already being deleted or has been deleted"
-                    )
+                    logger.info(f"Stack {stack_name} is already being deleted or has been deleted")
                     return
 
             except ClientError as e:

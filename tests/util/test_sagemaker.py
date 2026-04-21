@@ -5,21 +5,22 @@ from unittest.mock import MagicMock, patch
 
 from botocore.exceptions import ClientError
 
+from amzn_nova_forge.core.enums import DeploymentMode, Model, Platform
+from amzn_nova_forge.core.result.inference_result import (
+    SingleInferenceResult,
+)
+from amzn_nova_forge.core.types import ModelArtifacts
 from amzn_nova_forge.manager.runtime_manager import (
     RuntimeManager,
     SMHPRuntimeManager,
     SMTJRuntimeManager,
-)
-from amzn_nova_forge.model.model_config import ModelArtifacts
-from amzn_nova_forge.model.model_enums import DeploymentMode, Model
-from amzn_nova_forge.model.result.inference_result import (
-    SingleInferenceResult,
+    SMTJServerlessRuntimeManager,
 )
 from amzn_nova_forge.util.sagemaker import (
-    _get_hub_content,
     _get_sagemaker_inference_image,
     _validate_sagemaker_instance_type_for_model_deployment,
-    create_model_and_endpoint_config,
+    create_sagemaker_endpoint,
+    create_sagemaker_model,
     get_model_artifacts,
     invoke_sagemaker_inference,
     setup_environment_variables,
@@ -38,50 +39,91 @@ class TestSagemaker(unittest.TestCase):
         self.endpoint_config_name = "test-endpoint-config"
         self.endpoint_name = "test-endpoint"
 
-    @patch("amzn_nova_forge.util.sagemaker._monitor_endpoint_creation")
-    def test_create_model_and_endpoint_success_fail_if_exists(
-        self,
-        mock_monitor_endpoint,
-    ):
-        mock_sagemaker_client = MagicMock()
-
-        from botocore.exceptions import ClientError
-
-        mock_sagemaker_client.describe_model.side_effect = ClientError(
+    def test_create_sagemaker_model_success(self):
+        mock_client = MagicMock()
+        mock_client.describe_model.side_effect = ClientError(
             {"Error": {"Code": "ValidationException"}}, ""
         )
-        mock_sagemaker_client.describe_endpoint_config.side_effect = ClientError(
-            {"Error": {"Code": "ValidationException"}}, ""
-        )
-        mock_sagemaker_client.describe_endpoint.side_effect = ClientError(
-            {"Error": {"Code": "ValidationException"}}, ""
-        )
-
-        mock_sagemaker_client.create_model.return_value = {"ModelArn": "test-model-arn"}
-        mock_sagemaker_client.create_endpoint_config.return_value = {
-            "EndpointConfigArn": "test-config-arn"
+        mock_client.create_model.return_value = {
+            "ModelArn": "arn:aws:sagemaker:us-east-1:123:model/test-model"
         }
-        mock_sagemaker_client.create_endpoint.return_value = {
-            "EndpointArn": "test-endpoint-arn"
-        }
-        mock_monitor_endpoint.return_value = "InService"
 
-        result = create_model_and_endpoint_config(
+        result = create_sagemaker_model(
             region=self.region,
             model_name=self.model_name,
             model_s3_location=self.model_s3_location,
             sagemaker_execution_role_arn=self.sagemaker_execution_role_arn,
+            sagemaker_client=mock_client,
+        )
+
+        self.assertEqual(result, "arn:aws:sagemaker:us-east-1:123:model/test-model")
+        mock_client.create_model.assert_called_once()
+
+    def test_create_sagemaker_model_already_exists(self):
+        mock_client = MagicMock()
+        mock_client.describe_model.return_value = {"ModelName": "test-model"}
+
+        with self.assertRaises(Exception) as ctx:
+            create_sagemaker_model(
+                region=self.region,
+                model_name=self.model_name,
+                model_s3_location=self.model_s3_location,
+                sagemaker_execution_role_arn=self.sagemaker_execution_role_arn,
+                sagemaker_client=mock_client,
+            )
+        self.assertIn("already exists", str(ctx.exception))
+
+    def test_create_sagemaker_model_invalid_s3(self):
+        with self.assertRaises(ValueError):
+            create_sagemaker_model(
+                region=self.region,
+                model_name=self.model_name,
+                model_s3_location="invalid-s3-uri",
+                sagemaker_execution_role_arn=self.sagemaker_execution_role_arn,
+                sagemaker_client=MagicMock(),
+            )
+
+    @patch("amzn_nova_forge.util.sagemaker._monitor_endpoint_creation")
+    def test_create_sagemaker_endpoint_success(self, mock_monitor):
+        mock_client = MagicMock()
+        mock_client.describe_endpoint_config.side_effect = ClientError(
+            {"Error": {"Code": "ValidationException"}}, ""
+        )
+        mock_client.describe_endpoint.side_effect = ClientError(
+            {"Error": {"Code": "ValidationException"}}, ""
+        )
+        mock_client.create_endpoint_config.return_value = {"EndpointConfigArn": "test-config-arn"}
+        mock_client.create_endpoint.return_value = {"EndpointArn": "test-endpoint-arn"}
+        mock_monitor.return_value = "InService"
+
+        result = create_sagemaker_endpoint(
+            model_name=self.model_name,
             endpoint_config_name=self.endpoint_config_name,
             endpoint_name=self.endpoint_name,
-            sagemaker_client=mock_sagemaker_client,
-            deployment_mode=DeploymentMode.FAIL_IF_EXISTS,
+            instance_type="ml.g5.4xlarge",
+            sagemaker_client=mock_client,
         )
 
         self.assertEqual(result, "test-endpoint-arn")
+        mock_client.create_endpoint_config.assert_called_once()
+        mock_client.create_endpoint.assert_called_once()
 
-        mock_sagemaker_client.create_model.assert_called_once()
-        mock_sagemaker_client.create_endpoint_config.assert_called_once()
-        mock_sagemaker_client.create_endpoint.assert_called_once()
+    def test_create_sagemaker_endpoint_already_exists(self):
+        mock_client = MagicMock()
+        mock_client.describe_endpoint_config.side_effect = ClientError(
+            {"Error": {"Code": "ValidationException"}}, ""
+        )
+        mock_client.describe_endpoint.return_value = {"EndpointName": "test-endpoint"}
+
+        with self.assertRaises(Exception) as ctx:
+            create_sagemaker_endpoint(
+                model_name=self.model_name,
+                endpoint_config_name=self.endpoint_config_name,
+                endpoint_name=self.endpoint_name,
+                instance_type="ml.g5.4xlarge",
+                sagemaker_client=mock_client,
+            )
+        self.assertIn("already exists", str(ctx.exception))
 
     def test_get_sagemaker_inference_image_unsupported_region(self):
         with self.assertRaises(ValueError):
@@ -107,6 +149,7 @@ class TestSagemaker(unittest.TestCase):
         mock_boto_client.return_value = mock_sagemaker
 
         infra = MagicMock(spec=SMTJRuntimeManager)
+        infra.platform = Platform.SMTJ
 
         result = get_model_artifacts(
             job_name=job_name,
@@ -117,9 +160,7 @@ class TestSagemaker(unittest.TestCase):
         self.assertIsInstance(result, ModelArtifacts)
         self.assertEqual(result.checkpoint_s3_path, checkpoint_s3_uri)
         self.assertEqual(result.output_s3_path, output_s3_path)
-        mock_sagemaker.describe_training_job.assert_called_once_with(
-            TrainingJobName=job_name
-        )
+        mock_sagemaker.describe_training_job.assert_called_once_with(TrainingJobName=job_name)
 
     @patch("amzn_nova_forge.util.sagemaker.boto3.client")
     def test_get_model_artifacts_smhp_single_rig(self, mock_boto_client):
@@ -141,6 +182,7 @@ class TestSagemaker(unittest.TestCase):
         mock_boto_client.return_value = mock_sagemaker
 
         infra = MagicMock(spec=SMHPRuntimeManager)
+        infra.platform = Platform.SMHP
         infra.cluster_name = cluster_name
 
         result = get_model_artifacts(
@@ -152,9 +194,7 @@ class TestSagemaker(unittest.TestCase):
         self.assertIsInstance(result, ModelArtifacts)
         self.assertEqual(result.checkpoint_s3_path, checkpoint_s3_path)
         self.assertEqual(result.output_s3_path, output_s3_path)
-        mock_sagemaker.describe_cluster.assert_called_once_with(
-            ClusterName=cluster_name
-        )
+        mock_sagemaker.describe_cluster.assert_called_once_with(ClusterName=cluster_name)
 
     @patch("amzn_nova_forge.util.sagemaker.boto3.client")
     def test_get_model_artifacts_smhp_multiple_rigs(self, mock_boto_client):
@@ -172,6 +212,7 @@ class TestSagemaker(unittest.TestCase):
         mock_boto_client.return_value = mock_sagemaker
 
         infra = MagicMock(spec=SMHPRuntimeManager)
+        infra.platform = Platform.SMHP
         infra.cluster_name = cluster_name
 
         result = get_model_artifacts(
@@ -195,6 +236,7 @@ class TestSagemaker(unittest.TestCase):
         mock_boto_client.return_value = mock_sagemaker
 
         infra = MagicMock(spec=SMHPRuntimeManager)
+        infra.platform = Platform.SMHP
         infra.cluster_name = cluster_name
 
         result = get_model_artifacts(
@@ -233,14 +275,13 @@ class TestSagemaker(unittest.TestCase):
 
         mock_sagemaker = MagicMock()
         mock_sagemaker.describe_training_job.side_effect = ClientError(
-            error_response={
-                "Error": {"Code": "ResourceNotFound", "Message": "Job not found"}
-            },
+            error_response={"Error": {"Code": "ResourceNotFound", "Message": "Job not found"}},
             operation_name="DescribeTrainingJob",
         )
         mock_boto_client.return_value = mock_sagemaker
 
         infra = MagicMock(spec=SMTJRuntimeManager)
+        infra.platform = Platform.SMTJ
 
         with self.assertRaises(ClientError):
             get_model_artifacts(
@@ -257,14 +298,13 @@ class TestSagemaker(unittest.TestCase):
 
         mock_sagemaker = MagicMock()
         mock_sagemaker.describe_cluster.side_effect = ClientError(
-            error_response={
-                "Error": {"Code": "ResourceNotFound", "Message": "Cluster not found"}
-            },
+            error_response={"Error": {"Code": "ResourceNotFound", "Message": "Cluster not found"}},
             operation_name="DescribeCluster",
         )
         mock_boto_client.return_value = mock_sagemaker
 
         infra = MagicMock(spec=SMHPRuntimeManager)
+        infra.platform = Platform.SMHP
         infra.cluster_name = cluster_name
 
         with self.assertRaises(ClientError):
@@ -275,121 +315,58 @@ class TestSagemaker(unittest.TestCase):
             )
 
     @patch("amzn_nova_forge.util.sagemaker.boto3.client")
-    def test_get_hub_content_success(self, mock_boto_client):
-        hub_name = "test-hub"
-        hub_content_name = "test-content"
-        hub_content_type = "Model"
-        region = "us-east-1"
+    def test_get_model_artifacts_serverless_with_model_package(self, mock_boto_client):
+        """Serverless jobs return output_model_arn and checkpoint_s3_path from model package."""
+        job_name = "test-serverless-job"
+        model_package_arn = "arn:aws:sagemaker:us-east-1:123:model-package/group/1"
+        output_s3_path = "s3://my-bucket/output/"
+        checkpoint_s3_path = "s3://customer-escrow/job/384/"
 
         mock_sagemaker = MagicMock()
-        mock_sagemaker.describe_hub_content.return_value = {
-            "HubName": hub_name,
-            "HubContentName": hub_content_name,
-            "HubContentType": hub_content_type,
-            "HubContentDocument": '{"key": "value", "nested": {"data": 123}}',
-            "HubContentVersion": "1.0",
+        mock_sagemaker.describe_training_job.return_value = {
+            "OutputModelPackageArn": model_package_arn,
+            "OutputDataConfig": {"S3OutputPath": output_s3_path},
+        }
+        mock_sagemaker.describe_model_package.return_value = {
+            "InferenceSpecification": {
+                "Containers": [{"ModelDataSource": {"S3DataSource": {"S3Uri": checkpoint_s3_path}}}]
+            }
         }
         mock_boto_client.return_value = mock_sagemaker
 
-        result = _get_hub_content(
-            hub_name=hub_name,
-            hub_content_name=hub_content_name,
-            hub_content_type=hub_content_type,
-            region=region,
-        )
+        infra = MagicMock(spec=SMTJServerlessRuntimeManager)
+        infra.platform = Platform.SMTJServerless
 
-        self.assertEqual(result["HubName"], hub_name)
-        self.assertEqual(result["HubContentName"], hub_content_name)
-        self.assertIsInstance(result["HubContentDocument"], dict)
-        self.assertEqual(result["HubContentDocument"]["key"], "value")
-        self.assertEqual(result["HubContentDocument"]["nested"]["data"], 123)
-        mock_sagemaker.describe_hub_content.assert_called_once_with(
-            HubName=hub_name,
-            HubContentType=hub_content_type,
-            HubContentName=hub_content_name,
+        result = get_model_artifacts(job_name=job_name, infra=infra, output_s3_path=output_s3_path)
+
+        self.assertEqual(result.checkpoint_s3_path, checkpoint_s3_path)
+        self.assertEqual(result.output_s3_path, output_s3_path)
+        self.assertEqual(result.output_model_arn, model_package_arn)
+        mock_sagemaker.describe_model_package.assert_called_once_with(
+            ModelPackageName=model_package_arn
         )
 
     @patch("amzn_nova_forge.util.sagemaker.boto3.client")
-    def test_get_hub_content_non_json_document(self, mock_boto_client):
-        hub_name = "test-hub"
-        hub_content_name = "test-content"
-        hub_content_type = "Model"
-        region = "us-east-1"
+    def test_get_model_artifacts_serverless_no_model_package(self, mock_boto_client):
+        """Serverless job with no OutputModelPackageArn returns None checkpoint and arn."""
+        job_name = "test-serverless-job"
+        output_s3_path = "s3://my-bucket/output/"
 
         mock_sagemaker = MagicMock()
-        mock_sagemaker.describe_hub_content.return_value = {
-            "HubName": hub_name,
-            "HubContentName": hub_content_name,
-            "HubContentType": hub_content_type,
-            "HubContentDocument": "not a json string",
-            "HubContentVersion": "1.0",
+        mock_sagemaker.describe_training_job.return_value = {
+            "OutputDataConfig": {"S3OutputPath": output_s3_path},
         }
         mock_boto_client.return_value = mock_sagemaker
 
-        result = _get_hub_content(
-            hub_name=hub_name,
-            hub_content_name=hub_content_name,
-            hub_content_type=hub_content_type,
-            region=region,
-        )
+        infra = MagicMock(spec=SMTJServerlessRuntimeManager)
+        infra.platform = Platform.SMTJServerless
 
-        # Should leave the string as-is if it's not valid JSON
-        self.assertIsInstance(result["HubContentDocument"], str)
-        self.assertEqual(result["HubContentDocument"], "not a json string")
+        result = get_model_artifacts(job_name=job_name, infra=infra, output_s3_path=output_s3_path)
 
-    @patch("amzn_nova_forge.util.sagemaker.boto3.client")
-    def test_get_hub_content_client_error(self, mock_boto_client):
-        hub_name = "test-hub"
-        hub_content_name = "test-content"
-        hub_content_type = "Model"
-        region = "us-east-1"
-
-        mock_sagemaker = MagicMock()
-        mock_sagemaker.describe_hub_content.side_effect = ClientError(
-            error_response={
-                "Error": {
-                    "Code": "ResourceNotFound",
-                    "Message": "Hub content not found",
-                }
-            },
-            operation_name="DescribeHubContent",
-        )
-        mock_boto_client.return_value = mock_sagemaker
-
-        with self.assertRaises(RuntimeError) as context:
-            _get_hub_content(
-                hub_name=hub_name,
-                hub_content_name=hub_content_name,
-                hub_content_type=hub_content_type,
-                region=region,
-            )
-
-        self.assertIn("Failed to get SageMaker hub content", str(context.exception))
-        self.assertIn(hub_content_name, str(context.exception))
-
-    @patch("amzn_nova_forge.util.sagemaker.boto3.client")
-    def test_get_hub_content_generic_exception(self, mock_boto_client):
-        hub_name = "test-hub"
-        hub_content_name = "test-content"
-        hub_content_type = "Model"
-        region = "us-east-1"
-
-        mock_sagemaker = MagicMock()
-        mock_sagemaker.describe_hub_content.side_effect = Exception("Network error")
-        mock_boto_client.return_value = mock_sagemaker
-
-        from amzn_nova_forge.util.sagemaker import _get_hub_content
-
-        with self.assertRaises(RuntimeError) as context:
-            _get_hub_content(
-                hub_name=hub_name,
-                hub_content_name=hub_content_name,
-                hub_content_type=hub_content_type,
-                region=region,
-            )
-
-        self.assertIn("Failed to get SageMaker hub content", str(context.exception))
-        self.assertIn("Network error", str(context.exception))
+        self.assertIsNone(result.checkpoint_s3_path)
+        self.assertIsNone(result.output_model_arn)
+        self.assertEqual(result.output_s3_path, output_s3_path)
+        mock_sagemaker.describe_model_package.assert_not_called()
 
     def test_setup_environment_variables_with_optional_params(self):
         """Test setup_environment_variables with optional parameters"""
@@ -408,20 +385,6 @@ class TestSagemaker(unittest.TestCase):
         self.assertIn("DEFAULT_TOP_K", env_vars)
         self.assertIn("DEFAULT_MAX_NEW_TOKENS", env_vars)
         self.assertIn("DEFAULT_LOGPROBS", env_vars)
-
-    def test_create_model_and_endpoint_config_invalid_s3_uri(self):
-        with self.assertRaises(ValueError):
-            create_model_and_endpoint_config(
-                region="us-east-1",
-                model_name="test-model",
-                model_s3_location="invalid-s3-uri",  # Invalid S3 URI
-                sagemaker_execution_role_arn="arn:test-role",
-                endpoint_config_name="test-config",
-                endpoint_name="test-endpoint",
-                instance_type="ml.g5.4xlarge",
-                environment={},
-                sagemaker_client=MagicMock(),
-            )
 
     def test_non_streaming_inference(self):
         """Test non-streaming inference invocation"""
@@ -474,9 +437,7 @@ class TestSagemaker(unittest.TestCase):
             ],
         }
 
-        mock_sagemaker_client.invoke_endpoint_with_response_stream.return_value = (
-            mock_response_json
-        )
+        mock_sagemaker_client.invoke_endpoint_with_response_stream.return_value = mock_response_json
 
         streaming_request = self.request_body.copy()
         streaming_request["stream"] = True
@@ -508,9 +469,7 @@ class TestSagemaker(unittest.TestCase):
             "Body": [],
         }
 
-        mock_sagemaker_client.invoke_endpoint_with_response_stream.return_value = (
-            mock_response_json
-        )
+        mock_sagemaker_client.invoke_endpoint_with_response_stream.return_value = mock_response_json
 
         streaming_request = self.request_body.copy()
         streaming_request["stream"] = True
@@ -530,9 +489,7 @@ class TestSagemaker(unittest.TestCase):
     def test_invoke_sagemaker_inference_error_handling(self):
         """Test handling of errors"""
         mock_sagemaker_client = MagicMock()
-        mock_sagemaker_client.invoke_endpoint.side_effect = RuntimeError(
-            "Unexpected error"
-        )
+        mock_sagemaker_client.invoke_endpoint.side_effect = RuntimeError("Unexpected error")
 
         with self.assertRaises(Exception) as context:
             invoke_sagemaker_inference(
@@ -542,20 +499,20 @@ class TestSagemaker(unittest.TestCase):
             )
 
     def test_valid_instance_types(self):
-        # Test valid instance types for each model
+        # Test valid instance types for each model (based on SUPPORTED_SMI_CONFIGS)
         valid_test_cases = [
             (Model.NOVA_MICRO, "ml.g5.12xlarge"),
+            (Model.NOVA_MICRO, "ml.g5.24xlarge"),
             (Model.NOVA_MICRO, "ml.g6.12xlarge"),
-            (Model.NOVA_MICRO, "ml.g5.48xlarge"),
+            (Model.NOVA_MICRO, "ml.g6.24xlarge"),
             (Model.NOVA_MICRO, "ml.g6.48xlarge"),
             (Model.NOVA_MICRO, "ml.p5.48xlarge"),
-            (Model.NOVA_LITE, "ml.g5.12xlarge"),
             (Model.NOVA_LITE, "ml.g6.12xlarge"),
-            (Model.NOVA_LITE, "ml.g5.48xlarge"),
+            (Model.NOVA_LITE, "ml.g6.24xlarge"),
             (Model.NOVA_LITE, "ml.g6.48xlarge"),
             (Model.NOVA_LITE, "ml.p5.48xlarge"),
+            (Model.NOVA_LITE_2, "ml.g6.48xlarge"),
             (Model.NOVA_LITE_2, "ml.p5.48xlarge"),
-            (Model.NOVA_PRO, "ml.g6.48xlarge"),
             (Model.NOVA_PRO, "ml.p5.48xlarge"),
         ]
 
@@ -573,9 +530,7 @@ class TestSagemaker(unittest.TestCase):
 
         for model, instance_type in invalid_test_cases:
             with self.assertRaises(ValueError):
-                _validate_sagemaker_instance_type_for_model_deployment(
-                    instance_type, model
-                )
+                _validate_sagemaker_instance_type_for_model_deployment(instance_type, model)
 
 
 if __name__ == "__main__":

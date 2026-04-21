@@ -5,21 +5,21 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from amzn_nova_forge.model.model_config import ModelArtifacts
-from amzn_nova_forge.model.model_enums import (
+from amzn_nova_forge.core.enums import (
     Model,
     Platform,
     TrainingMethod,
 )
-from amzn_nova_forge.model.result.job_result import (
+from amzn_nova_forge.core.result.job_result import (
     JobStatus,
     SMHPStatusManager,
     SMTJStatusManager,
 )
-from amzn_nova_forge.model.result.training_result import (
+from amzn_nova_forge.core.result.training_result import (
     SMHPTrainingResult,
     SMTJTrainingResult,
 )
+from amzn_nova_forge.core.types import ModelArtifacts
 
 
 class TestSMTJTrainResult(unittest.TestCase):
@@ -98,6 +98,7 @@ class TestSMTJTrainResult(unittest.TestCase):
             "model_artifacts": {
                 "checkpoint_s3_path": "s3://bucket/checkpoint/",
                 "output_s3_path": "s3://bucket/output/",
+                "output_model_arn": None,
             },
             "model_type": Model.NOVA_MICRO.name,
         }
@@ -123,12 +124,8 @@ class TestSMTJTrainResult(unittest.TestCase):
             self.assertEqual(result.job_id, "test-job-456")
             self.assertEqual(result.started_time, datetime(2024, 1, 1, 12, 0, 0))
             self.assertEqual(result.method, TrainingMethod.SFT_LORA)
-            self.assertEqual(
-                result.model_artifacts.checkpoint_s3_path, "s3://bucket/checkpoint/"
-            )
-            self.assertEqual(
-                result.model_artifacts.output_s3_path, "s3://bucket/output/"
-            )
+            self.assertEqual(result.model_artifacts.checkpoint_s3_path, "s3://bucket/checkpoint/")
+            self.assertEqual(result.model_artifacts.output_s3_path, "s3://bucket/output/")
 
     def test_get_method(self):
         """Test get method returns dictionary"""
@@ -178,8 +175,7 @@ class TestSMTJTrainResult(unittest.TestCase):
             original_result.dump(str(file_path))
 
             expected_file = (
-                file_path
-                / f"{original_result.job_id}_{original_result.platform.value}.json"
+                file_path / f"{original_result.job_id}_{original_result.platform.value}.json"
             )
             self.assertTrue(expected_file.exists())
 
@@ -272,6 +268,7 @@ class TestSMHPTrainResult(unittest.TestCase):
             "model_artifacts": {
                 "checkpoint_s3_path": "s3://bucket/checkpoint/",
                 "output_s3_path": "s3://bucket/output/",
+                "output_model_arn": None,
             },
             "cluster_name": "test-cluster",
             "namespace": "test-namespace",
@@ -302,9 +299,7 @@ class TestSMHPTrainResult(unittest.TestCase):
         self.assertEqual(result.method, TrainingMethod.RFT_LORA)
         self.assertEqual(result.cluster_name, "test-cluster")
         self.assertEqual(result.namespace, "test-namespace")
-        self.assertEqual(
-            result.model_artifacts.checkpoint_s3_path, "s3://bucket/checkpoint/"
-        )
+        self.assertEqual(result.model_artifacts.checkpoint_s3_path, "s3://bucket/checkpoint/")
         self.assertEqual(result.model_type, Model.NOVA_MICRO)
 
     def test_get_method(self):
@@ -357,8 +352,7 @@ class TestSMHPTrainResult(unittest.TestCase):
             original_result.dump(str(file_path))
 
             expected_file = (
-                file_path
-                / f"{original_result.job_id}_{original_result.platform.value}.json"
+                file_path / f"{original_result.job_id}_{original_result.platform.value}.json"
             )
             self.assertTrue(expected_file.exists())
 

@@ -52,9 +52,7 @@ def lambda_handler(event, context):
             },
         ]
 
-        result = verify_reward_function(
-            reward_function=reward_file, sample_data=sample_data
-        )
+        result = verify_reward_function(reward_function=reward_file, sample_data=sample_data)
 
         assert result["success"] is True
         assert result["total_samples"] == 2
@@ -105,14 +103,10 @@ def lambda_handler(event, context):
 
     try:
         # Missing reference_answer field
-        sample_data = [
-            {"id": "sample_1", "messages": [{"role": "user", "content": "test"}]}
-        ]
+        sample_data = [{"id": "sample_1", "messages": [{"role": "user", "content": "test"}]}]
 
         # Should not raise error, but should include warning
-        result = verify_reward_function(
-            reward_function=reward_file, sample_data=sample_data
-        )
+        result = verify_reward_function(reward_function=reward_file, sample_data=sample_data)
 
         assert result["success"] is True
         assert len(result["warnings"]) == 1
@@ -149,9 +143,7 @@ def lambda_handler(event, context):
             }
         ]
 
-        result = verify_reward_function(
-            reward_function=reward_file, sample_data=sample_data
-        )
+        result = verify_reward_function(reward_function=reward_file, sample_data=sample_data)
 
         assert result["success"] is True
 
@@ -266,9 +258,7 @@ def lambda_handler(event, context):
             },
         ]
 
-        result = verify_reward_function(
-            reward_function=reward_file, sample_data=sample_data
-        )
+        result = verify_reward_function(reward_function=reward_file, sample_data=sample_data)
 
         assert result["success"] is True
         assert result["total_samples"] == 2
@@ -308,9 +298,7 @@ def lambda_handler(event, context):
             }
         ]
 
-        result = verify_reward_function(
-            reward_function=reward_file, sample_data=sample_data
-        )
+        result = verify_reward_function(reward_function=reward_file, sample_data=sample_data)
 
         assert result["success"] is True
         assert result["total_samples"] == 1
@@ -346,9 +334,7 @@ def lambda_handler(event, context):
             }
         ]
 
-        result = verify_reward_function(
-            reward_function=reward_file, sample_data=sample_data
-        )
+        result = verify_reward_function(reward_function=reward_file, sample_data=sample_data)
 
         assert result["success"] is True
 
@@ -527,9 +513,7 @@ def lambda_handler(event, context):
         ]
 
         # metrics_list should be validated if present
-        result = verify_reward_function(
-            reward_function=reward_file, sample_data=sample_data
-        )
+        result = verify_reward_function(reward_function=reward_file, sample_data=sample_data)
 
         assert result["success"] is True
 
@@ -539,7 +523,7 @@ def lambda_handler(event, context):
 
 def test_verify_smhp_platform_valid_lambda_arn():
     """Test that SMHP platform accepts Lambda ARN with 'SageMaker' in name."""
-    from amzn_nova_forge.model.model_enums import Platform
+    from amzn_nova_forge.core.enums import Platform
 
     reward_code = """
 def lambda_handler(event, context):
@@ -578,7 +562,7 @@ def lambda_handler(event, context):
 
 def test_verify_smhp_platform_invalid_lambda_arn():
     """Test that SMHP platform rejects Lambda ARN without 'SageMaker' in name."""
-    from amzn_nova_forge.model.model_enums import Platform
+    from amzn_nova_forge.core.enums import Platform
 
     sample_data = [
         {
@@ -602,7 +586,7 @@ def test_verify_smhp_platform_invalid_lambda_arn():
 
 def test_verify_smhp_platform_valid_lambda_arn_case_insensitive():
     """Test that SMHP platform accepts Lambda ARN with 'sagemaker' (lowercase)."""
-    from amzn_nova_forge.model.model_enums import Platform
+    from amzn_nova_forge.core.enums import Platform
 
     sample_data = [
         {
@@ -637,7 +621,7 @@ def test_verify_smhp_platform_valid_lambda_arn_case_insensitive():
 
 def test_verify_smtj_platform_no_lambda_arn_validation():
     """Test that SMTJ platform doesn't validate Lambda ARN format."""
-    from amzn_nova_forge.model.model_enums import Platform
+    from amzn_nova_forge.core.enums import Platform
 
     sample_data = [
         {
@@ -653,9 +637,7 @@ def test_verify_smtj_platform_no_lambda_arn_validation():
     # Should not raise the SageMaker validation error
     # (will fail with boto3 error since it's a fake ARN, but that's expected)
     try:
-        verify_reward_function(
-            reward_function=arn, sample_data=sample_data, platform=Platform.SMTJ
-        )
+        verify_reward_function(reward_function=arn, sample_data=sample_data, platform=Platform.SMTJ)
     except Exception as e:
         # Should NOT get the "must contain 'SageMaker'" error
         assert "must contain 'SageMaker'" not in str(e)
@@ -712,9 +694,7 @@ def lambda_handler(event, context):
             }
         ]
 
-        result = verify_reward_function(
-            reward_function=reward_file, sample_data=sample_data
-        )
+        result = verify_reward_function(reward_function=reward_file, sample_data=sample_data)
 
         assert result["success"] is True
         assert len(result["results"]) == 1
@@ -753,9 +733,7 @@ def lambda_handler(event, context):
         ]
 
         # Empty metrics_list should be valid (it's just an empty array)
-        result = verify_reward_function(
-            reward_function=reward_file, sample_data=sample_data
-        )
+        result = verify_reward_function(reward_function=reward_file, sample_data=sample_data)
 
         assert result["success"] is True
 
@@ -874,9 +852,7 @@ def lambda_handler(event, context):
             },
         ]
 
-        result = verify_reward_function(
-            reward_function=reward_file, sample_data=sample_data
-        )
+        result = verify_reward_function(reward_function=reward_file, sample_data=sample_data)
 
         assert result["success"] is True
         assert result["total_samples"] == 3
@@ -889,7 +865,7 @@ def lambda_handler(event, context):
 
 def test_verify_smhp_platform_malformed_lambda_arn():
     """Test that malformed Lambda ARN raises appropriate error."""
-    from amzn_nova_forge.model.model_enums import Platform
+    from amzn_nova_forge.core.enums import Platform
 
     sample_data = [
         {
@@ -912,7 +888,7 @@ def test_verify_smhp_platform_malformed_lambda_arn():
 
 def test_verify_smhp_platform_with_local_file():
     """Test that SMHP platform validation doesn't affect local files."""
-    from amzn_nova_forge.model.model_enums import Platform
+    from amzn_nova_forge.core.enums import Platform
 
     reward_code = """
 def lambda_handler(event, context):
@@ -951,7 +927,7 @@ def lambda_handler(event, context):
 
 def test_verify_combined_evaluation_mode_and_smhp_platform():
     """Test using both evaluation mode and SMHP platform together."""
-    from amzn_nova_forge.model.model_enums import Platform
+    from amzn_nova_forge.core.enums import Platform
 
     reward_code = """
 def lambda_handler(event, context):
@@ -1056,9 +1032,7 @@ def lambda_handler(event, context):
             }
         ]
 
-        result = verify_reward_function(
-            reward_function=reward_file, sample_data=sample_data
-        )
+        result = verify_reward_function(reward_function=reward_file, sample_data=sample_data)
 
         assert result["success"] is True
         assert result["results"][0]["output"]["aggregate_reward_score"] == 1
@@ -1096,9 +1070,7 @@ def lambda_handler(event, context):
             }
         ]
 
-        result = verify_reward_function(
-            reward_function=reward_file, sample_data=sample_data
-        )
+        result = verify_reward_function(reward_function=reward_file, sample_data=sample_data)
 
         assert result["success"] is True
         assert result["results"][0]["output"]["metrics_list"][0]["value"] == 5
@@ -1109,7 +1081,7 @@ def lambda_handler(event, context):
 
 def test_verify_smhp_arn_with_version_qualifier():
     """Test SMHP validation with Lambda ARN that includes version/alias."""
-    from amzn_nova_forge.model.model_enums import Platform
+    from amzn_nova_forge.core.enums import Platform
 
     sample_data = [
         {
@@ -1120,9 +1092,7 @@ def test_verify_smhp_arn_with_version_qualifier():
     ]
 
     # ARN with version qualifier - should still validate function name
-    arn_with_version = (
-        "arn:aws:lambda:us-east-1:123456789012:function:MySageMakerReward:1"
-    )
+    arn_with_version = "arn:aws:lambda:us-east-1:123456789012:function:MySageMakerReward:1"
 
     # Should not raise SageMaker validation error (function name has SageMaker)
     try:

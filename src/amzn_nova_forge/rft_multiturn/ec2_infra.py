@@ -20,6 +20,7 @@ from typing import Dict, List, Optional
 
 import boto3
 
+from amzn_nova_forge.telemetry import Feature, _telemetry_emitter
 from amzn_nova_forge.util.logging import logger
 from amzn_nova_forge.validation.rft_multiturn_validator import (
     validate_amazon_linux_ami,
@@ -178,10 +179,14 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         check_cmd = (
             f"echo 'TRAIN:'; "
             f"(pgrep -f '{stack_name}_.*_train\\.sh' 2>/dev/null || true; "
-            f"pgrep -f '{base_stack}_.*_train\\.sh' 2>/dev/null || true) | sort -u || echo 'none'; "
+            f"pgrep -f '{base_stack}_.*_train\\.sh' 2>/dev/null || true; "
+            f"pgrep -f 'environment_client\\.py.*{stack_name}.*train' 2>/dev/null || true; "
+            f"pgrep -f 'environment_client\\.py.*{base_stack}.*train' 2>/dev/null || true) | sort -u || echo 'none'; "
             f"echo 'EVAL:'; "
             f"(pgrep -f '{stack_name}_.*_eval\\.sh' 2>/dev/null || true; "
-            f"pgrep -f '{base_stack}_.*_eval\\.sh' 2>/dev/null || true) | sort -u || echo 'none'"
+            f"pgrep -f '{base_stack}_.*_eval\\.sh' 2>/dev/null || true; "
+            f"pgrep -f 'environment_client\\.py.*{stack_name}.*eval' 2>/dev/null || true; "
+            f"pgrep -f 'environment_client\\.py.*{base_stack}.*eval' 2>/dev/null || true) | sort -u || echo 'none'"
         )
 
         try:
@@ -221,12 +226,8 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
                                     eval_pids.append(line)
 
                         if train_pids or eval_pids:
-                            train_jobs = (
-                                [f"PIDs: {', '.join(train_pids)}"] if train_pids else []
-                            )
-                            eval_jobs = (
-                                [f"PIDs: {', '.join(eval_pids)}"] if eval_pids else []
-                            )
+                            train_jobs = [f"PIDs: {', '.join(train_pids)}"] if train_pids else []
+                            eval_jobs = [f"PIDs: {', '.join(eval_pids)}"] if eval_pids else []
 
                             error_msg = build_duplicate_job_error_message(
                                 stack_name,
@@ -307,9 +308,7 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         if error_msg:
             raise RuntimeError(error_msg)
 
-        logger.info(
-            f"Setting up environment for '{vf_env_id}' on EC2 instance {self.instance_id}"
-        )
+        logger.info(f"Setting up environment for '{vf_env_id}' on EC2 instance {self.instance_id}")
         install_commands = self._build_setup_commands(vf_env_id)
         setup_response = self.ssm_client.send_command(
             InstanceIds=[self.instance_id],
@@ -328,7 +327,7 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
             f"mkdir -p {EC2_SCRIPTS_PATH}",
             f"cat > {EC2_SCRIPTS_PATH}/{script_name} << 'EOFSCRIPT'\n{script_content}\nEOFSCRIPT",
             f"chmod +x {EC2_SCRIPTS_PATH}/{script_name}",
-            f"nohup {EC2_SCRIPTS_PATH}/{script_name} > {EC2_LOGS_PATH}/{log_file} 2>&1 </dev/null & echo $!",
+            f"setsid nohup {EC2_SCRIPTS_PATH}/{script_name} > {EC2_LOGS_PATH}/{log_file} 2>&1 </dev/null & echo $!",
         ]
 
         response = self.ssm_client.send_command(
@@ -354,9 +353,7 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
             # Create tracking files
             self._create_pid_file(self.session_id, env_type, pid)
             self._create_status_file(self.session_id, env_type, JOB_STATUS_RUNNING)
-            logger.info(
-                f"Created tracking files for session {self.session_id}, PID: {pid}"
-            )
+            logger.info(f"Created tracking files for session {self.session_id}, PID: {pid}")
         except Exception as e:
             logger.warning(f"Could not create tracking files: {e}")
 
@@ -391,9 +388,7 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         instance_profile_name = instance_profile_arn.split("/")[-1]
 
         try:
-            profile = iam_client.get_instance_profile(
-                InstanceProfileName=instance_profile_name
-            )
+            profile = iam_client.get_instance_profile(InstanceProfileName=instance_profile_name)
             roles = profile["InstanceProfile"]["Roles"]
 
             if not roles:
@@ -410,9 +405,7 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
             self._ensure_policy_on_role(role_name)
 
         except Exception as e:
-            raise ValueError(
-                f"Failed to validate or configure IAM role permissions: {e}"
-            )
+            raise ValueError(f"Failed to validate or configure IAM role permissions: {e}")
 
     def _validate_ssm_connectivity(self):
         """
@@ -491,9 +484,7 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         )
         self._wait_for_ssm_command(mkdir_response["Command"]["CommandId"])
 
-        commands = self._build_sam_deploy_commands(
-            custom_starter_kit_s3=self._starter_kit_s3_uri
-        )
+        commands = self._build_sam_deploy_commands(custom_starter_kit_s3=self._starter_kit_s3_uri)
 
         response = self.ssm_client.send_command(
             InstanceIds=[self.instance_id],
@@ -587,9 +578,7 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         script_name = f"{session_id}_{env_type.value}.sh"
         log_file = f"{session_id}_{env_type.value}.log"
 
-        self._execute_training_or_eval(
-            vf_env_id, script_name, log_file, command_builder
-        )
+        self._execute_training_or_eval(vf_env_id, script_name, log_file, command_builder)
 
         logger.info(f"Environment started on EC2 instance {self.instance_id}")
 
@@ -647,9 +636,7 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
             InstanceIds=[self.instance_id],
             DocumentName="AWS-RunShellScript",
             Parameters={
-                "commands": [
-                    f"tail -n {limit} {log_file} 2>/dev/null || echo 'Log file not found'"
-                ]
+                "commands": [f"tail -n {limit} {log_file} 2>/dev/null || echo 'Log file not found'"]
             },
         )
 
@@ -666,6 +653,41 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
             else []
         )
 
+    def _build_kill_process_group_cmd(
+        self,
+        pid_file: str,
+        fallback_script_pattern: str,
+        files_to_remove: List[str],
+        status_file: Optional[str] = None,
+    ) -> str:
+        """
+        Build a shell snippet that kills a process group via its pid file.
+
+        Uses ``kill -- -$PID`` (process-group kill) because the script is launched
+        with ``setsid``, making the .sh PID equal to the PGID.  This ensures
+        environment_client.py children are also terminated.  Always follows up with
+        ``pkill -f`` as defense-in-depth (handles pre-fix orphans where PID ≠ PGID,
+        or recycled PGIDs where the group kill silently no-ops).
+
+        Args:
+            pid_file: Path to the file containing the PGID/PID.
+            fallback_script_pattern: Pattern passed to pkill -f after the group kill.
+            files_to_remove: List of file paths to delete after killing.
+            status_file: If provided, written with JOB_STATUS_KILLED before removal.
+        """
+        status_write = f"echo {JOB_STATUS_KILLED} > {status_file}; " if status_file else ""
+        remove = " ".join(files_to_remove)
+        return (
+            f"PID=$(cat {pid_file} 2>/dev/null | tr -d '[:space:]'); "
+            f'if [ -n "$PID" ] && [ "$PID" -gt 1 ] 2>/dev/null; then '
+            f"kill -- -$PID 2>/dev/null || true; "
+            f"fi; "
+            f"pkill -f {fallback_script_pattern} 2>/dev/null || true; "
+            f"{status_write}"
+            f"rm -f {remove}"
+        )
+
+    @_telemetry_emitter(Feature.INFRA, "kill_task")
     def kill_task(
         self,
         env_type: EnvType,
@@ -683,66 +705,47 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         """
         if kill_all_for_stack:
             base_stack = self._extract_base_stack_name(self.stack_name)
+            logger.info(f"Killing ALL {env_type.value} jobs for stack '{self.stack_name}' on EC2")
 
-            logger.info(
-                f"Killing ALL {env_type.value} jobs for stack '{self.stack_name}' on EC2"
-            )
-
+            # Per-pid-file cleanup varies only by whether logs are preserved.
             if preserve_logs:
-                cmd = f"""
-                PIDS=$({{ pgrep -f '{self.stack_name}_.*_{env_type.value}\\.sh' 2>/dev/null || true; pgrep -f '{base_stack}_.*_{env_type.value}\\.sh' 2>/dev/null || true; }} | sort -u)
-                
-                if [ -n "$PIDS" ]; then
-                    echo "Found PIDs: $PIDS"
-                    pkill -f '{self.stack_name}_.*_{env_type.value}\\.sh' 2>/dev/null || true
-                    pkill -f '{base_stack}_.*_{env_type.value}\\.sh' 2>/dev/null || true
-                    
-                    cd {EC2_LOGS_PATH} 2>/dev/null || exit 0
-                    for file in {self.stack_name}_*_{env_type.value}.* {base_stack}_*_{env_type.value}.*; do
-                        if [ -f "$file" ]; then
-                            SESSION_ID=$(echo "$file" | sed 's/_{env_type.value}\\..*$//')
-                            echo "{JOB_STATUS_KILLED}" > "${{SESSION_ID}}_{env_type.value}.status" 2>/dev/null || true
-                        fi
-                    done
-                    
-                    cd {EC2_SCRIPTS_PATH} 2>/dev/null || exit 0
-                    rm -f {self.stack_name}_*_{env_type.value}.sh 2>/dev/null || true
-                    rm -f {base_stack}_*_{env_type.value}.sh 2>/dev/null || true
-                    
-                    echo "Killed all {env_type.value} jobs (logs preserved)"
-                else
-                    echo "No {env_type.value} jobs found"
-                fi
-                """
+                per_pid_cleanup = (
+                    f'SESSION_ID=$(basename "$pid_file" .pid); '
+                    f'echo "{JOB_STATUS_KILLED}" > "{EC2_LOGS_PATH}/${{SESSION_ID}}.status" 2>/dev/null || true; '
+                    f'rm -f "$pid_file"'
+                )
+                done_msg = f"Killed all {env_type.value} jobs (logs preserved)"
             else:
-                cmd = f"""
-                PIDS=$({{ pgrep -f '{self.stack_name}_.*_{env_type.value}\\.sh' 2>/dev/null || true; pgrep -f '{base_stack}_.*_{env_type.value}\\.sh' 2>/dev/null || true; }} | sort -u)
-                
-                if [ -n "$PIDS" ]; then
-                    echo "Found PIDs: $PIDS"
-                    pkill -f '{self.stack_name}_.*_{env_type.value}\\.sh' 2>/dev/null || true
-                    pkill -f '{base_stack}_.*_{env_type.value}\\.sh' 2>/dev/null || true
-                    
-                    cd {EC2_LOGS_PATH} 2>/dev/null || exit 0
-                    for file in {self.stack_name}_*_{env_type.value}.* {base_stack}_*_{env_type.value}.*; do
-                        if [ -f "$file" ]; then
-                            SESSION_ID=$(echo "$file" | sed 's/_{env_type.value}\\..*$//')
-                            echo "{JOB_STATUS_KILLED}" > "${{SESSION_ID}}_{env_type.value}.status" 2>/dev/null || true
-                            rm -f "${{SESSION_ID}}_{env_type.value}.log" 2>/dev/null || true
-                            rm -f "${{SESSION_ID}}_{env_type.value}.pid" 2>/dev/null || true
-                            rm -f "${{SESSION_ID}}_{env_type.value}.status" 2>/dev/null || true
-                        fi
-                    done
-                    
-                    cd {EC2_SCRIPTS_PATH} 2>/dev/null || exit 0
-                    rm -f {self.stack_name}_*_{env_type.value}.sh 2>/dev/null || true
-                    rm -f {base_stack}_*_{env_type.value}.sh 2>/dev/null || true
-                    
-                    echo "Killed all {env_type.value} jobs"
-                else
-                    echo "No {env_type.value} jobs found"
+                per_pid_cleanup = (
+                    f'SESSION_ID=$(basename "$pid_file" .pid); '
+                    f'rm -f "{EC2_LOGS_PATH}/${{SESSION_ID}}.log" '
+                    f'"{EC2_LOGS_PATH}/${{SESSION_ID}}.pid" '
+                    f'"{EC2_LOGS_PATH}/${{SESSION_ID}}.status" 2>/dev/null || true'
+                )
+                done_msg = f"Killed all {env_type.value} jobs"
+
+            cmd = f"""
+            # Kill via pid files (PID == PGID since we use setsid; kills .sh + environment_client.py children)
+            for pid_file in {EC2_LOGS_PATH}/{self.stack_name}_*_{env_type.value}.pid {EC2_LOGS_PATH}/{base_stack}_*_{env_type.value}.pid; do
+                if [ -f "$pid_file" ]; then
+                    PID=$(cat "$pid_file" 2>/dev/null | tr -d '[:space:]')
+                    if [ -n "$PID" ] && [ "$PID" -gt 1 ] 2>/dev/null; then
+                        echo "Killing process group $PID from $pid_file"
+                        kill -- -$PID 2>/dev/null || true
+                    fi
+                    {per_pid_cleanup}
                 fi
-                """
+            done
+            # Fallback: catch any survivors not tracked by pid files (including pre-fix orphans)
+            pkill -f '{self.stack_name}_.*_{env_type.value}\\.sh' 2>/dev/null || true
+            pkill -f '{base_stack}_.*_{env_type.value}\\.sh' 2>/dev/null || true
+            pkill -f 'environment_client\\.py.*{self.stack_name}.*{env_type.value}' 2>/dev/null || true
+            pkill -f 'environment_client\\.py.*{base_stack}.*{env_type.value}' 2>/dev/null || true
+            cd {EC2_SCRIPTS_PATH} 2>/dev/null || exit 0
+            rm -f {self.stack_name}_*_{env_type.value}.sh 2>/dev/null || true
+            rm -f {base_stack}_*_{env_type.value}.sh 2>/dev/null || true
+            echo "{done_msg}"
+            """
 
             response = self.ssm_client.send_command(
                 InstanceIds=[self.instance_id],
@@ -752,12 +755,9 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
 
             command_id = response["Command"]["CommandId"]
             self._wait_for_ssm_command(command_id)
-
             output = self.ssm_client.get_command_invocation(
-                CommandId=command_id,
-                InstanceId=self.instance_id,
+                CommandId=command_id, InstanceId=self.instance_id
             )
-
             if output.get("StandardOutputContent"):
                 logger.info(f"Kill output: {output['StandardOutputContent'].strip()}")
 
@@ -767,13 +767,23 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
             log_file = self._get_log_file_path(session_id, env_type)
             pid_file = self._get_pid_file_path(session_id, env_type)
             status_file = self._get_status_file_path(session_id, env_type)
-
             script_name = f"{session_id}_{env_type.value}.sh"
 
-            if preserve_logs:
-                cmd = f"pkill -f {script_name}; echo {JOB_STATUS_KILLED} > {status_file}; rm -f {script_path} {pid_file}"
-            else:
-                cmd = f"pkill -f {script_name}; echo {JOB_STATUS_KILLED} > {status_file}; rm -f {script_path} {log_file} {pid_file} {status_file}"
+            files_to_remove = (
+                [script_path, pid_file]
+                if preserve_logs
+                else [script_path, log_file, pid_file, status_file]
+            )
+            cmd = self._build_kill_process_group_cmd(
+                pid_file=pid_file,
+                fallback_script_pattern=script_name,
+                files_to_remove=files_to_remove,
+                status_file=status_file if preserve_logs else None,
+            )
+            cmd += (
+                f"; pkill -f 'environment_client\\.py.*{session_id}.*{env_type.value}'"
+                f" 2>/dev/null || true"
+            )
 
             self.ssm_client.send_command(
                 InstanceIds=[self.instance_id],
@@ -801,11 +811,7 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
             ]
 
             # Also remove custom environment if it was used
-            if (
-                hasattr(self, "custom_env")
-                and self.custom_env
-                and self.custom_env.s3_uri
-            ):
+            if hasattr(self, "custom_env") and self.custom_env and self.custom_env.s3_uri:
                 vf_env_id = self.custom_env.env_id
                 parent_path = EC2_BASE_PATH.rsplit("/", 1)[0]
                 custom_env_dir = f"{parent_path}/{vf_env_id}"
@@ -822,9 +828,7 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
                 DocumentName="AWS-RunShellScript",
                 Parameters={"commands": commands},
             )
-            logger.info(
-                f"Deleted environment and logs on EC2 instance {self.instance_id}"
-            )
+            logger.info(f"Deleted environment and logs on EC2 instance {self.instance_id}")
 
         logger.info(f"EC2 cleanup complete for instance {self.instance_id}")
 
@@ -845,9 +849,7 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         # EC2 doesn't need special restoration - instance_id is already set in __init__
         # Verify instance is still running
         try:
-            response = self.ec2_client.describe_instances(
-                InstanceIds=[self.instance_id]
-            )
+            response = self.ec2_client.describe_instances(InstanceIds=[self.instance_id])
             if response["Reservations"]:
                 status = response["Reservations"][0]["Instances"][0]["State"]["Name"]
                 logger.info(f"EC2 instance {self.instance_id} status: {status}")

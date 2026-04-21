@@ -48,9 +48,7 @@ class DataMixing:
     DATASET_CATALOG_FIELD = "dataset_catalog"
 
     config: Dict[str, Any] = field(default_factory=dict)
-    _default_nova_fields: set = field(
-        default_factory=lambda: set(), init=False, repr=False
-    )
+    _default_nova_fields: set = field(default_factory=lambda: set(), init=False, repr=False)
     _dataset_catalog: Optional[Any] = field(default=None, init=False, repr=False)
 
     def get_config(self) -> Dict[str, Any]:
@@ -89,10 +87,7 @@ class DataMixing:
 
         if normalize:
             # Start with all known fields set to 0
-            if (
-                self._default_nova_fields
-                or self.CUSTOMER_DATA_FIELD in self._default_nova_fields
-            ):
+            if self._default_nova_fields or self.CUSTOMER_DATA_FIELD in self._default_nova_fields:
                 # Include nova fields
                 for field in self._default_nova_fields:
                     new_config[field] = 0
@@ -124,9 +119,18 @@ class DataMixing:
         """
         Load default configuration from an overrides template.
 
+        Resets the config and known fields before loading so that switching
+        between templates (e.g. mm_with_datamix → text_with_datamix) removes
+        fields that no longer exist in the new template.
+
         Args:
             overrides_template: Template dictionary containing default values
         """
+        # Reset state so stale fields from a previous template don't linger
+        self.config = {}
+        self._default_nova_fields = set()
+        self._dataset_catalog = None
+
         default_config = {}
         for key, value in overrides_template.items():
             if key.startswith(self.NOVA_PREFIX) and key.endswith(self.PERCENT_SUFFIX):
@@ -147,12 +151,8 @@ class DataMixing:
 
     def _is_data_mixing_field(self, key: str) -> bool:
         return (
-            (
-                key.startswith(DataMixing.NOVA_PREFIX)
-                and key.endswith(DataMixing.PERCENT_SUFFIX)
-            )
+            (key.startswith(DataMixing.NOVA_PREFIX) and key.endswith(DataMixing.PERCENT_SUFFIX))
             or key == DataMixing.CUSTOMER_DATA_FIELD
-            or DataMixing.NOVA_PREFIX + key + DataMixing.PERCENT_SUFFIX
-            in self.get_config()
+            or DataMixing.NOVA_PREFIX + key + DataMixing.PERCENT_SUFFIX in self.get_config()
             or key == DataMixing.DATASET_CATALOG_FIELD
         )

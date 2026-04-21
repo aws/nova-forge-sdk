@@ -9,7 +9,7 @@ This module contains tests for utility functions in bedrock.py including:
 import unittest
 from unittest.mock import mock_open, patch
 
-from amzn_nova_forge.model.model_enums import TrainingMethod
+from amzn_nova_forge.core.enums import TrainingMethod
 from amzn_nova_forge.util.bedrock import (
     get_customization_type,
     parse_bedrock_recipe_config,
@@ -22,9 +22,7 @@ class TestBedrockUtils(unittest.TestCase):
 
     @patch("builtins.open", new_callable=mock_open)
     @patch("yaml.safe_load")
-    def test_parse_sft_recipe_extracts_hyperparameters_as_strings(
-        self, mock_yaml_load, mock_file
-    ):
+    def test_parse_sft_recipe_extracts_hyperparameters_as_strings(self, mock_yaml_load, mock_file):
         """Test that SFT hyperparameters are extracted as strings.
 
         Validates: SFT hyperparameters must be strings for Bedrock API
@@ -47,9 +45,7 @@ class TestBedrockUtils(unittest.TestCase):
             },
         }
 
-        result = parse_bedrock_recipe_config(
-            "/path/to/recipe.yaml", TrainingMethod.SFT_LORA
-        )
+        result = parse_bedrock_recipe_config("/path/to/recipe.yaml", TrainingMethod.SFT_LORA)
 
         # Verify hyperparameters are extracted
         self.assertIn("hyperparameters", result)
@@ -113,9 +109,7 @@ class TestBedrockUtils(unittest.TestCase):
             },
         }
 
-        result = parse_bedrock_recipe_config(
-            "/path/to/recipe.yaml", TrainingMethod.RFT_LORA
-        )
+        result = parse_bedrock_recipe_config("/path/to/recipe.yaml", TrainingMethod.RFT_LORA)
 
         # Verify RFT hyperparameters are extracted
         self.assertIn("rft_hyperparameters", result)
@@ -169,9 +163,7 @@ class TestBedrockUtils(unittest.TestCase):
             }
         }
 
-        result = parse_bedrock_recipe_config(
-            "/path/to/recipe.yaml", TrainingMethod.SFT_LORA
-        )
+        result = parse_bedrock_recipe_config("/path/to/recipe.yaml", TrainingMethod.SFT_LORA)
 
         # Verify empty hyperparameters are returned
         self.assertEqual(result["hyperparameters"], {})
@@ -196,9 +188,7 @@ class TestBedrockUtils(unittest.TestCase):
             },
         }
 
-        result = parse_bedrock_recipe_config(
-            "/path/to/recipe.yaml", TrainingMethod.RFT_LORA
-        )
+        result = parse_bedrock_recipe_config("/path/to/recipe.yaml", TrainingMethod.RFT_LORA)
 
         # Verify empty RFT hyperparameters are returned
         self.assertEqual(result["rft_hyperparameters"], {})
@@ -223,9 +213,7 @@ class TestBedrockUtils(unittest.TestCase):
         }
         mock_yaml_load.return_value = recipe_config
 
-        result = parse_bedrock_recipe_config(
-            "/path/to/recipe.yaml", TrainingMethod.SFT_LORA
-        )
+        result = parse_bedrock_recipe_config("/path/to/recipe.yaml", TrainingMethod.SFT_LORA)
 
         # Verify full recipe config is returned
         self.assertIn("recipe_config", result)

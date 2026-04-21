@@ -17,101 +17,105 @@ Main entrypoint for customizing and training Nova models.
 This module provides the NovaModelCustomizer class which orchestrates the training process.
 """
 
-import os
-import uuid
-from datetime import datetime, timezone
+import warnings
+from datetime import datetime
 from typing import Any, Dict, List, Optional, cast
 
 import boto3
 
-from amzn_nova_forge.iam.iam_role_creator import (
-    create_bedrock_execution_role,
-    create_sagemaker_execution_role,
+from amzn_nova_forge.core.constants import (
+    REGION_TO_ESCROW_ACCOUNT_MAPPING,
+    SUPPORTED_DATAMIXING_METHODS,
+)
+from amzn_nova_forge.core.enums import (
+    DeploymentMode,
+    DeployPlatform,
+    EvaluationTask,
+    Model,
+    Platform,
+    TrainingMethod,
+)
+from amzn_nova_forge.core.result import (
+    EvaluationResult,
+    TrainingResult,
+)
+from amzn_nova_forge.core.result.inference_result import InferenceResult
+from amzn_nova_forge.core.result.job_result import JobStatus
+from amzn_nova_forge.core.types import (
+    DeploymentResult,
+    EndpointInfo,
+    ForgeConfig,
 )
 from amzn_nova_forge.manager.runtime_manager import (
     BedrockRuntimeManager,
-    JobConfig,
     RuntimeManager,
     SMHPRuntimeManager,
     SMTJRuntimeManager,
     SMTJServerlessRuntimeManager,
 )
-from amzn_nova_forge.model.model_config import (
-    REGION_TO_ESCROW_ACCOUNT_MAPPING,
-    DeploymentResult,
-    EndpointInfo,
-    ModelArtifacts,
-)
-from amzn_nova_forge.model.model_enums import (
-    SUPPORTED_DATAMIXING_METHODS,
-    DeploymentMode,
-    DeployPlatform,
-    Model,
-    Platform,
-    TrainingMethod,
-)
+from amzn_nova_forge.model.model_config import ModelDeployResult
 from amzn_nova_forge.model.nova_model_customizer_util import (
     load_existing_result,
     persist_result,
-    requires_custom_eval_data,
     resolve_model_checkpoint_path,
     set_output_s3_path,
 )
-from amzn_nova_forge.model.result import (
-    BaseJobResult,
-    BedrockTrainingResult,
-    EvaluationResult,
-    SMHPEvaluationResult,
-    SMHPTrainingResult,
-    SMTJBatchInferenceResult,
-    SMTJEvaluationResult,
-    SMTJTrainingResult,
-    TrainingResult,
-)
-from amzn_nova_forge.model.result.inference_result import InferenceResult
-from amzn_nova_forge.model.result.job_result import JobStatus
 from amzn_nova_forge.monitor.log_monitor import CloudWatchLogMonitor
 from amzn_nova_forge.monitor.mlflow_monitor import MLflowMonitor
-from amzn_nova_forge.recipe.recipe_builder import RecipeBuilder
-from amzn_nova_forge.recipe.recipe_config import EvaluationTask
 from amzn_nova_forge.rft_multiturn import RFTMultiturnInfrastructure
+from amzn_nova_forge.telemetry.constants import (
+    UNKNOWN,
+    Feature,
+)
+from amzn_nova_forge.telemetry.telemetry_logging import (
+    _telemetry_emitter,
+)
 from amzn_nova_forge.util.bedrock import (
     BEDROCK_EXECUTION_ROLE_NAME,
     DEPLOYMENT_ARN_NAME,
     check_existing_deployment,
     delete_existing_deployment,
+    find_bedrock_model_by_tag,
     get_required_bedrock_deletion_permissions,
     get_required_bedrock_update_permissions,
     invoke_model,
     monitor_model_create,
     update_provisioned_throughput_model,
+    wait_for_model_ready,
 )
+from amzn_nova_forge.util.checkpoint_util import extract_checkpoint_path_from_job_output
 from amzn_nova_forge.util.data_mixing import DataMixing
+from amzn_nova_forge.util.data_utils import is_multimodal_data
 from amzn_nova_forge.util.logging import logger
-from amzn_nova_forge.util.platform_util import (
-    detect_platform_from_path,
-    validate_platform_compatibility,
-)
 from amzn_nova_forge.util.recipe import load_recipe_templates
-from amzn_nova_forge.util.sagemaker import (
-    SAGEMAKER_EXECUTION_ROLE_NAME,
-    _validate_sagemaker_instance_type_for_model_deployment,
-    create_model_and_endpoint_config,
-    get_model_artifacts,
-    invoke_sagemaker_inference,
-    setup_environment_variables,
-)
-from amzn_nova_forge.validation.endpoint_validator import (
-    SAGEMAKER_ENDPOINT_ARN_REGEX,
-    validate_endpoint_arn,
-    validate_sagemaker_environment_variables,
-    validate_unit_count,
-)
-from amzn_nova_forge.validation.validator import (
-    Validator,
-    validate_rft_lambda_name,
-    verify_rft_lambda,
-)
+from amzn_nova_forge.validation.endpoint_validator import is_sagemaker_arn
+
+
+def _resolve_deploy_platform(
+    endpoint_arn: Optional[str], endpoint_info: Optional[EndpointInfo]
+) -> Optional[DeployPlatform]:
+    """Determine the deployment platform from an endpoint ARN or stored endpoint info.
+
+    Returns DeployPlatform.SAGEMAKER when the ARN matches a SageMaker endpoint,
+    DeployPlatform.BEDROCK_PT for other ARNs, the stored platform from endpoint_info,
+    or None if neither is provided.
+    """
+    if endpoint_arn is not None:
+        if is_sagemaker_arn(endpoint_arn):
+            return DeployPlatform.SAGEMAKER
+        return DeployPlatform.BEDROCK_PT
+    elif endpoint_info is not None:
+        return endpoint_info.platform
+    return None
+
+
+def _invoke_inference_extra_info(self, *args, **kwargs):
+    info = {}
+    if self.model is not None:
+        info["model"] = self.model.value
+    platform = _resolve_deploy_platform(kwargs.get("endpoint_arn"), self.endpoint_info)
+    info["platform"] = platform if platform else UNKNOWN
+    return info
 
 
 class NovaModelCustomizer:
@@ -130,6 +134,7 @@ class NovaModelCustomizer:
         data_mixing_enabled: bool = False,
         image_uri: Optional[str] = None,
         enable_job_caching: bool = False,
+        is_multimodal: Optional[bool] = None,
     ):
         """
         Initializes a NovaModelCustomizer instance.
@@ -148,9 +153,11 @@ class NovaModelCustomizer:
             mlflow_monitor: Optional MLflowMonitor instance for experiment tracking
             deployment_mode: Behavior when deploying to existing endpoint name. Options:
                            FAIL_IF_EXISTS (default), UPDATE_IF_EXISTS
-            data_mixing: Enable data mixing. Default is False.
+            data_mixing_enabled: Enable data mixing. Default is False.
             image_uri: Optional custom ECR image URI to override the default training image.
                       Must be in format: <account>.dkr.ecr.<region>.amazonaws.com/<repository>:<tag>
+            is_multimodal: Optional bool to explicitly set multimodal mode. If None (default),
+                          auto-detects from data when applicable.
             enable_job_caching: Whether to enable job result caching. When enabled, completed
                               job results are cached to job_cache_dir (default: .cached-nova-jobs/)
                               and reused for identical job configurations.
@@ -158,9 +165,7 @@ class NovaModelCustomizer:
         Raises:
             ValueError: If region is unsupported or model is invalid
         """
-        self.job_id: Optional[str] = (
-            None  # This will be set after train/eval method invoked
-        )
+        self.job_id: Optional[str] = None  # This will be set after train/eval method invoked
         self.job_started_time: Optional[datetime] = (
             None  # This will be set after train/eval method invoked
         )
@@ -180,7 +185,7 @@ class NovaModelCustomizer:
         self._image_uri = image_uri
         self._method = method
         self.infra = infra
-        self.data_s3_path = data_s3_path
+        self._data_s3_path = data_s3_path
         self.model_path = model_path
         self.validation_config = validation_config
         self.deployment_mode = deployment_mode
@@ -201,11 +206,20 @@ class NovaModelCustomizer:
                 "To specify a base model, pass base_model_identifier to BedrockRuntimeManager constructor instead."
             )
 
+        # For SMTJServerless, model_path must be a model package ARN for iterative training
+        if (
+            self._platform == Platform.SMTJServerless
+            and model_path is not None
+            and not is_sagemaker_arn(model_path)
+        ):
+            raise ValueError(
+                f"For SMTJServerless, model_path must be a SageMaker model package ARN, "
+                f"got: '{model_path}'. "
+            )
+
         # Warn if user passes mlflow_monitor for Bedrock (not supported)
         if self._platform == Platform.BEDROCK and mlflow_monitor is not None:
-            logger.warning(
-                "MLflow monitoring is not supported on the Bedrock platform."
-            )
+            logger.warning("MLflow monitoring is not supported on the Bedrock platform.")
 
         self.instance_type = self.infra.instance_type
 
@@ -219,13 +233,39 @@ class NovaModelCustomizer:
         self.mlflow_monitor = mlflow_monitor
 
         # Initialize data mixing configuration
-        self.data_mixing_enabled = data_mixing_enabled
+        self._data_mixing_enabled = data_mixing_enabled
         self.data_mixing = None
+
+        # Auto-detect multimodal with optional override — only relevant when data mixing is enabled
+        # Store user's explicit intent separately so data_s3_path setter can respect it.
+        self._user_is_multimodal = is_multimodal  # None = auto-detect, True/False = explicit
+        if not data_mixing_enabled:
+            if is_multimodal is not None:
+                logger.warning("is_multimodal is ignored because data_mixing_enabled=False.")
+            _resolved_multimodal = False
+        elif is_multimodal is not None:
+            _resolved_multimodal = is_multimodal
+        elif data_s3_path:
+            _resolved_multimodal = is_multimodal_data(data_s3_path)
+            if _resolved_multimodal:
+                logger.info(
+                    "Multimodal data detected. Using multimodal datamix recipes. "
+                    "To skip auto-detection, pass is_multimodal=False."
+                )
+        else:
+            _resolved_multimodal = False
+        self._is_multimodal = _resolved_multimodal
+
         if data_mixing_enabled:
             self.data_mixing = DataMixing()
             self._init_data_mixing(self.model, self.method, self.platform)
 
         self.endpoint_info: Optional[EndpointInfo] = None
+
+        # Deploy-decoupling state
+        self.last_model_publish: Optional[ModelDeployResult] = None
+        # Set of (platform, model_arn, escrow_path) tuples for dedup
+        self._published_models: set = set()
 
         # Job caching configuration
         self.enable_job_caching = enable_job_caching
@@ -243,6 +283,113 @@ class NovaModelCustomizer:
         }
 
     @property
+    def data_s3_path(self) -> Optional[str]:
+        """Get the data S3 path."""
+        return self._data_s3_path
+
+    @data_s3_path.setter
+    def data_s3_path(self, value: Optional[str]) -> None:
+        """Set the data S3 path and re-run multimodal auto-detection if applicable.
+
+        If the user originally passed is_multimodal=None (auto-detect), changing
+        data_s3_path will re-scan the new path to keep is_multimodal consistent.
+        If the user passed an explicit True/False, that value is preserved.
+        Recipe templates are always reloaded when data_mixing_enabled=True so the
+        correct text_with_datamix or mm_with_datamix recipe is selected.
+        """
+        self._data_s3_path = value
+        if self.data_mixing_enabled:
+            if self._user_is_multimodal is None:
+                # Re-run auto-detection against the new path
+                if value:
+                    self._is_multimodal = is_multimodal_data(value)
+                    if self._is_multimodal:
+                        logger.info(
+                            "Multimodal data detected. Using multimodal datamix recipes. "
+                            "To skip auto-detection, pass is_multimodal=False."
+                        )
+                else:
+                    self._is_multimodal = False
+            # Always reload recipe templates so the correct datamix recipe is selected
+            self._init_data_mixing(model=self.model, method=self.method, platform=self.platform)
+            logger.info("data_s3_path changed. Datamixing configs set to default.")
+
+    @property
+    def is_multimodal(self) -> bool:
+        """Get the is_multimodal flag."""
+        return self._is_multimodal
+
+    @is_multimodal.setter
+    def is_multimodal(self, value: Optional[bool]) -> None:
+        """Set the is_multimodal flag.
+
+        Args:
+            value: Explicit bool to force multimodal on/off. Pass None to re-run
+                   auto-detection from the current data_s3_path (requires data_mixing_enabled=True).
+        """
+        self._user_is_multimodal = value  # track intent for data_s3_path setter
+        if not self.data_mixing_enabled:
+            logger.warning("is_multimodal is ignored because data_mixing_enabled=False.")
+            self._is_multimodal = False
+            return
+
+        if value is not None:
+            self._is_multimodal = value
+        elif self._data_s3_path:
+            self._is_multimodal = is_multimodal_data(self._data_s3_path)
+            if self._is_multimodal:
+                logger.info(
+                    "Multimodal data detected. Using multimodal datamix recipes. "
+                    "To skip auto-detection, pass is_multimodal=False."
+                )
+        else:
+            self._is_multimodal = False
+
+        # Reload recipe templates so the correct datamix recipe is selected
+        self._init_data_mixing(model=self.model, method=self.method, platform=self.platform)
+        logger.info("is_multimodal changed. Datamixing configs set to default.")
+
+    @property
+    def data_mixing_enabled(self) -> bool:
+        """Get whether data mixing is enabled."""
+        return self._data_mixing_enabled
+
+    @data_mixing_enabled.setter
+    def data_mixing_enabled(self, value: bool) -> None:
+        """Enable or disable data mixing.
+
+        Enabling: initializes DataMixing instance, re-runs multimodal detection,
+        and loads recipe templates.
+        Disabling: tears down DataMixing instance and resets is_multimodal to False.
+        """
+        if value == self._data_mixing_enabled:
+            return  # no-op if unchanged
+
+        self._data_mixing_enabled = value
+
+        if value:
+            # Enabling data mixing — initialize DataMixing and resolve is_multimodal
+            self.data_mixing = DataMixing()
+            if self._user_is_multimodal is not None:
+                self._is_multimodal = self._user_is_multimodal
+            elif self._data_s3_path:
+                self._is_multimodal = is_multimodal_data(self._data_s3_path)
+                if self._is_multimodal:
+                    logger.info(
+                        "Multimodal data detected. Using multimodal datamix recipes. "
+                        "To skip auto-detection, pass is_multimodal=False."
+                    )
+            else:
+                self._is_multimodal = False
+            self._init_data_mixing(model=self.model, method=self.method, platform=self.platform)
+            logger.info("data_mixing_enabled set to True. Datamixing configs set to default.")
+        else:
+            # Disabling data mixing — tear down
+            self.data_mixing = None
+            self._is_multimodal = False
+            logger.info("data_mixing_enabled set to False. Data mixing disabled.")
+
+    @property
     def model(self) -> Model:
         """Get the model attribute."""
         return self._model
@@ -251,12 +398,8 @@ class NovaModelCustomizer:
     def model(self, value: Model) -> None:
         """Set the model attribute and reinitialize data mixing if enabled."""
         if self.data_mixing_enabled:
-            self._init_data_mixing(
-                model=value, method=self.method, platform=self.platform
-            )
-            logger.info(
-                f"Model changed to {value.name}. Datamixing configs set to default."
-            )
+            self._init_data_mixing(model=value, method=self.method, platform=self.platform)
+            logger.info(f"Model changed to {value.name}. Datamixing configs set to default.")
         self._model = value
 
     @property
@@ -268,12 +411,8 @@ class NovaModelCustomizer:
     def method(self, value: TrainingMethod) -> None:
         """Set the method attribute and reinitialize data mixing if enabled."""
         if self.data_mixing_enabled:
-            self._init_data_mixing(
-                model=self.model, method=value, platform=self.platform
-            )
-            logger.info(
-                f"Method changed to {value.name}. Datamixing configs set to default."
-            )
+            self._init_data_mixing(model=self.model, method=value, platform=self.platform)
+            logger.info(f"Method changed to {value.name}. Datamixing configs set to default.")
         self._method = value
 
     @property
@@ -286,14 +425,10 @@ class NovaModelCustomizer:
         """Set the platform attribute and reinitialize data mixing if enabled."""
         if self.data_mixing_enabled:
             self._init_data_mixing(model=self.model, method=self.method, platform=value)
-            logger.info(
-                f"Platform changed to {value.name}. Datamixing configs set to default."
-            )
+            logger.info(f"Platform changed to {value.name}. Datamixing configs set to default.")
         self._platform = value
 
-    def _init_data_mixing(
-        self, model: Model, method: TrainingMethod, platform: Platform
-    ) -> None:
+    def _init_data_mixing(self, model: Model, method: TrainingMethod, platform: Platform) -> None:
         """
         Initialize data mixing configuration.
         """
@@ -323,11 +458,30 @@ class NovaModelCustomizer:
             instance_type=self.instance_type,
             eval_task=getattr(self, "eval_task", None),
             image_uri_override=self._image_uri,
+            is_multimodal=self.is_multimodal,
         )
 
         # Load default configuration into DataMixing instance if enabled
         if self.data_mixing and self.overrides_template:
             self.data_mixing._load_defaults_from_template(self.overrides_template)
+
+    def _build_forge_config(self) -> ForgeConfig:
+        """Build a ForgeConfig from the facade's current instance state.
+
+        Caching is always disabled — the facade manages its own caching layer
+        and delegates to service classes with caching off to prevent double-caching.
+        """
+        return ForgeConfig(
+            kms_key_id=self.infra.kms_key_id,
+            output_s3_path=self.output_s3_path,
+            generated_recipe_dir=self.generated_recipe_dir,
+            validation_config=self.validation_config,
+            image_uri=self._image_uri,
+            mlflow_monitor=self.mlflow_monitor,
+            enable_job_caching=False,
+            job_cache_dir=self.job_cache_dir,
+            job_caching_config=self._job_caching_config,
+        )
 
     def get_data_mixing_config(self) -> Dict[str, Any]:
         """
@@ -359,6 +513,16 @@ class NovaModelCustomizer:
 
         self.data_mixing.set_config(config, normalize=True)
 
+    @_telemetry_emitter(
+        Feature.TRAINING,
+        "train",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "method": self.method,
+            "model": self.model.value,
+            "platform": self.platform,
+            "dryRun": kwargs.get("dry_run", False),
+        },
+    )
     def train(
         self,
         job_name: str,
@@ -367,7 +531,7 @@ class NovaModelCustomizer:
         rft_lambda_arn: Optional[str] = None,
         rft_multiturn_infra: Optional[RFTMultiturnInfrastructure] = None,
         validation_data_s3_path: Optional[str] = None,
-        dry_run: Optional[bool] = False,
+        dry_run: bool = False,
     ) -> TrainingResult | None:
         """
         Generates the recipe YAML, configures runtime, and launches a training job.
@@ -397,7 +561,16 @@ class NovaModelCustomizer:
         Raises:
             Exception: If job execution fails
         """
-        # Prefer the value passed directly, fall back to manager attribute
+        warnings.warn(
+            "NovaModelCustomizer.train() is deprecated and will be removed in a future version. "
+            "Use ForgeTrainer.train() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+        from amzn_nova_forge.trainer.forge_trainer import ForgeTrainer
+
+        # Facade caching (backward compat — uses customizer-level hash)
         rft_lambda_arn = rft_lambda_arn or getattr(self.infra, "rft_lambda_arn", None)
         existing_result = load_existing_result(
             self,
@@ -412,134 +585,42 @@ class NovaModelCustomizer:
         if existing_result:
             return cast(TrainingResult, existing_result)
 
-        # Resolve lambda ARN — prefer deprecated train() arg, then manager's resolved ARN
-        rft_lambda_arn = rft_lambda_arn or getattr(self.infra, "rft_lambda_arn", None)
-
-        if rft_lambda_arn:
-            validate_rft_lambda_name(rft_lambda_arn.split(":")[-1], self.platform)
-            logger.info(f"Using reward lambda: {rft_lambda_arn}")
-
-        # Create RecipeBuilder and let it handle all data mixing logic
-        recipe_builder = RecipeBuilder(
-            region=self.region,
-            job_name=job_name,
-            platform=self.platform,
+        # Translation layer: map facade state → ForgeTrainer constructor
+        trainer = ForgeTrainer(
             model=self.model,
             method=self.method,
-            instance_type=self.infra.instance_type,
-            instance_count=self.infra.instance_count,
             infra=self.infra,
-            data_s3_path=self.data_s3_path,
-            output_s3_path=self.output_s3_path,
-            model_path=self.model_path,
-            rft_lambda_arn=rft_lambda_arn,
-            rft_multiturn_infra=rft_multiturn_infra,
-            validation_data_s3_path=validation_data_s3_path,
-            mlflow_monitor=self.mlflow_monitor,
-            data_mixing_instance=self.data_mixing,
-            image_uri_override=self._image_uri,
+            training_data_s3_path=self.data_s3_path,
+            model_s3_path=self.model_path,
+            data_mixing_enabled=self.data_mixing_enabled,
+            holdout_data_s3_path=validation_data_s3_path,
+            config=self._build_forge_config(),
+            region=self.region,
+            is_multimodal=self.is_multimodal,
         )
 
-        # Build and validate the recipe for all platforms (SMTJ, SMHP, and BEDROCK)
-        (
-            resolved_recipe_path,
-            resolved_output_s3_path,
-            resolved_data_s3_path,
-            resolved_image_uri,
-        ) = recipe_builder.build_and_validate(
+        # Forward user-configured data mixing (ForgeTrainer creates a fresh instance with defaults)
+        if self.data_mixing is not None:
+            trainer.data_mixing = self.data_mixing
+
+        # Delegate
+        training_result = trainer.train(
+            job_name=job_name,
+            recipe_path=recipe_path,
             overrides=overrides,
-            input_recipe_path=recipe_path,
-            output_recipe_path=self.generated_recipe_dir,
-            validation_config=self.validation_config,
+            rft_lambda_arn=rft_lambda_arn,
+            dry_run=dry_run,
+            rft_multiturn_infra=rft_multiturn_infra,
         )
 
-        if dry_run:
+        if training_result is None:  # dry_run
             return None
 
-        # Use unique name to actually start the job
-        unique_job_name = f"{job_name}-{uuid.uuid4()}"[:63]
+        # Update facade state from result
+        self.job_id = training_result.job_id
+        self.job_started_time = training_result.started_time
 
-        start_time = datetime.now(timezone.utc)
-        self.job_started_time = start_time
-
-        # Build JobConfig parameters common to all platforms
-        job_config_params = {
-            "job_name": unique_job_name,
-            "data_s3_path": resolved_data_s3_path,
-            "output_s3_path": resolved_output_s3_path,
-            "image_uri": resolved_image_uri,
-            "recipe_path": resolved_recipe_path,
-            "rft_lambda_arn": rft_lambda_arn,
-            "validation_data_s3_path": validation_data_s3_path,
-            "input_s3_data_type": "Converse"
-            if self.method not in (TrainingMethod.RFT_LORA, TrainingMethod.RFT_FULL)
-            else "S3Prefix",
-        }
-
-        # Add method parameter only for Bedrock (which needs it to determine customization type)
-        if (
-            self.platform == Platform.BEDROCK
-            or self.platform == Platform.SMTJServerless
-        ):
-            job_config_params["method"] = self.method
-
-        self.job_id = self.infra.execute(job_config=JobConfig(**job_config_params))
-
-        training_result: TrainingResult
-        if self.platform is Platform.SMTJ or self.platform is Platform.SMTJServerless:
-            training_result = SMTJTrainingResult(
-                job_id=self.job_id,
-                started_time=start_time,
-                method=self.method,
-                model_type=self.model,
-                model_artifacts=get_model_artifacts(
-                    job_name=self.job_id,
-                    infra=self.infra,
-                    output_s3_path=resolved_output_s3_path,
-                ),
-            )
-        elif self.platform is Platform.BEDROCK:
-            # Bedrock doesn't have cluster_name or namespace
-            # Bedrock stores model artifacts in the output S3 path only
-            training_result = BedrockTrainingResult(
-                job_id=self.job_id,
-                started_time=start_time,
-                method=self.method,
-                model_type=self.model,
-                model_artifacts=ModelArtifacts(
-                    checkpoint_s3_path=None,
-                    output_s3_path=resolved_output_s3_path,
-                ),
-            )
-        else:
-            # SMHP platform
-            cluster_name = cast(SMHPRuntimeManager, self.infra).cluster_name
-            namespace = cast(SMHPRuntimeManager, self.infra).namespace
-            training_result = SMHPTrainingResult(
-                job_id=self.job_id,
-                started_time=start_time,
-                method=self.method,
-                model_type=self.model,
-                model_artifacts=get_model_artifacts(
-                    job_name=unique_job_name,
-                    infra=self.infra,
-                    output_s3_path=resolved_output_s3_path,
-                ),
-                cluster_name=cluster_name,
-                namespace=namespace,
-            )
-
-        logger.info(f"Started job '{training_result.job_id}'.")
-        if training_result.model_artifacts.checkpoint_s3_path:
-            logger.info(
-                f"Checkpoint S3 path is: {training_result.model_artifacts.checkpoint_s3_path}."
-            )
-        if training_result.model_artifacts.output_s3_path:
-            logger.info(
-                f"Output S3 path is: {training_result.model_artifacts.output_s3_path}."
-            )
-
-        # Persist result if enabled
+        # Facade caching persist
         persist_result(
             self,
             training_result,
@@ -554,6 +635,16 @@ class NovaModelCustomizer:
 
         return training_result
 
+    @_telemetry_emitter(
+        Feature.EVAL,
+        "evaluate",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "method": self.method,
+            "model": self.model.value,
+            "platform": self.platform,
+            "dryRun": kwargs.get("dry_run", False),
+        },
+    )
     def evaluate(
         self,
         job_name: str,
@@ -566,7 +657,7 @@ class NovaModelCustomizer:
         processor: Optional[Dict[str, Any]] = None,
         rl_env: Optional[Dict[str, Any]] = None,
         rft_multiturn_infra: Optional["RFTMultiturnInfrastructure"] = None,
-        dry_run: Optional[bool] = False,
+        dry_run: bool = False,
         job_result: Optional[TrainingResult] = None,
     ) -> EvaluationResult | None:
         """
@@ -611,15 +702,19 @@ class NovaModelCustomizer:
         :return: EvaluationResult: Metadata object containing job ID, start time, and evaluation output path
                  or None if dry_run is enabled
         """
-        # Validate platform support
-        if self.platform == Platform.BEDROCK:
-            raise NotImplementedError(
-                "Evaluation is not supported on the Bedrock platform in the Nova Forge SDK. "
-                "Evaluation is only available for SageMaker platforms (SMTJ, SMHP). "
-                "To evaluate a Bedrock model, deploy it first using deploy() and then use invoke_inference()."
-            )
+        warnings.warn(
+            "NovaModelCustomizer.evaluate() is deprecated and will be removed in a future version. "
+            "Use ForgeEvaluator.evaluate() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
-        # Check for existing result before starting new evaluation
+        from amzn_nova_forge.evaluator.forge_evaluator import (
+            EvalTaskConfig,
+            ForgeEvaluator,
+        )
+
+        # Facade caching (backward compat)
         existing_result = load_existing_result(
             self,
             job_name,
@@ -637,162 +732,50 @@ class NovaModelCustomizer:
         if existing_result:
             return cast(EvaluationResult, existing_result)
 
-        if rl_env and rl_env.get("reward_lambda_arn"):
-            validate_rft_lambda_name(
-                rl_env["reward_lambda_arn"].split(":")[-1], self.platform
-            )
-
-        # Resolve model checkpoint path
+        # Translation layer: resolve model_path from job_result / facade state
         resolved_model_path = resolve_model_checkpoint_path(
             model_path=model_path,
             job_result=job_result,
-            customizer_job_id=self.job_id if hasattr(self, "job_id") else None,
+            customizer_job_id=self.job_id,
             customizer_output_s3_path=self.output_s3_path,
             customizer_model_path=self.model_path,
         )
 
-        if resolved_model_path is None:
-            logger.warning(
-                f"Could not resolve model checkpoint path for evaluate job! Falling back to base model {self.model}"
-            )
-
-        # Validate platform compatibility
-        checkpoint_platform = None
-        if resolved_model_path and resolved_model_path.startswith("s3://"):
-            checkpoint_platform = detect_platform_from_path(resolved_model_path)
-
-        if checkpoint_platform is None:
-            if job_result is not None:
-                if job_result.model_artifacts.checkpoint_s3_path:
-                    checkpoint_platform = detect_platform_from_path(
-                        job_result.model_artifacts.checkpoint_s3_path
-                    )
-            elif self.output_s3_path and self.output_s3_path.startswith("s3://"):
-                checkpoint_platform = detect_platform_from_path(self.output_s3_path)
-
-        validate_platform_compatibility(
-            checkpoint_platform=checkpoint_platform,
-            execution_platform=self.platform,
-            checkpoint_source="evaluation model checkpoint",
-        )
-
-        # Only use the cached data_s3_path for BYOD eval tasks
-        if requires_custom_eval_data(eval_task):
-            customizer_data_s3_path = self.data_s3_path
-        else:
-            logger.info(
-                f"{eval_task} does not use custom data, ignoring customizer data_s3_path."
-            )
-            customizer_data_s3_path = None
-
-        # Auto-populate processor/rl_env lambda_arn from runtime manager if not explicitly provided
-        resolved_processor = processor
-        resolved_rl_env = rl_env
-        infra_lambda_arn = getattr(self.infra, "rft_lambda_arn", None)
-
-        # If processor.lambda_arn is passed for RFT_EVAL, treat it as rl_env.reward_lambda_arn
-        if (
-            eval_task == EvaluationTask.RFT_EVAL
-            and resolved_processor
-            and resolved_processor.get("lambda_arn")
-        ):
-            if resolved_rl_env is None:
-                resolved_rl_env = {
-                    "reward_lambda_arn": resolved_processor["lambda_arn"]
-                }
-                logger.info(
-                    f"Using reward_lambda_arn: {resolved_processor['lambda_arn']}"
-                )
-            resolved_processor = None
-
-        if infra_lambda_arn:
-            if resolved_rl_env is None and eval_task == EvaluationTask.RFT_EVAL:
-                resolved_rl_env = {"reward_lambda_arn": infra_lambda_arn}
-                logger.info(f"Using reward_lambda_arn: {infra_lambda_arn}")
-
-        recipe_builder = RecipeBuilder(
-            region=self.region,
-            job_name=job_name,
-            platform=self.platform,
-            model=self.model,
-            method=TrainingMethod.EVALUATION,
-            instance_type=self.infra.instance_type,
-            instance_count=self.infra.instance_count,
-            infra=self.infra,
-            data_s3_path=data_s3_path or customizer_data_s3_path,
-            output_s3_path=self.output_s3_path,
-            model_path=resolved_model_path,
-            eval_task=eval_task,
+        # Translation layer: flat params → EvalTaskConfig
+        task_config = EvalTaskConfig(
             subtask=subtask,
-            processor_config=resolved_processor,
-            rl_env_config=resolved_rl_env,
-            rft_multiturn_infra=rft_multiturn_infra,
-            mlflow_monitor=self.mlflow_monitor,
-            image_uri_override=self._image_uri,
+            processor=processor,
+            rl_env=rl_env,
+            override_data_s3_path=data_s3_path,
         )
 
-        (
-            resolved_recipe_path,
-            resolved_output_s3_path,
-            resolved_data_s3_path,
-            resolved_image_uri,
-        ) = recipe_builder.build_and_validate(
+        evaluator = ForgeEvaluator(
+            model=self.model,
+            infra=self.infra,
+            data_s3_path=self.data_s3_path,
+            config=self._build_forge_config(),
+            region=self.region,
+        )
+
+        evaluation_result = evaluator.evaluate(
+            job_name=job_name,
+            eval_task=eval_task,
+            model_path=resolved_model_path,
+            task_config=task_config,
+            recipe_path=recipe_path,
             overrides=overrides,
-            input_recipe_path=recipe_path,
-            output_recipe_path=self.generated_recipe_dir,
-            validation_config=self.validation_config,
+            dry_run=dry_run,
+            rft_multiturn_infra=rft_multiturn_infra,
         )
 
-        if dry_run:
+        if evaluation_result is None:  # dry_run
             return None
 
-        # Use unique name to actually start the job
-        unique_job_name = f"{job_name}-{uuid.uuid4()}"[:63]
+        # Update facade state
+        self.job_id = evaluation_result.job_id
+        self.job_started_time = evaluation_result.started_time
 
-        start_time = datetime.now(timezone.utc)
-        self.job_started_time = start_time
-
-        # Execute the evaluation job
-        self.job_id = self.infra.execute(
-            job_config=JobConfig(
-                job_name=unique_job_name,
-                data_s3_path=resolved_data_s3_path,
-                output_s3_path=resolved_output_s3_path,
-                image_uri=resolved_image_uri,
-                recipe_path=resolved_recipe_path,
-                input_s3_data_type="S3Prefix",
-            )
-        )
-
-        evaluation_result: EvaluationResult
-        if self.platform == Platform.SMTJ or self.platform == Platform.SMTJServerless:
-            eval_output_s3_path = f"{resolved_output_s3_path.rstrip('/')}/{self.job_id}/output/output.tar.gz"
-            evaluation_result = SMTJEvaluationResult(
-                job_id=self.job_id,
-                eval_task=eval_task,
-                started_time=start_time,
-                eval_output_path=eval_output_s3_path,
-            )
-        else:
-            # SMHP platform
-            cluster_name = cast(SMHPRuntimeManager, self.infra).cluster_name
-            namespace = cast(SMHPRuntimeManager, self.infra).namespace
-            eval_output_s3_path = (
-                f"{resolved_output_s3_path.rstrip('/')}/{self.job_id}/eval-result/"
-            )
-            evaluation_result = SMHPEvaluationResult(
-                job_id=self.job_id,
-                eval_task=eval_task,
-                started_time=start_time,
-                eval_output_path=eval_output_s3_path,
-                cluster_name=cluster_name,
-                namespace=namespace,
-            )
-        logger.info(
-            f"Started eval job '{self.job_id}'. Artifacts will be published to {eval_output_s3_path}"
-        )
-
-        # Persist result if enabled
+        # Facade caching persist
         persist_result(
             self,
             evaluation_result,
@@ -811,16 +794,44 @@ class NovaModelCustomizer:
 
         return evaluation_result
 
+    def _build_deployer(self):
+        """Create a ForgeDeployer configured from this customizer's state."""
+        from amzn_nova_forge.deployer.forge_deployer import ForgeDeployer
+
+        deployer = ForgeDeployer(
+            region=self.region,
+            model=self.model,
+            deployment_mode=self.deployment_mode,
+            config=ForgeConfig(
+                kms_key_id=self.infra.kms_key_id if self.infra else None,
+                validation_config=self.validation_config,
+            ),
+            method=self.method,
+        )
+        # Share session cache state
+        deployer._published_models = self._published_models
+        deployer.last_model_publish = self.last_model_publish
+        return deployer
+
+    @_telemetry_emitter(
+        Feature.DEPLOY,
+        "deploy",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "model": self.model.value,
+            "platform": kwargs.get("deploy_platform", DeployPlatform.BEDROCK_OD),
+        },
+    )
     def deploy(
         self,
         model_artifact_path: Optional[str] = None,
         deploy_platform: DeployPlatform = DeployPlatform.BEDROCK_OD,
-        unit_count: Optional[int] = 1,
+        unit_count: int = 1,
         endpoint_name: Optional[str] = None,
         job_result: Optional[TrainingResult] = None,
         execution_role_name: Optional[str] = None,
         sagemaker_instance_type: Optional[str] = "ml.p5.48xlarge",
         sagemaker_environment_variables: Optional[Dict[str, Any]] = None,
+        skip_model_reuse: bool = False,
     ) -> DeploymentResult:
         """
         Deployment method supporting both Bedrock and SageMaker platforms.
@@ -834,17 +845,24 @@ class NovaModelCustomizer:
             execution_role_name:  Optional IAM execution role name for Bedrock or SageMaker, defaults to BedrockDeployModelExecutionRole or SageMakerExecutionRoleName. If this role does not exist, it will be created.
             sagemaker_instance_type: Optional EC2 instance type for SageMaker deployment, defaults to ml.p5.48xlarge
             sagemaker_environment_variables: Optional environment variables for model configuration
+            skip_model_reuse: If True, always create a new model (skip tag-based discovery of existing models)
 
         Returns:
             DeploymentResult with endpoint information
         """
 
-        validate_unit_count(unit_count)
+        warnings.warn(
+            "NovaModelCustomizer.deploy() is deprecated and will be removed in a future version. "
+            "Use ForgeDeployer.deploy() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
+        # Translation layer: resolve checkpoint from job_result / facade state
         resolved_model_artifact_path = resolve_model_checkpoint_path(
             model_path=model_artifact_path,
             job_result=job_result,
-            customizer_job_id=self.job_id if hasattr(self, "job_id") else None,
+            customizer_job_id=self.job_id,
             customizer_output_s3_path=self.output_s3_path,
             customizer_model_path=self.model_path,
             fail_on_error=True,
@@ -855,472 +873,225 @@ class NovaModelCustomizer:
                 "Model artifact path could not be resolved. Provide a valid model_path or job_result"
             )
 
-        if deploy_platform in [DeployPlatform.BEDROCK_OD, DeployPlatform.BEDROCK_PT]:
-            if execution_role_name is None:
-                execution_role_name = BEDROCK_EXECUTION_ROLE_NAME
+        deployer = self._build_deployer()
 
-            return self._deploy_to_bedrock(
-                model_artifact_path=resolved_model_artifact_path,
-                deploy_platform=deploy_platform,
-                pt_units=unit_count,
-                endpoint_name=endpoint_name,
-                execution_role_name=execution_role_name,
-            )
+        # Delegate
+        result = deployer.deploy(
+            model_artifact_path=resolved_model_artifact_path,
+            deploy_platform=deploy_platform,
+            endpoint_name=endpoint_name,
+            unit_count=unit_count,
+            execution_role_name=execution_role_name,
+            sagemaker_instance_type=sagemaker_instance_type,
+            sagemaker_environment_variables=sagemaker_environment_variables,
+            skip_model_reuse=skip_model_reuse,
+        )
 
-        elif deploy_platform == DeployPlatform.SAGEMAKER:
-            if execution_role_name is None:
-                execution_role_name = SAGEMAKER_EXECUTION_ROLE_NAME
+        # Backward compat: old Bedrock deploy stored output_s3_path here, not the checkpoint
+        if deploy_platform in (DeployPlatform.BEDROCK_OD, DeployPlatform.BEDROCK_PT):
+            result.endpoint.model_artifact_path = self.output_s3_path
 
-            if job_result is not None:
-                model = job_result.model_type
-            elif self.model:
-                model = self.model
-            else:
-                raise ValueError(
-                    "model_type must be provided either through job_result in deploy() or during "
-                    "NovaModelCustomizer initialization for SageMaker deployment"
-                )
+        # Update facade state
+        self.endpoint_info = result.endpoint
+        self.job_started_time = result.created_at
+        self.last_model_publish = deployer.last_model_publish
+        self._published_models = deployer._published_models
+        return result
 
-            if sagemaker_instance_type is None:
-                raise ValueError(
-                    "sagemaker_instance_type cannot be None for SageMaker deployment"
-                )
+    def find_published_model(
+        self, platform: str, escrow_path: str, skip_model_reuse: bool = False
+    ) -> Optional[str]:
+        """Find a previously published model ARN for the given platform and escrow path.
 
-            _validate_sagemaker_instance_type_for_model_deployment(
-                sagemaker_instance_type, model
-            )
+        Delegates to ForgeDeployer.find_published_model().
+        """
+        warnings.warn(
+            "NovaModelCustomizer.find_published_model() is deprecated and will be removed in a future version. "
+            "Use ForgeDeployer.find_published_model() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        deployer = self._build_deployer()
+        return deployer.find_published_model(platform, escrow_path, skip_model_reuse)
 
-            # Path required to end in /
-            resolved_model_artifact_path = (
-                resolved_model_artifact_path
-                if resolved_model_artifact_path.endswith("/")
-                else resolved_model_artifact_path + "/"
-            )
-
-            # Validate that this is not a Bedrock model ARN
-            if resolved_model_artifact_path.startswith("arn:aws:bedrock:"):
-                raise ValueError(
-                    "Cannot deploy Bedrock-customized models to SageMaker. "
-                    "Train on SageMaker first: Use platform=Platform.SMTJ or SMHP, then deploy to SageMaker\n\n"
-                )
-
-            return self._deploy_to_sagemaker(
-                model_artifact_path=resolved_model_artifact_path,
-                endpoint_name=endpoint_name,
-                instance_type=sagemaker_instance_type,
-                unit_count=unit_count,  # type: ignore
-                environment_variables=sagemaker_environment_variables,
-                execution_role_name=execution_role_name,
-            )
-
-        else:
-            raise ValueError(f"Unsupported deployment platform: {deploy_platform}")
-
-    def _deploy_to_sagemaker(
+    def deploy_to_sagemaker(
         self,
-        model_artifact_path: str,
         instance_type: str,
-        unit_count: int,
+        model_deploy_result: Optional[ModelDeployResult] = None,
+        model_artifact_path: Optional[str] = None,
+        unit_count: int = 1,
         endpoint_name: Optional[str] = None,
         environment_variables: Optional[Dict[str, Any]] = None,
-        execution_role_name: str = SAGEMAKER_EXECUTION_ROLE_NAME,
+        execution_role_name: Optional[str] = None,
+        skip_model_reuse: bool = False,
     ) -> DeploymentResult:
+        """Deploy a model to a SageMaker Inference endpoint.
+
+        Delegates to ForgeDeployer._deploy_to_sagemaker() with model reuse support.
         """
-        Internal method to deploy model to SageMaker.
-
-        Args:
-            model_artifact_path: S3 path to model artifacts
-            endpoint_name: Custom endpoint name (optional)
-            unit_count: Number of instances
-            instance_type: SageMaker instance type
-            environment_variables: Model configuration variables
-            execution_role_name: execution role name
-
-        Returns:
-            DeploymentResult with SageMaker endpoint info
-        """
-
-        if environment_variables:
-            validate_sagemaker_environment_variables(
-                environment_variables, model=self.model, instance_type=instance_type
-            )
-            env_vars = environment_variables
-        else:
-            # Use default environment variables if not provided
-            env_vars = setup_environment_variables()
-
-        # Generate endpoint name if not provided
-        if endpoint_name is None:
-            endpoint_name = f"{self.model.value}-{self.method.value}-sagemaker".replace(
-                "_", "-"
-            ).lower()
-
-        iam_client = boto3.client("iam")
-
-        # Check if a SageMaker IAM execution role exists, if not, create one.
-        try:
-            sagemaker_role_arn = create_sagemaker_execution_role(
-                iam_client=iam_client, role_name=execution_role_name
-            )["Role"]["Arn"]
-        except Exception as e:
-            raise Exception(
-                f"Failed to find or create the SageMaker IAM Execution Role: {str(e)}"
+        warnings.warn(
+            "NovaModelCustomizer.deploy_to_sagemaker() is deprecated and will be removed in a future version. "
+            "Use ForgeDeployer.deploy() with deploy_platform=DeployPlatform.SAGEMAKER instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if model_deploy_result is not None and model_artifact_path is not None:
+            raise ValueError(
+                "Cannot provide both model_deploy_result and model_artifact_path. "
+                "Use model_deploy_result to reuse an existing model, "
+                "or model_artifact_path to create a new one."
             )
 
-        # Create SageMaker clients
-        sagemaker_client = boto3.client("sagemaker")
+        # Resolve model_artifact_path from model_deploy_result if provided
+        if model_artifact_path is None and model_deploy_result is not None:
+            model_artifact_path = model_deploy_result.escrow_uri
 
-        # Create model, endpoint config, and endpoint
-        model_name = f"{endpoint_name}-model"
-        endpoint_config_name = f"{endpoint_name}-config"
+        if not model_artifact_path:
+            raise ValueError(
+                "No model artifact path available. Provide model_artifact_path, "
+                "or a model_deploy_result with a non-empty escrow_uri."
+            )
 
-        endpoint_arn = create_model_and_endpoint_config(
-            region=self.region,
-            model_name=model_name,
-            model_s3_location=model_artifact_path,
-            sagemaker_execution_role_arn=sagemaker_role_arn,
-            endpoint_config_name=endpoint_config_name,
+        # Pre-populate session cache so the deployer reuses the existing model
+        if model_deploy_result is not None:
+            self._published_models.add(
+                ("sagemaker", model_deploy_result.model_arn, model_artifact_path)
+            )
+
+        deployer = self._build_deployer()
+        result = deployer._deploy_to_sagemaker(
+            model_artifact_path=model_artifact_path,
             endpoint_name=endpoint_name,
             instance_type=instance_type,
-            environment=env_vars,
-            sagemaker_client=sagemaker_client,
-            initial_instance_count=unit_count,
-            deployment_mode=self.deployment_mode,
+            unit_count=unit_count,
+            environment_variables=environment_variables,
+            execution_role_name=execution_role_name,
+            skip_model_reuse=skip_model_reuse,
         )
 
-        # Create deployment result
-        create_time = datetime.now(timezone.utc)
-        endpoint = EndpointInfo(
-            platform=DeployPlatform.SAGEMAKER,
-            endpoint_name=endpoint_name,
-            uri=endpoint_arn,
-            model_artifact_path=model_artifact_path,
-        )
+        # Sync state back
+        self.last_model_publish = deployer.last_model_publish
+        self._published_models = deployer._published_models
+        self.endpoint_info = result.endpoint
 
-        self.endpoint_info = endpoint
+        return result
 
-        return DeploymentResult(endpoint=endpoint, created_at=create_time)
-
-    def _deploy_to_bedrock(
+    def create_custom_model(
         self,
         model_artifact_path: Optional[str] = None,
+        job_result: Optional[TrainingResult] = None,
+        endpoint_name: Optional[str] = None,
+        execution_role_name: Optional[str] = None,
+        tags: Optional[List[Dict[str, str]]] = None,
+        skip_model_reuse: bool = False,
+    ) -> ModelDeployResult:
+        """Create a Bedrock custom model from S3 artifacts.
+
+        Delegates to ForgeDeployer.create_custom_model(). Handles job_result
+        resolution at the facade level before delegating.
+        """
+        warnings.warn(
+            "NovaModelCustomizer.create_custom_model() is deprecated and will be removed in a future version. "
+            "Use ForgeDeployer.create_custom_model() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # Resolve model_artifact_path from job_result (facade-level concern)
+        if model_artifact_path is None and job_result is not None:
+            model_artifact_path = extract_checkpoint_path_from_job_output(
+                output_s3_path=job_result.model_artifacts.output_s3_path,
+                job_result=job_result,
+            )
+            if model_artifact_path is None:
+                raise ValueError(
+                    f"Could not resolve checkpoint path from job result '{job_result.job_id}'. "
+                    f"Provide model_artifact_path explicitly."
+                )
+
+        if model_artifact_path is None:
+            raise ValueError("Either model_artifact_path or job_result must be provided.")
+
+        deployer = self._build_deployer()
+        result = deployer.create_custom_model(
+            model_artifact_path=model_artifact_path,
+            endpoint_name=endpoint_name,
+            execution_role_name=execution_role_name,
+            tags=tags,
+            skip_model_reuse=skip_model_reuse,
+        )
+
+        # Sync state back
+        self.last_model_publish = deployer.last_model_publish
+        self._published_models = deployer._published_models
+
+        return result
+
+    def deploy_to_bedrock(
+        self,
+        model_deploy_result: Optional[ModelDeployResult] = None,
+        model_arn: Optional[str] = None,
         deploy_platform: DeployPlatform = DeployPlatform.BEDROCK_OD,
         pt_units: Optional[int] = None,
         endpoint_name: Optional[str] = None,
-        execution_role_name: str = BEDROCK_EXECUTION_ROLE_NAME,
     ) -> DeploymentResult:
+        """Deploy a published Bedrock custom model to an endpoint.
+
+        Delegates to ForgeDeployer.deploy_to_bedrock().
+
+        Resolution order for model ARN:
+        1. model_deploy_result provided -> use its model_arn
+        2. model_arn provided -> use directly
+        3. self.last_model_publish -> auto-use
+        4. None -> raise ValueError
         """
-        Creates a custom model and deploys it to Bedrock.
-
-        Deployment behavior when endpoint already exists is controlled by the deployment_mode
-        parameter set during NovaModelCustomizer initialization:
-        - FAIL_IF_EXISTS: Raise error (default, safest)
-        - UPDATE_IF_EXISTS: Try in-place update, fail if not supported
-
-        Args:
-            model_artifact_path: The s3 path to the training escrow bucket. If not provided, will attempt to extract
-                                 from job_result or the `job_id` field of the Customizer.
-            deploy_platform: The platform to deploy the model to for inference (Bedrock On-Demand or Provisioned Throughput).
-            pt_units: Only needed when Bedrock Provisioned Throughput is chosen. The # of PT to purchase.
-            endpoint_name: The name of the deployed model's endpoint -- will be auto generated if not given.
-            execution_role_name: Optional IAM execution role name for Bedrock, defaults to BedrockDeployModelExecutionRole. If this role does not exist, it will be created.
-
-        Returns:
-            DeploymentResult: Contains the endpoint information as well as the create time of the deployment.
-
-        Raises:
-            Exception: When unable to successfully deploy the model, extract checkpoint path, or handle
-                      existing endpoint according to deployment_mode setting.
-        """
-        bedrock_client = boto3.client("bedrock")
-        iam_client = boto3.client("iam")
-
-        # Check if we have a model name (endpoint name) else generate one.
-        if endpoint_name is None:
-            name_format = f"{self.model}-{self.method}-{self.region}".lower()
-            endpoint_name = name_format.replace(".", "-").replace("_", "-")
-
-        # Check for existing deployment with same name
-        existing_deployment_arn = check_existing_deployment(
-            endpoint_name, deploy_platform
+        warnings.warn(
+            "NovaModelCustomizer.deploy_to_bedrock() is deprecated and will be removed in a future version. "
+            "Use ForgeDeployer.deploy_to_bedrock() instead.",
+            DeprecationWarning,
+            stacklevel=2,
         )
-        deleted_existing_deployment = False
-        should_delete_existing = False
-        attempt_pt_update = False
-
-        # Handle cases where the given endpoint name already has an associated deployment
-        if existing_deployment_arn:
-            if self.deployment_mode == DeploymentMode.FAIL_IF_EXISTS:
-                raise Exception(
-                    f"Deployment '{endpoint_name}' already exists on platform {deploy_platform}.\n"
-                    f"ARN: {existing_deployment_arn}\n"
-                    f"Change deployment_mode to override."
-                )
-
-            elif self.deployment_mode == DeploymentMode.UPDATE_IF_EXISTS:
-                if deploy_platform != DeployPlatform.BEDROCK_PT:
-                    raise Exception(
-                        f"UPDATE_IF_EXISTS mode is only supported for Provisioned Throughput deployments.\n"
-                        f"Current platform: {deploy_platform}\n"
-                        f"Use FORCE_REPLACE mode for On-Demand deployments."
-                    )
-                logger.info(
-                    f"UPDATE_IF_EXISTS mode: Will update existing PT deployment '{endpoint_name}' in-place"
-                )
-                attempt_pt_update = True
-
-            elif self.deployment_mode in [
-                DeploymentMode.UPDATE_OR_REPLACE,
-                DeploymentMode.FORCE_REPLACE,
-            ]:
-                # For PT deployments, try in-place update first (unless FORCE_REPLACE)
-                if (
-                    deploy_platform == DeployPlatform.BEDROCK_PT
-                    and self.deployment_mode == DeploymentMode.UPDATE_OR_REPLACE
-                ):
-                    logger.info(
-                        f"UPDATE_OR_REPLACE mode: Will try to update existing PT deployment '{endpoint_name}' in-place"
-                    )
-                    attempt_pt_update = True
-
-                # Always mark for deletion as fallback (or primary for FORCE_REPLACE/OD)
-                if (
-                    not attempt_pt_update
-                    or self.deployment_mode == DeploymentMode.FORCE_REPLACE
-                ):
-                    logger.info(
-                        f"{self.deployment_mode.value} mode: Will delete existing deployment '{endpoint_name}'"
-                    )
-                    should_delete_existing = True
-
-        # Consolidated permission validation (if IAM validation enabled)
-        if (
-            self.validation_config is None or self.validation_config.get("iam", True)
-        ) and existing_deployment_arn:
-            if attempt_pt_update:
-                required_perms = get_required_bedrock_update_permissions(
-                    deploy_platform, existing_deployment_arn
-                )
-                errors: List[str] = []
-                Validator._validate_calling_role_permissions(
-                    errors, required_perms, infra=None, region_name=self.region
-                )
-                if errors:
-                    if self.deployment_mode == DeploymentMode.UPDATE_IF_EXISTS:
-                        raise Exception(
-                            f"Cannot update existing PT deployment '{endpoint_name}': Missing permissions.\n"
-                            f"{'; '.join(errors)}\n"
-                            f"Please ensure your role has the necessary Bedrock update permissions."
-                        )
-                    else:
-                        # UPDATE_OR_REPLACE: fall back to delete
-                        logger.warning(
-                            "Missing update permissions, will fall back to delete/recreate"
-                        )
-                        attempt_pt_update = False
-                        should_delete_existing = True
-
-            if should_delete_existing:
-                required_perms = get_required_bedrock_deletion_permissions(
-                    deploy_platform, existing_deployment_arn
-                )
-                errors = []
-                Validator._validate_calling_role_permissions(
-                    errors, required_perms, infra=None, region_name=self.region
-                )
-                if errors:
-                    raise Exception(
-                        f"Cannot delete existing deployment '{endpoint_name}': Missing permissions.\n"
-                        f"{'; '.join(errors)}\n"
-                        f"Please ensure your role has the necessary Bedrock deletion permissions."
-                    )
-
-        # TODO: If given a job ID, check the status before creating the model. If the job isn't completed, tell the user.
-
-        # Check if a Bedrock IAM execution role exists, if not, create one.
-        try:
-            bedrock_execution_role_arn = create_bedrock_execution_role(
-                iam_client=iam_client, role_name=execution_role_name
-            )["Role"]["Arn"]
-        except Exception as e:
-            raise Exception(
-                f"Failed to find or create the Bedrock IAM Execution Role: {str(e)}"
-            )
-
-        model_name = None
-        modelKmsKeyArn = None
-
-        # Check if model_artifact_path is already a Bedrock model ARN
-        # Format: arn:aws:bedrock:region:account:custom-model/...
-        is_bedrock_model_arn = (
-            model_artifact_path
-            and model_artifact_path.startswith("arn:aws:bedrock:")
-            and ":custom-model/" in model_artifact_path
-        )
-
-        if is_bedrock_model_arn:
-            # Model already exists in Bedrock, skip creation
-            logger.info(f"Using existing Bedrock custom model: {model_artifact_path}")
-            model = {"modelArn": model_artifact_path}
-        else:
-            # Create new custom model from S3 artifacts
-            try:
-                logger.info(f"Creating custom model for endpoint '{endpoint_name}'...")
-                model_name = f"{endpoint_name}-{uuid.uuid4()}"[:63]
-                if self.infra.kms_key_id:
-                    sts_client = boto3.client("sts")
-                    account_id = sts_client.get_caller_identity()["Account"]
-                    modelKmsKeyArn = f"arn:aws:kms:{self.region}:{account_id}:key/{self.infra.kms_key_id}"
-                    model = bedrock_client.create_custom_model(
-                        modelName=model_name,
-                        modelSourceConfig={
-                            "s3DataSource": {"s3Uri": model_artifact_path}
-                        },
-                        roleArn=bedrock_execution_role_arn,
-                        modelKmsKeyArn=modelKmsKeyArn,
-                    )
-                else:
-                    model = bedrock_client.create_custom_model(
-                        modelName=model_name,
-                        modelSourceConfig={
-                            "s3DataSource": {"s3Uri": model_artifact_path}
-                        },
-                        roleArn=bedrock_execution_role_arn,
-                    )
-            except Exception as e:
-                raise Exception(
-                    f"Failed to create model {model_name} for endpoint {endpoint_name}: {e}"
-                )
-
-            # Monitor the model's creation, updating the time stamp every few seconds until the model is created/set as 'active'.
-            try:
-                monitor_model_create(bedrock_client, model, endpoint_name)
-            except Exception as e:
-                raise Exception(
-                    f"Failed to create deployment {endpoint_name} for model {model['modelArn']}: {e}"
-                )
-
-        # Delete existing deployment if needed (after model creation succeeds)
-        if existing_deployment_arn and should_delete_existing:
-            try:
-                delete_existing_deployment(
-                    existing_deployment_arn, deploy_platform, endpoint_name
-                )
-                deleted_existing_deployment = True
-            except Exception as e:
-                raise Exception(
-                    f"Failed to create deployment {endpoint_name} for model {model['modelArn']}: Could not delete existing deployment: {e}"
-                )
-
-        # Handle deployment creation or update
-        deployment = None
-        deployment_arn = None
-        pt_update_error = None
-
-        # Try PT update if applicable
-        if attempt_pt_update and existing_deployment_arn:
-            try:
-                model_arn = model["modelArn"]
-                if model_arn is None:
-                    raise ValueError(
-                        "Model ARN is None, cannot update provisioned throughput"
-                    )
-                update_provisioned_throughput_model(
-                    existing_deployment_arn, model_arn, endpoint_name
-                )
-                deployment_arn = existing_deployment_arn
-                logger.info(
-                    f"Successfully updated existing PT deployment '{endpoint_name}'"
-                )
-            except Exception as e:
-                pt_update_error = str(e)
-                if self.deployment_mode == DeploymentMode.UPDATE_IF_EXISTS:
-                    raise Exception(
-                        f"Failed to create deployment {endpoint_name} for model {model['modelArn']}: {e}"
-                    )
-                else:
-                    # UPDATE_OR_REPLACE: fall back to delete/recreate
-                    logger.warning(
-                        f"PT update failed, falling back to delete/recreate: {e}"
-                    )
-                    should_delete_existing = True
-                    attempt_pt_update = False
-
-        # Create new deployment if pt update failed or wasn't attempted
-        if deployment_arn is None:
-            # Delete existing deployment if needed and not already done
-            if (
-                existing_deployment_arn
-                and should_delete_existing
-                and not deleted_existing_deployment
-            ):
-                try:
-                    delete_existing_deployment(
-                        existing_deployment_arn, deploy_platform, endpoint_name
-                    )
-                    deleted_existing_deployment = True
-                except Exception as e:
-                    error_msg = f"Failed to create deployment {endpoint_name} for model {model['modelArn']}: Could not delete existing deployment: {e}"
-                    if pt_update_error:
-                        error_msg += f". Previous PT update error: {pt_update_error}"
-                    raise Exception(error_msg)
-
-            try:
-                logger.info(f"Creating deployment for endpoint '{endpoint_name}'...")
-                if deploy_platform == DeployPlatform.BEDROCK_PT:
-                    deployment = bedrock_client.create_provisioned_model_throughput(
-                        modelUnits=pt_units,
-                        provisionedModelName=endpoint_name,
-                        modelId=model["modelArn"],
-                    )
-                    deployment_arn = deployment[
-                        DEPLOYMENT_ARN_NAME.get(deploy_platform)
-                    ]
-                elif deploy_platform == DeployPlatform.BEDROCK_OD:
-                    deployment = bedrock_client.create_custom_model_deployment(
-                        modelDeploymentName=endpoint_name,
-                        modelArn=model["modelArn"],
-                    )
-                    deployment_arn = deployment[
-                        DEPLOYMENT_ARN_NAME.get(deploy_platform)
-                    ]
-                else:
-                    raise ValueError(
-                        f"Platform '{deploy_platform}' is not supported for Nova training. "
-                        f"Supported platforms are: {list(DeployPlatform)}"
-                    )
-            except Exception as e:
-                raise Exception(
-                    f"Failed to create deployment {endpoint_name} for model {model['modelArn']}: {e}"
-                )
-
-        # Creates EndpointInfo and DeploymentResult objects.
-        create_time = datetime.now(timezone.utc)
-        self.job_started_time = create_time
-        endpoint = EndpointInfo(
-            platform=deploy_platform,
+        deployer = self._build_deployer()
+        result = deployer.deploy_to_bedrock(
+            model_deploy_result=model_deploy_result,
+            model_arn=model_arn,
+            deploy_platform=deploy_platform,
+            pt_units=pt_units,
             endpoint_name=endpoint_name,
-            uri=deployment_arn,
-            model_artifact_path=self.output_s3_path,
         )
 
-        self.endpoint_info = endpoint
+        # Sync state back
+        self.last_model_publish = deployer.last_model_publish
+        self.endpoint_info = result.endpoint
+        self.job_started_time = result.created_at
 
-        result = DeploymentResult(endpoint=endpoint, created_at=create_time)
-
-        # Log message to the user with information about the deployment.
-        logger.info(
-            f"\nSuccessfully started deploying {endpoint.endpoint_name}: \n"
-            f"- Platform: {endpoint.platform}:\n"
-            f"- ARN: {endpoint.uri}\n"
-            f"- Created: {result.created_at.strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-            f"- ETA: Deployment should be completed in about 30-45 minutes"
-        )
         return result
 
+    @_telemetry_emitter(
+        Feature.DEPLOY,
+        "predict",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "model": self.model.value,
+            "platform": self.platform,
+        },
+    )
     def predict(self):
-        pass
+        warnings.warn(
+            "NovaModelCustomizer.predict() is deprecated and will be removed in a future version. "
+            "Use ForgeInference.invoke() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
+    @_telemetry_emitter(
+        Feature.BATCH_INFERENCE,
+        "batch_inference",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "method": self.method,
+            "model": self.model.value,
+            "platform": self.platform,
+            "dryRun": kwargs.get("dry_run", False),
+        },
+    )
     def batch_inference(
         self,
         job_name: str,
@@ -1329,7 +1100,7 @@ class NovaModelCustomizer:
         model_path: Optional[str] = None,
         recipe_path: Optional[str] = None,
         overrides: Optional[Dict[str, Any]] = None,
-        dry_run: Optional[bool] = False,
+        dry_run: bool = False,
         job_result: Optional[TrainingResult] = None,
     ) -> InferenceResult | None:
         """
@@ -1347,15 +1118,16 @@ class NovaModelCustomizer:
                           the checkpoint path from the training job's output.
         :return: InferenceResult or None if dry_run is enabled
         """
-        # Validate platform support
-        if self.platform == Platform.BEDROCK:
-            raise NotImplementedError(
-                "Batch inference is not supported on Bedrock platform. "
-                "Batch inference is only available for SageMaker platforms (SMTJ, SMHP). "
-                "For Bedrock, deploy your model using deploy() and use invoke_inference() for single requests."
-            )
+        warnings.warn(
+            "NovaModelCustomizer.batch_inference() is deprecated and will be removed in a future version. "
+            "Use ForgeInference.invoke_batch() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
-        # Check for existing result before starting new batch inference
+        from amzn_nova_forge.inference.forge_inference import ForgeInference
+
+        # Facade caching (backward compat)
         existing_result = load_existing_result(
             self,
             job_name,
@@ -1370,108 +1142,41 @@ class NovaModelCustomizer:
         if existing_result:
             return cast(InferenceResult, existing_result)
 
-        # Resolve model checkpoint path
+        # Translation layer: resolve model_path from job_result / facade state
         resolved_model_path = resolve_model_checkpoint_path(
             model_path=model_path,
             job_result=job_result,
-            customizer_job_id=self.job_id if hasattr(self, "job_id") else None,
+            customizer_job_id=self.job_id,
             customizer_output_s3_path=self.output_s3_path,
             customizer_model_path=self.model_path,
         )
 
-        if resolved_model_path is None:
-            logger.warning(
-                f"Could not resolve model checkpoint path for evaluate job! Falling back to base model {self.model}"
-            )
-
-        # Validate platform compatibility
-        checkpoint_platform = None
-        if resolved_model_path and resolved_model_path.startswith("s3://"):
-            checkpoint_platform = detect_platform_from_path(resolved_model_path)
-
-        if checkpoint_platform is None and job_result is not None:
-            if job_result.model_artifacts.checkpoint_s3_path:
-                checkpoint_platform = detect_platform_from_path(
-                    job_result.model_artifacts.checkpoint_s3_path
-                )
-
-        if (
-            checkpoint_platform is None
-            and self.model_path
-            and self.model_path.startswith("s3://")
-        ):
-            checkpoint_platform = detect_platform_from_path(self.model_path)
-
-        validate_platform_compatibility(
-            checkpoint_platform=checkpoint_platform,
-            execution_platform=self.platform,
-            checkpoint_source="batch inference model checkpoint",
-        )
-
-        recipe_builder = RecipeBuilder(
+        inference = ForgeInference(
             region=self.region,
-            job_name=job_name,
-            platform=self.platform,
             model=self.model,
-            method=self.method,
-            instance_type=self.infra.instance_type,
-            instance_count=self.infra.instance_count,
             infra=self.infra,
-            data_s3_path=input_path,
-            output_s3_path=output_s3_path or self.output_s3_path,
+            config=self._build_forge_config(),
+            method=self.method,
+        )
+
+        batch_inference_result = inference.invoke_batch(
+            job_name=job_name,
+            input_path=input_path,
+            output_s3_path=output_s3_path,
             model_path=resolved_model_path,
-            mlflow_monitor=self.mlflow_monitor,
-            image_uri_override=self._image_uri,
-        )
-
-        (
-            resolved_recipe_path,
-            resolved_output_s3_path,
-            resolved_data_s3_path,
-            resolved_image_uri,
-        ) = recipe_builder.build_and_validate(
+            recipe_path=recipe_path,
             overrides=overrides,
-            input_recipe_path=recipe_path,
-            output_recipe_path=self.generated_recipe_dir,
-            validation_config=self.validation_config,
+            dry_run=dry_run,
         )
 
-        if dry_run:
+        if batch_inference_result is None:  # dry_run
             return None
 
-        # Use unique name to actually start the job
-        unique_job_name = f"{job_name}-{uuid.uuid4()}"[:63]
+        # Update facade state
+        self.job_id = batch_inference_result.job_id
+        self.job_started_time = batch_inference_result.started_time
 
-        start_time = datetime.now(timezone.utc)
-        self.job_started_time = start_time
-
-        # Execute the batch inference job
-        self.job_id = self.infra.execute(
-            job_config=JobConfig(
-                job_name=unique_job_name,
-                data_s3_path=resolved_data_s3_path,
-                output_s3_path=resolved_output_s3_path,
-                image_uri=resolved_image_uri,
-                recipe_path=resolved_recipe_path,
-                input_s3_data_type="S3Prefix",
-            )
-        )
-
-        # TODO: Implement for SMHP jobs. I'm not sure how different the infrastructure is.
-        inference_output_s3_path = (
-            f"{resolved_output_s3_path.rstrip('/')}/{job_name}/output/output.tar.gz"
-        )
-        batch_inference_result = SMTJBatchInferenceResult(
-            job_id=self.job_id,
-            started_time=start_time,
-            inference_output_path=inference_output_s3_path,
-        )
-        logger.info(
-            f"Started batch inference job '{self.job_id}'. \nArtifacts will be published to {inference_output_s3_path}.\n"
-            f"After opening the tar file, look for {recipe_builder.job_name}/eval_results/inference_output.jsonl."
-        )
-
-        # Persist result if enabled
+        # Facade caching persist
         persist_result(
             self,
             batch_inference_result,
@@ -1487,27 +1192,38 @@ class NovaModelCustomizer:
 
         return batch_inference_result
 
+    @_telemetry_emitter(
+        Feature.MONITOR,
+        "get_logs",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "platform": self.platform,
+        },
+    )
     def get_logs(
         self,
         limit: Optional[int] = None,
         start_from_head: bool = False,
         end_time: Optional[int] = None,
     ):
+        warnings.warn(
+            "NovaModelCustomizer.get_logs() is deprecated and will be removed in a future version. "
+            "Use ForgeTrainer.get_logs(), ForgeEvaluator.get_logs(), or "
+            "ForgeInference.get_logs() instead — those accept explicit "
+            "job_result or job_id parameters and do not require a prior "
+            "train()/evaluate() call.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if self.job_id and self.job_started_time:
             kwargs = {}
             if self.platform == Platform.SMHP:
-                kwargs["cluster_name"] = cast(
-                    SMHPRuntimeManager, self.infra
-                ).cluster_name
+                kwargs["cluster_name"] = cast(SMHPRuntimeManager, self.infra).cluster_name
                 kwargs["namespace"] = cast(SMHPRuntimeManager, self.infra).namespace
-            self.cloud_watch_log_monitor = (
-                self.cloud_watch_log_monitor
-                or CloudWatchLogMonitor(
-                    job_id=self.job_id,
-                    platform=self.platform,
-                    started_time=int(self.job_started_time.timestamp() * 1000),
-                    **kwargs,
-                )
+            self.cloud_watch_log_monitor = self.cloud_watch_log_monitor or CloudWatchLogMonitor(
+                job_id=self.job_id,
+                platform=self.platform,
+                started_time=int(self.job_started_time.timestamp() * 1000),
+                **kwargs,
             )
             self.cloud_watch_log_monitor.show_logs(
                 limit=limit, start_from_head=start_from_head, end_time=end_time
@@ -1517,46 +1233,53 @@ class NovaModelCustomizer:
                 "No job_id and job_started_time found for this model, please call .train() or .evaluate() first."
             )
 
-    def invoke_inference(
-        self, request_body: Dict[str, Any], endpoint_arn: Optional[str] = None
-    ):
+    @_telemetry_emitter(
+        Feature.DEPLOY,
+        "invoke_inference",
+        extra_info_fn=_invoke_inference_extra_info,
+    )
+    def invoke_inference(self, request_body: Dict[str, Any], endpoint_arn: Optional[str] = None):
         """
         Invokes single inference against an endpoint
         :param request_body: Inference request body
         :param endpoint_arn: Optional endpoint ARN if user does not want to use previously deployed endpoint
         :return: Inference result. String for non-streaming response, generator for streaming response
         """
-        model_endpoint_arn = ""
-        deployment_platform = DeployPlatform.BEDROCK_PT
+        warnings.warn(
+            "NovaModelCustomizer.invoke_inference() is deprecated and will be removed in a future version. "
+            "Use ForgeInference.invoke() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+        from amzn_nova_forge.inference.forge_inference import ForgeInference
+
+        # Translation layer: resolve endpoint from facade's implicit state
         if endpoint_arn is None and self.endpoint_info is None:
             raise ValueError(
                 "endpoint_arn must be provided if no endpoint was previously deployed by Customizer"
             )
         elif endpoint_arn is not None:
-            validate_endpoint_arn(endpoint_arn=endpoint_arn)
-
-            if SAGEMAKER_ENDPOINT_ARN_REGEX.match(endpoint_arn):
-                deployment_platform = DeployPlatform.SAGEMAKER
-
-            model_endpoint_arn = endpoint_arn
-        elif self.endpoint_info is not None:
-            model_endpoint_arn = self.endpoint_info.uri
-            deployment_platform = self.endpoint_info.platform
-
-        if deployment_platform == DeployPlatform.SAGEMAKER:
-            runtime_client = boto3.client("sagemaker-runtime", region_name=self.region)
-            endpoint_name = model_endpoint_arn.split("/")[-1]
-            logger.info(f"endpoint name {endpoint_name}")
-            return invoke_sagemaker_inference(
-                request_body, endpoint_name, runtime_client
-            )
+            resolved_arn = endpoint_arn
         else:
-            runtime_client = boto3.client("bedrock-runtime", region_name=self.region)
-            return invoke_model(
-                model_id=model_endpoint_arn,
-                request_body=request_body,
-                bedrock_runtime=runtime_client,
-            )
+            assert self.endpoint_info is not None  # guarded by the check above
+            resolved_arn = self.endpoint_info.uri
 
+        inference = ForgeInference(region=self.region)
+        return inference.invoke(endpoint_arn=resolved_arn, request_body=request_body)
+
+    @_telemetry_emitter(
+        Feature.MONITOR,
+        "monitor_metrics",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "model": self.model.value,
+            "platform": self.platform,
+        },
+    )
     def monitor_metrics(self):
-        pass
+        warnings.warn(
+            "NovaModelCustomizer.monitor_metrics() is deprecated and will be removed in a future version. "
+            "This method was a no-op and has no replacement.",
+            DeprecationWarning,
+            stacklevel=2,
+        )

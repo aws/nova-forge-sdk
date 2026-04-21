@@ -15,8 +15,8 @@ import logging
 import re
 from typing import Dict, List, Optional, Tuple
 
-from amzn_nova_forge.model.model_config import SUPPORTED_SMI_CONFIGS
-from amzn_nova_forge.model.model_enums import Model
+from amzn_nova_forge.core.constants import SUPPORTED_SMI_CONFIGS
+from amzn_nova_forge.core.enums import Model
 from amzn_nova_forge.util.logging import logger
 
 S3_URI_PREFIX_REGEX = re.compile(r"^s3://[a-zA-Z0-9.-]+(?:/[a-zA-Z0-9_.-]+)*/$")
@@ -28,6 +28,14 @@ BEDROCK_DEPLOYMENT_ARN_REGEX = re.compile(
 SAGEMAKER_ENDPOINT_ARN_REGEX = re.compile(
     r"^arn:aws:sagemaker:[a-z0-9-]+:\d{12}:endpoint/[A-Za-z0-9-_]+$"
 )
+
+# Matches SageMaker ARNs across all AWS partitions (standard, GovCloud, China, etc.)
+SAGEMAKER_ARN_RE = re.compile(r"^arn:aws[\w-]*:sagemaker:")
+
+
+def is_sagemaker_arn(value: str) -> bool:
+    """Return True if value looks like a SageMaker ARN (any partition)."""
+    return bool(SAGEMAKER_ARN_RE.match(value))
 
 
 def validate_s3_uri_prefix(s3_uri: str) -> None:
@@ -141,9 +149,7 @@ def validate_sagemaker_environment_variables(
         _validate_smi_config_bounds(env_vars, model, instance_type)
 
 
-def _validate_smi_config_bounds(
-    env_vars: Dict[str, str], model: Model, instance_type: str
-) -> None:
+def _validate_smi_config_bounds(env_vars: Dict[str, str], model: Model, instance_type: str) -> None:
     """Validate CONTEXT_LENGTH and MAX_CONCURRENCY against the supported SMI config table."""
     config_key = (model, instance_type)
     tiers = SUPPORTED_SMI_CONFIGS.get(config_key)

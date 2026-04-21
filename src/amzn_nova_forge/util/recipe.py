@@ -23,25 +23,23 @@ import boto3
 import yaml
 from botocore.exceptions import ClientError
 
-from amzn_nova_forge.model.model_config import (
+from amzn_nova_forge.core.constants import (
     REGION_TO_ESCROW_ACCOUNT_MAPPING,
-)
-from amzn_nova_forge.model.model_enums import (
     SUPPORTED_DATAMIXING_METHODS,
+)
+from amzn_nova_forge.core.enums import (
+    EvaluationTask,
     Model,
     Platform,
     TrainingMethod,
     Version,
 )
-from amzn_nova_forge.recipe.recipe_config import EvaluationTask
 from amzn_nova_forge.rft_multiturn import RFTMultiturnInfrastructure
+from amzn_nova_forge.util.hub_util import get_hub_content
 from amzn_nova_forge.util.logging import logger
-from amzn_nova_forge.util.sagemaker import _get_hub_content
 
 S3_URI_REGEX = re.compile(r"^s3://([a-zA-Z0-9.\-_]+)/(.+)$")
-S3_ACCESS_POINT_REGEX = re.compile(
-    r"^arn:aws:s3:([^:]+):([^:]+):accesspoint/([^/]+)(?:/(.+))?$"
-)
+S3_ACCESS_POINT_REGEX = re.compile(r"^arn:aws:s3:([^:]+):([^:]+):accesspoint/([^/]+)(?:/(.+))?$")
 
 
 class FileLoadError(Exception):
@@ -68,9 +66,7 @@ class RecipePath:
         try:
             shutil.rmtree(directory)
         except Exception as e:
-            logger.warning(
-                f"Failed to delete temporary directory {directory}\nError: {e}"
-            )
+            logger.warning(f"Failed to delete temporary directory {directory}\nError: {e}")
 
     def close(self):
         if self.temp:
@@ -181,28 +177,6 @@ def load_file_as_string(
     return "\n".join(lines)
 
 
-def _get_hub_content_name(model: Model) -> str:
-    """
-    Generate hub_content_name parameter for the DescribeHubContent API based on the model being trained
-
-    Args:
-        model: The Model being trained
-
-    Returns:
-        str of the hub content name for the corresponding model
-    """
-    match model:
-        case Model.NOVA_MICRO:
-            return "nova-textgeneration-micro"
-        case Model.NOVA_LITE:
-            return "nova-textgeneration-lite"
-        case Model.NOVA_LITE_2:
-            return "nova-textgeneration-lite-v2"
-        case Model.NOVA_PRO:
-            return "nova-textgeneration-pro"
-    raise ValueError(f"Unsupported model: '{model.value}'")
-
-
 def get_hub_recipe_metadata(
     model: Model,
     method: TrainingMethod,
@@ -211,6 +185,7 @@ def get_hub_recipe_metadata(
     instance_type: Optional[str],
     task: Optional[EvaluationTask] = None,
     data_mixing: bool = False,
+    is_multimodal: bool = False,
 ) -> Dict[str, Any]:
     """
     Extract a single recipe's metadata from a SageMaker DescribeHubContent response
@@ -295,9 +270,9 @@ def get_hub_recipe_metadata(
     if instance_type is None and platform != Platform.SMTJServerless:
         raise ValueError(f"instance_type is required for platform {platform.value}. ")
 
-    hub_content = _get_hub_content(
+    hub_content = get_hub_content(
         hub_name="SageMakerPublicHub",
-        hub_content_name=_get_hub_content_name(model=model),
+        hub_content_name=model.hub_content_name,
         hub_content_type="Model",
         region=region,
     )
@@ -328,39 +303,34 @@ def get_hub_recipe_metadata(
         raise ValueError(f"{method.name} is not supported for {model.name}")
 
     # Filter recipes for training platform
-    if platform == Platform.SMTJ:
-        recipe_collection = [
-            r for r in recipe_collection if r.get("SmtjRecipeTemplateS3Uri")
-        ]
+    if platform == Platform.SMTJ or platform == Platform.SMTJServerless:
+        recipe_collection = [r for r in recipe_collection if r.get("SmtjRecipeTemplateS3Uri")]
     else:
-        recipe_collection = [
-            r for r in recipe_collection if r.get("HpEksPayloadTemplateS3Uri")
-        ]
+        recipe_collection = [r for r in recipe_collection if r.get("HpEksPayloadTemplateS3Uri")]
     if not recipe_collection:
         raise ValueError(f"{method.name} is not supported on {platform.name}")
 
-    # For methods with data mixing enabled, look for recipes with "text_with_datamix" in the Name
+    # For methods with data mixing enabled, look for recipes with "text_with_datamix" or "mm_with_datamix" in the Name
     if data_mixing and method in SUPPORTED_DATAMIXING_METHODS:
+        # For SFT methods that support multimodal, check if data is multimodal
+        datamix_suffix = "mm_with_datamix" if is_multimodal else "text_with_datamix"
         datamix_recipes = [
-            r
-            for r in recipe_collection
-            if "text_with_datamix" in r.get("Name", "").lower()
+            r for r in recipe_collection if datamix_suffix in r.get("Name", "").lower()
         ]
         if datamix_recipes:
             recipe_collection = datamix_recipes
         else:
             # If no datamix recipes found, log warning and continue with regular recipes
+            multimodal_log = "multimodal" if is_multimodal else "text"
             logger.warning(
-                f"Data mixing is not supported for {method.name}."
+                f"Data mixing is not supported for {method.name} with {multimodal_log} data. "
                 "Using standard recipe instead."
             )
 
     # Filter recipes for training type (i.e. evaluation task, full/lora, etc.)
     if method == TrainingMethod.EVALUATION:
         if task is None:
-            raise ValueError(
-                "'eval_task' is a required parameter when calling evaluate()."
-            )
+            raise ValueError("'eval_task' is a required parameter when calling evaluate().")
         if task == EvaluationTask.GEN_QA:
             recipe_collection = [
                 r
@@ -380,9 +350,7 @@ def get_hub_recipe_metadata(
                 f".dkr.ecr.{region}.amazonaws.com/nova-evaluation-repo:"
             )
             image_infix = "SM-HP-" if platform == Platform.SMHP else "SM-TJ-"
-            image_suffix = (
-                "Eval-V2-latest" if model.version == Version.TWO else "Eval-latest"
-            )
+            image_suffix = "Eval-V2-latest" if model.version == Version.TWO else "Eval-latest"
 
             sdk_path = os.path.dirname(amzn_nova_forge.__file__)
             return {
@@ -415,16 +383,13 @@ def get_hub_recipe_metadata(
         recipe_collection = [
             r
             for r in recipe_collection
-            if r.get("SupportedInstanceTypes")
-            and instance_type in r.get("SupportedInstanceTypes")
+            if r.get("SupportedInstanceTypes") and instance_type in r.get("SupportedInstanceTypes")
         ]
 
     if recipe_collection:
         return recipe_collection[0]
     else:
-        raise ValueError(
-            f"{method.name} using {instance_type} is not supported on {platform.name}"
-        )
+        raise ValueError(f"{method.name} using {instance_type} is not supported on {platform.name}")
 
 
 def _get_aws_account_id() -> str:
@@ -480,9 +445,7 @@ def _download_from_s3_or_access_point(uri: str, region: Optional[str] = None) ->
     formatted_uri = _replace_customer_id_placeholder(uri, current_account)
     # Check if this is an access point ARN (with or without s3:// prefix)
     arn_to_check = (
-        formatted_uri[5:]
-        if formatted_uri.startswith("s3://arn:aws:s3:")
-        else formatted_uri
+        formatted_uri[5:] if formatted_uri.startswith("s3://arn:aws:s3:") else formatted_uri
     )
     access_point_match = S3_ACCESS_POINT_REGEX.match(arn_to_check)
 
@@ -493,9 +456,7 @@ def _download_from_s3_or_access_point(uri: str, region: Optional[str] = None) ->
         if not key:
             raise ValueError(f"S3 Access Point ARN must include key: {uri}")
 
-        bucket_arn = (
-            f"arn:aws:s3:{arn_region}:{account}:accesspoint/{access_point_name}"
-        )
+        bucket_arn = f"arn:aws:s3:{arn_region}:{account}:accesspoint/{access_point_name}"
 
         try:
             response = s3.get_object(Bucket=bucket_arn, Key=key)
@@ -504,6 +465,7 @@ def _download_from_s3_or_access_point(uri: str, region: Optional[str] = None) ->
             raise ValueError(
                 f"Failed to download from S3 Access Point {e}"
                 f"\nVerify if account {current_account} has Forge subscription. Refer: https://docs.aws.amazon.com/sagemaker/latest/dg/nova-forge.html#nova-forge-prereq-access"
+                f"\nAlso ensure your IAM role has the right 's3:GetObject'. Refer DataMixingForgeRecipes permission in docs/iam_setup.md"
                 f" or set data_mixing = False"
             )
 
@@ -535,10 +497,7 @@ def download_templates_from_s3(
         tuple: (recipe template, overrides template, image_uri)
     """
     # Check if this recipe uses local templates (Bedrock or certain evaluation tasks)
-    if (
-        "RecipeTemplatePath" in recipe_metadata
-        and "OverrideParamsPath" in recipe_metadata
-    ):
+    if "RecipeTemplatePath" in recipe_metadata and "OverrideParamsPath" in recipe_metadata:
         return download_templates_from_local(recipe_metadata)
 
     image_uri = None
@@ -555,9 +514,7 @@ def download_templates_from_s3(
         raise ValueError("Unable to find recipe")
 
     recipe_template_content = _download_from_s3_or_access_point(recipe_template_s3_uri)
-    overrides_template_content = _download_from_s3_or_access_point(
-        overrides_template_s3_uri
-    )
+    overrides_template_content = _download_from_s3_or_access_point(overrides_template_s3_uri)
 
     recipe_template_raw = recipe_template_content.decode("utf-8")
     recipe_template = recipe_template_raw
@@ -566,7 +523,9 @@ def download_templates_from_s3(
     if platform == Platform.SMHP:
         if "training-config.yaml" in recipe_template:
             # Extract recipe template via the first occurrence of training-config.yaml
-            recipe_pattern = r"# Source: .*/training-config\.yaml.*?config\.yaml: \|-\n(.*?)(?=---|\Z)"
+            recipe_pattern = (
+                r"# Source: .*/training-config\.yaml.*?config\.yaml: \|-\n(.*?)(?=---|\Z)"
+            )
             recipe_match = re.search(recipe_pattern, recipe_template, re.DOTALL)
             if recipe_match:
                 # Extract just the config content after "config.yaml: |-"
@@ -603,9 +562,7 @@ def download_templates_from_s3(
             )
 
     if image_uri is None:
-        raise ValueError(
-            f"SDK does not yet support '{method.value}' on '{platform.value}'"
-        )
+        raise ValueError(f"SDK does not yet support '{method.value}' on '{platform.value}'")
 
     recipe_template_dict = yaml.safe_load(recipe_template)
     overrides_template_dict = json.loads(overrides_template_content)
@@ -640,9 +597,7 @@ def download_templates_from_local(recipe_metadata: Dict[str, Any]) -> tuple:
     return recipe_template_dict, overrides_template_dict, image_uri
 
 
-def _build_rft_overrides_from_recipe(
-    recipe_str: str, method: TrainingMethod
-) -> Dict[str, Any]:
+def _build_rft_overrides_from_recipe(recipe_str: str, method: TrainingMethod) -> Dict[str, Any]:
     """
     Build overrides template from recipe YAML for RFT multiturn.
     Extracts all leaf fields and uses their values as defaults.
@@ -684,6 +639,66 @@ def _build_rft_overrides_from_recipe(
     return overrides_template
 
 
+def _get_smhp_replicas_enum(
+    model: Model,
+    method: TrainingMethod,
+    region: str,
+    instance_type: str,
+    eval_task: Optional[EvaluationTask] = None,
+    data_mixing_enabled: bool = False,
+    is_multimodal: bool = False,
+) -> Optional[List[int]]:
+    """
+    Fetch the SMHP overrides template for the given model/method/instance_type and
+    return the replicas enum (valid instance counts).
+
+    SMTJ hub content does not include a replicas enum in its overrides template, but
+    the SMHP recipe for the same configuration does. This function retrieves that enum
+    so it can be applied to SMTJ recipe validation.
+
+    Args:
+        model: The Nova model
+        method: The training method
+        region: AWS region
+        instance_type: Instance type
+        eval_task: Optional evaluation task
+        data_mixing_enabled: Whether data mixing is enabled
+        is_multimodal: Whether the dataset is multimodal
+
+    Returns:
+        List of valid instance counts, or None if unavailable
+    """
+    try:
+        smhp_metadata = get_hub_recipe_metadata(
+            model=model,
+            method=method,
+            platform=Platform.SMHP,
+            region=region,
+            instance_type=instance_type,
+            task=eval_task,
+            data_mixing=data_mixing_enabled,
+            is_multimodal=is_multimodal,
+        )
+        _, smhp_overrides, _ = download_templates_from_s3(
+            recipe_metadata=smhp_metadata,
+            platform=Platform.SMHP,
+            method=method,
+        )
+        replicas_meta = smhp_overrides.get("replicas", {})
+        enum_val = replicas_meta.get("enum")
+        if isinstance(enum_val, list) and enum_val:
+            return enum_val
+    except Exception as e:
+        logger.warning(
+            f"Could not fetch valid instance counts for {model.name}/{method.name}/{instance_type}: {e}. "
+            "Instance count validation will be skipped. "
+            "For valid instance counts, refer to: "
+            "Nova 1: https://docs.aws.amazon.com/nova/latest/userguide/nova-fine-tune-1.html | "
+            "Nova 2: https://docs.aws.amazon.com/nova/latest/nova2-userguide/nova-fine-tune-2.html"
+        )
+    return None
+
+
 def load_recipe_templates(
     model: Model,
     method: TrainingMethod,
@@ -694,6 +709,7 @@ def load_recipe_templates(
     eval_task: Optional[EvaluationTask] = None,
     rft_multiturn_infra: Optional[RFTMultiturnInfrastructure] = None,
     image_uri_override: Optional[str] = None,
+    is_multimodal: bool = False,
 ) -> tuple:
     """
     Load recipe metadata and templates for Nova model customization.
@@ -710,6 +726,7 @@ def load_recipe_templates(
         data_mixing_enabled: Whether data mixing is enabled
         eval_task: Optional evaluation task (only for evaluation methods)
         image_uri_override: Optional custom ECR image URI to override default
+        is_multimodal: Whether the dataset contains multimodal data (image/video)
 
     Returns:
         tuple: (recipe_metadata, recipe_template, overrides_template, image_uri)
@@ -764,6 +781,7 @@ def load_recipe_templates(
             instance_type=instance_type,
             task=base_task,
             data_mixing=data_mixing_enabled,
+            is_multimodal=is_multimodal,
         )
 
         recipe_path = rft_multiturn_infra.get_recipe_path(
@@ -775,9 +793,7 @@ def load_recipe_templates(
         import yaml
 
         recipe_template = yaml.safe_load(recipe_template_str)
-        overrides_template = _build_rft_overrides_from_recipe(
-            recipe_template_str, method
-        )
+        overrides_template = _build_rft_overrides_from_recipe(recipe_template_str, method)
 
         # Apply RFT multiturn infrastructure overrides
         rft_overrides = rft_multiturn_infra.get_recipe_overrides()
@@ -790,9 +806,7 @@ def load_recipe_templates(
                 recipe_metadata=recipe_metadata, platform=platform, method=base_method
             )
         elif is_rft_multiturn_eval:
-            _, _, image_uri = download_templates_from_local(
-                recipe_metadata=recipe_metadata
-            )
+            _, _, image_uri = download_templates_from_local(recipe_metadata=recipe_metadata)
 
         # Override image URI if provided
         if image_uri_override:
@@ -804,21 +818,24 @@ def load_recipe_templates(
         return recipe_metadata, recipe_template, overrides_template, image_uri
 
     # For non-Bedrock platforms, instance_type is required
-    if (
-        platform not in [Platform.BEDROCK, Platform.SMTJServerless]
-        and instance_type is None
-    ):
+    if platform not in [Platform.BEDROCK, Platform.SMTJServerless] and instance_type is None:
         raise ValueError(f"instance_type is required for platform {platform.value}.")
 
     # Get recipe metadata
+    # SMTJServerless has no instance type — use p5 as default to select recipe
+    # (only hyperparameters are used from the recipe, not compute config)
+    resolved_instance_type = (
+        "ml.p5.48xlarge" if platform == Platform.SMTJServerless else instance_type
+    )
     recipe_metadata = get_hub_recipe_metadata(
         model=model,
         method=method,
         platform=platform,
         region=region,
-        instance_type=instance_type,
+        instance_type=resolved_instance_type,
         task=eval_task,
         data_mixing=data_mixing_enabled,
+        is_multimodal=is_multimodal,
     )
 
     # Download recipe and overrides templates
@@ -827,6 +844,29 @@ def load_recipe_templates(
     recipe_template, overrides_template, image_uri = download_templates_from_s3(
         recipe_metadata=recipe_metadata, platform=platform, method=method
     )
+
+    # For SMTJ, the hub content overrides template does not include a replicas enum
+    # (valid instance counts). Fetch the SMHP overrides template for the same
+    # model/method/instance_type and copy its replicas.enum so that invalid instance
+    # counts are caught during recipe validation.
+    # Skip for EVALUATION — neither SMTJ nor SMHP eval overrides templates contain a
+    # replicas enum and we use 1 by default.
+    if (
+        platform == Platform.SMTJ
+        and instance_type is not None
+        and method != TrainingMethod.EVALUATION
+    ):
+        smhp_replicas_enum = _get_smhp_replicas_enum(
+            model=model,
+            method=method,
+            region=region,
+            instance_type=instance_type,
+            eval_task=eval_task,
+            data_mixing_enabled=data_mixing_enabled,
+            is_multimodal=is_multimodal,
+        )
+        if smhp_replicas_enum:
+            overrides_template.setdefault("replicas", {})["enum"] = smhp_replicas_enum
 
     # Override image URI if provided
     if image_uri_override:

@@ -1,0 +1,57 @@
+{
+  "trust_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": {
+          "Service": "glue.amazonaws.com"
+        },
+        "Action": "sts:AssumeRole"
+      }
+    ]
+  },
+  "glue_base_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "glue:GetJob",
+          "glue:GetJobRun",
+          "glue:StartJobRun",
+          "glue:BatchStopJobRun"
+        ],
+        "Resource": "GLUE_JOB_PLACEHOLDER"
+      }
+    ]
+  },
+  "glue_s3_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:ListBucket"
+        ],
+        "Resource": "S3_BUCKET_PLACEHOLDER"
+      }
+    ]
+  },
+  "glue_logs_policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ],
+        "Resource": "arn:aws:logs:*:*:log-group:/aws-glue/*"
+      }
+    ]
+  }
+}

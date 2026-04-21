@@ -92,31 +92,19 @@ class CommonInfraCommands:
             raise ValueError(
                 f"max_concurrent_rollouts must be a positive integer, got: {max_concurrent_rollouts}"
             )
-        if (
-            not isinstance(max_rollout_timeout, (int, float))
-            or max_rollout_timeout <= 0
-        ):
+        if not isinstance(max_rollout_timeout, (int, float)) or max_rollout_timeout <= 0:
             raise ValueError(
                 f"max_rollout_timeout must be a positive number, got: {max_rollout_timeout}"
             )
-        if (
-            not isinstance(completion_poll_timeout, (int, float))
-            or completion_poll_timeout <= 0
-        ):
+        if not isinstance(completion_poll_timeout, (int, float)) or completion_poll_timeout <= 0:
             raise ValueError(
                 f"completion_poll_timeout must be a positive number, got: {completion_poll_timeout}"
             )
-        if (
-            not isinstance(completion_poll_interval, (int, float))
-            or completion_poll_interval <= 0
-        ):
+        if not isinstance(completion_poll_interval, (int, float)) or completion_poll_interval <= 0:
             raise ValueError(
                 f"completion_poll_interval must be a positive number, got: {completion_poll_interval}"
             )
-        if (
-            not isinstance(rollout_poll_interval, (int, float))
-            or rollout_poll_interval <= 0
-        ):
+        if not isinstance(rollout_poll_interval, (int, float)) or rollout_poll_interval <= 0:
             raise ValueError(
                 f"rollout_poll_interval must be a positive number, got: {rollout_poll_interval}"
             )
@@ -252,9 +240,7 @@ class CommonInfraCommands:
 
         return commands
 
-    def _build_sam_deploy_commands(
-        self, custom_starter_kit_s3: Optional[str] = None
-    ) -> List[str]:
+    def _build_sam_deploy_commands(self, custom_starter_kit_s3: Optional[str] = None) -> List[str]:
         """
         Build SAM deployment commands
 
@@ -347,9 +333,7 @@ class CommonInfraCommands:
 
         return commands
 
-    def _build_setup_commands(
-        self, vf_env_id: str, base_path: Optional[str] = None
-    ) -> List[str]:
+    def _build_setup_commands(self, vf_env_id: str, base_path: Optional[str] = None) -> List[str]:
         """
         Build setup commands for installing starter kit and environment.
 
