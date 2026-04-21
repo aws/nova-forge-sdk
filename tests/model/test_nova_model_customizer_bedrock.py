@@ -13,17 +13,17 @@ import unittest
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
-from amzn_nova_forge.manager.runtime_manager import BedrockRuntimeManager
-from amzn_nova_forge.model.model_enums import (
+from amzn_nova_forge.core.enums import (
+    EvaluationTask,
     Model,
     Platform,
     TrainingMethod,
 )
+from amzn_nova_forge.manager.runtime_manager import BedrockRuntimeManager
 from amzn_nova_forge.model.nova_model_customizer import (
     NovaModelCustomizer,
 )
 from amzn_nova_forge.monitor.mlflow_monitor import MLflowMonitor
-from amzn_nova_forge.recipe.recipe_config import EvaluationTask
 
 
 class TestNovaModelCustomizerBedrock(unittest.TestCase):
@@ -134,10 +134,11 @@ class TestNovaModelCustomizerBedrock(unittest.TestCase):
         self.assertEqual(customizer.mlflow_monitor, mlflow_monitor)
 
     @patch.object(BedrockRuntimeManager, "setup", return_value=None)
+    @patch("amzn_nova_forge.evaluator.forge_evaluator.set_output_s3_path")
     @patch("amzn_nova_forge.model.nova_model_customizer.set_output_s3_path")
     @patch("boto3.session.Session")
     def test_evaluate_raises_not_implemented_for_bedrock(
-        self, mock_session, mock_set_output, mock_setup
+        self, mock_session, mock_set_output, mock_eval_set_output, mock_setup
     ):
         """Test that evaluate() raises NotImplementedError for Bedrock platform."""
         # Mock session
@@ -147,6 +148,7 @@ class TestNovaModelCustomizerBedrock(unittest.TestCase):
 
         # Mock output S3 path
         mock_set_output.return_value = "s3://bucket/output/"
+        mock_eval_set_output.return_value = "s3://bucket/output/"
 
         # Create Bedrock runtime manager
         bedrock_infra = BedrockRuntimeManager(
@@ -173,7 +175,10 @@ class TestNovaModelCustomizerBedrock(unittest.TestCase):
             "Evaluation is not supported on the Bedrock platform",
             str(context.exception),
         )
-        self.assertIn("SageMaker platforms (SMTJ, SMHP)", str(context.exception))
+        self.assertIn(
+            "SageMaker platforms (SMTJ, SMHP)",
+            str(context.exception),
+        )
 
     @patch.object(BedrockRuntimeManager, "setup", return_value=None)
     @patch("amzn_nova_forge.model.nova_model_customizer.set_output_s3_path")
@@ -216,12 +221,12 @@ class TestNovaModelCustomizerBedrock(unittest.TestCase):
             "Batch inference is not supported on Bedrock platform",
             str(context.exception),
         )
-        self.assertIn("SageMaker platforms (SMTJ, SMHP)", str(context.exception))
 
     @patch.object(BedrockRuntimeManager, "setup", return_value=None)
     @patch.object(BedrockRuntimeManager, "execute")
+    @patch("amzn_nova_forge.trainer.forge_trainer.set_output_s3_path")
     @patch("amzn_nova_forge.model.nova_model_customizer.set_output_s3_path")
-    @patch("amzn_nova_forge.model.nova_model_customizer.RecipeBuilder")
+    @patch("amzn_nova_forge.trainer.forge_trainer.RecipeBuilder")
     @patch("boto3.client")
     @patch("boto3.session.Session")
     def test_train_passes_method_to_bedrock_job_config(
@@ -230,6 +235,7 @@ class TestNovaModelCustomizerBedrock(unittest.TestCase):
         mock_boto_client,
         mock_recipe_builder,
         mock_set_output,
+        mock_trainer_set_output,
         mock_execute,
         mock_setup,
     ):
@@ -244,6 +250,7 @@ class TestNovaModelCustomizerBedrock(unittest.TestCase):
 
         # Mock output S3 path
         mock_set_output.return_value = "s3://bucket/output/"
+        mock_trainer_set_output.return_value = "s3://bucket/output/"
 
         # Mock recipe builder
         mock_builder_instance = MagicMock()
@@ -290,10 +297,10 @@ class TestNovaModelCustomizerBedrock(unittest.TestCase):
     @patch("boto3.client")
     def test_training_result_to_dict_serializes_all_fields(self, mock_boto_client):
         """Test that _to_dict() serializes all BedrockTrainingResult fields."""
-        from amzn_nova_forge.model.model_config import ModelArtifacts
-        from amzn_nova_forge.model.result.training_result import (
+        from amzn_nova_forge.core.result.training_result import (
             BedrockTrainingResult,
         )
+        from amzn_nova_forge.core.types import ModelArtifacts
 
         # Create a BedrockTrainingResult
         started_time = datetime(2026, 3, 10, 12, 0, 0, tzinfo=timezone.utc)
@@ -332,17 +339,15 @@ class TestNovaModelCustomizerBedrock(unittest.TestCase):
         # Verify model_artifacts is serialized
         self.assertIsInstance(result_dict["model_artifacts"], dict)
         self.assertIsNone(result_dict["model_artifacts"]["checkpoint_s3_path"])
-        self.assertEqual(
-            result_dict["model_artifacts"]["output_s3_path"], "s3://bucket/output/"
-        )
+        self.assertEqual(result_dict["model_artifacts"]["output_s3_path"], "s3://bucket/output/")
 
     @patch("boto3.client")
     def test_training_result_from_dict_deserializes_all_fields(self, mock_boto_client):
         """Test that _from_dict() deserializes all BedrockTrainingResult fields."""
-        from amzn_nova_forge.model.model_config import ModelArtifacts
-        from amzn_nova_forge.model.result.training_result import (
+        from amzn_nova_forge.core.result.training_result import (
             BedrockTrainingResult,
         )
+        from amzn_nova_forge.core.types import ModelArtifacts
 
         # Create a serialized dict
         result_dict = {
@@ -364,9 +369,7 @@ class TestNovaModelCustomizerBedrock(unittest.TestCase):
             result.job_id,
             "arn:aws:bedrock:us-east-1:123456789012:model-customization-job/test-job",
         )
-        self.assertEqual(
-            result.started_time, datetime(2026, 3, 10, 12, 0, 0, tzinfo=timezone.utc)
-        )
+        self.assertEqual(result.started_time, datetime(2026, 3, 10, 12, 0, 0, tzinfo=timezone.utc))
         self.assertEqual(result.method, TrainingMethod.SFT_LORA)
         self.assertEqual(result.model_type, Model.NOVA_MICRO)
 
@@ -376,14 +379,12 @@ class TestNovaModelCustomizerBedrock(unittest.TestCase):
         self.assertEqual(result.model_artifacts.output_s3_path, "s3://bucket/output/")
 
     @patch("boto3.client")
-    def test_training_result_serialization_roundtrip_preserves_data(
-        self, mock_boto_client
-    ):
+    def test_training_result_serialization_roundtrip_preserves_data(self, mock_boto_client):
         """Test that serialization followed by deserialization preserves all data."""
-        from amzn_nova_forge.model.model_config import ModelArtifacts
-        from amzn_nova_forge.model.result.training_result import (
+        from amzn_nova_forge.core.result.training_result import (
             BedrockTrainingResult,
         )
+        from amzn_nova_forge.core.types import ModelArtifacts
 
         # Create original result
         started_time = datetime(2026, 3, 10, 15, 30, 45, tzinfo=timezone.utc)

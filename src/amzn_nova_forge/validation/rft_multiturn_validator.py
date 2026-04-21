@@ -63,9 +63,7 @@ def validate_path(path: str) -> None:
         )
 
 
-def validate_url(
-    url: Optional[str], url_type: str = "URL", required: bool = True
-) -> None:
+def validate_url(url: Optional[str], url_type: str = "URL", required: bool = True) -> None:
     """
     Validate URL format to prevent injection.
 
@@ -87,9 +85,7 @@ def validate_url(
 
     # Basic URL validation - must start with http://, https://, or s3://
     if not re.match(r"^(https?|s3)://[a-zA-Z0-9._/-]+$", url):
-        raise ValueError(
-            f"Invalid {url_type}: {url}. Must be a valid HTTP, HTTPS, or S3 URL."
-        )
+        raise ValueError(f"Invalid {url_type}: {url}. Must be a valid HTTP, HTTPS, or S3 URL.")
 
 
 def validate_stack_name(stack_name: str) -> None:
@@ -182,9 +178,7 @@ def validate_dict_values(data: Dict, dict_name: str = "dictionary") -> None:
             # Recursively validate dict values
             for key, val in value.items():
                 if not isinstance(key, str):
-                    raise ValueError(
-                        f"Dictionary key must be string at {path}, got: {type(key)}"
-                    )
+                    raise ValueError(f"Dictionary key must be string at {path}, got: {type(key)}")
                 validate_value(val, f"{path}.{key}")
             return
 
@@ -197,9 +191,7 @@ def validate_dict_values(data: Dict, dict_name: str = "dictionary") -> None:
     # Validate all values in the dictionary
     for key, value in data.items():
         if not isinstance(key, str):
-            raise ValueError(
-                f"Dictionary key must be string in {dict_name}, got: {type(key)}"
-            )
+            raise ValueError(f"Dictionary key must be string in {dict_name}, got: {type(key)}")
         validate_value(value, f"{dict_name}.{key}")
 
 
@@ -240,8 +232,7 @@ def validate_platform(platform: str) -> None:
     valid_platforms = ["local", "ec2", "ecs"]
     if platform not in valid_platforms:
         raise ValueError(
-            f"Invalid platform: {platform}. "
-            f"Must be one of: {', '.join(valid_platforms)}"
+            f"Invalid platform: {platform}. Must be one of: {', '.join(valid_platforms)}"
         )
 
 
@@ -366,11 +357,8 @@ def validate_amazon_linux_ami(ec2_client, instance_id: str) -> None:
     except ec2_client.exceptions.ClientError as e:
         # If we can't describe the image (e.g., permissions issue), log warning but don't fail
         logger.warning(
-            f"Could not validate AMI type: {e}. "
-            f"Proceeding with assumption of Amazon Linux."
+            f"Could not validate AMI type: {e}. Proceeding with assumption of Amazon Linux."
         )
     except Exception as e:
         # Only catch non-critical errors (e.g., API issues, permissions)
-        logger.warning(
-            f"Could not validate Amazon Linux AMI during initialization: {e}"
-        )
+        logger.warning(f"Could not validate Amazon Linux AMI during initialization: {e}")

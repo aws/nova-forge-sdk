@@ -12,13 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .dataset_loader import (
+    ArrowDatasetLoader,
     CSVDatasetLoader,
     JSONDatasetLoader,
     JSONLDatasetLoader,
+    ParquetDatasetLoader,
 )
 
 __all__ = [
+    "ArrowDatasetLoader",
     "CSVDatasetLoader",
     "JSONDatasetLoader",
     "JSONLDatasetLoader",
+    "ParquetDatasetLoader",
 ]

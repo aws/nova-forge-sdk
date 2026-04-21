@@ -89,6 +89,12 @@ Please refer to the "Sid" of each statement to determine which policies you need
             "Resource": "arn:aws:s3:::*"
         },
         {
+            "Sid": "DataMixingForgeRecipes",
+            "Effect": "Allow",
+            "Action": "s3:GetObject",
+            "Resource": "arn:aws:s3:*:*:accesspoint/*"
+        },
+        {
             "Sid": "AccessCloudWatchLogs",
             "Effect": "Allow",
             "Action": [
@@ -195,6 +201,10 @@ Please refer to the "Sid" of each statement to determine which policies you need
 }
 ```
 - _Note that you might not require all permissions depending on your use case._
+- [Data Mixing only] `DataMixingForgeRecipes` (`s3:GetObject` on `Resource: "arn:aws:s3:*:*:accesspoint/*"`) is required when using `data_mixing_enabled=True`.
+
+    Data mixing fetches recipe templates from a cross-account S3 access point owned by the Nova Forge service.
+    The resource is scoped to S3 access point ARNs, which allows cross-account access point calls while preventing read access to arbitrary S3 bucket objects.
 - [HyperPod only] If your cluster uses namespace access control, you must have access to the Kubernetes namespace
 
 ### Job Monitoring via Email Notifications
@@ -342,7 +352,7 @@ If you want to enable email notifications for SMTJ training jobs, your IAM role 
 
 **Example Usage:**
 ```python
-from amzn_nova_forge_sdk import *
+from amzn_nova_forge import *
 
 # Start training job
 result = customizer.train(job_name="my-job")

@@ -2,10 +2,10 @@ import json
 import tempfile
 import unittest
 
+from amzn_nova_forge.core.enums import Model, TrainingMethod
 from amzn_nova_forge.dataset.dataset_loader import (
     JSONLDatasetLoader,
 )
-from amzn_nova_forge.model.model_enums import Model, TrainingMethod
 
 
 class TestRFTDatasetValidator(unittest.TestCase):
@@ -110,9 +110,7 @@ class TestRFTDatasetValidator(unittest.TestCase):
             }
         ]
 
-        test_file = self.create_temp_file(
-            "rft_with_tools_success", rft_with_tools_success
-        )
+        test_file = self.create_temp_file("rft_with_tools_success", rft_with_tools_success)
         JSONLDatasetLoader().load(test_file).validate(
             training_method=TrainingMethod.RFT_FULL, model=Model.NOVA_LITE_2
         )
@@ -238,9 +236,7 @@ class TestRFTDatasetValidator(unittest.TestCase):
             },
         ]
 
-        test_file = self.create_temp_file(
-            "rft_mismatched_samples", rft_mismatched_samples
-        )
+        test_file = self.create_temp_file("rft_mismatched_samples", rft_mismatched_samples)
         with self.assertRaises(ValueError):
             JSONLDatasetLoader().load(test_file).validate(
                 training_method=TrainingMethod.RFT_FULL, model=Model.NOVA_LITE_2
@@ -262,9 +258,7 @@ class TestRFTDatasetValidator(unittest.TestCase):
             JSONLDatasetLoader().load(test_file).validate(
                 training_method=TrainingMethod.RFT_FULL, model=Model.NOVA_LITE_2
             )
-        self.assertIn(
-            "tools list cannot be empty when provided", str(context.exception)
-        )
+        self.assertIn("tools list cannot be empty when provided", str(context.exception))
 
     def test_rft_without_tools_field_success(self):
         """Test that RFT without tools field (optional) succeeds"""
@@ -335,9 +329,7 @@ class TestRFTDatasetValidator(unittest.TestCase):
             JSONLDatasetLoader().load(test_file).validate(
                 training_method=TrainingMethod.RFT_FULL, model=Model.NOVA_LITE_2
             )
-        self.assertIn(
-            "Invalid parameters type, must be 'object'", str(context.exception)
-        )
+        self.assertIn("Invalid parameters type, must be 'object'", str(context.exception))
 
     def test_rft_with_empty_function_name_fail(self):
         """Test that empty function name fails validation"""
@@ -389,9 +381,7 @@ class TestRFTDatasetValidator(unittest.TestCase):
             JSONLDatasetLoader().load(test_file).validate(
                 training_method=TrainingMethod.RFT_FULL, model=Model.NOVA_LITE_2
             )
-        self.assertIn(
-            "Invalid function description, cannot be empty", str(context.exception)
-        )
+        self.assertIn("Invalid function description, cannot be empty", str(context.exception))
 
     def test_rft_with_multiple_valid_tools_success(self):
         """Test that multiple different tools (no duplicates) succeeds"""

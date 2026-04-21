@@ -150,9 +150,7 @@ class TestLocalRFTInfrastructure:
         """Test local environment installation failure with cleanup."""
         mock_boto_client.return_value = MagicMock()
         mock_exists.return_value = True
-        mock_subprocess.return_value = Mock(
-            returncode=1, stderr="Installation failed", stdout=""
-        )
+        mock_subprocess.return_value = Mock(returncode=1, stderr="Installation failed", stdout="")
 
         infra = LocalRFTInfrastructure(
             region="us-east-1",
@@ -206,9 +204,7 @@ class TestLocalRFTInfrastructure:
     ):
         """Test SAM stack deployment failure."""
         mock_boto_client.return_value = MagicMock()
-        mock_subprocess.return_value = Mock(
-            returncode=1, stderr="Deployment failed", stdout=""
-        )
+        mock_subprocess.return_value = Mock(returncode=1, stderr="Deployment failed", stdout="")
         mock_makedirs.return_value = None
 
         infra = LocalRFTInfrastructure(
@@ -383,9 +379,7 @@ class TestLocalRFTInfrastructure:
 
         assert logs == []
 
-    @patch(
-        "builtins.open", new_callable=mock_open
-    )  # Mock file operations for status file
+    @patch("builtins.open", new_callable=mock_open)  # Mock file operations for status file
     @patch("os.makedirs")  # Mock directory creation
     @patch("os.remove")
     @patch("os.path.exists")
@@ -418,9 +412,7 @@ class TestLocalRFTInfrastructure:
         # After refactoring, we write status file and remove PID file
         assert mock_remove.called  # At least one file removed (PID file)
 
-    @patch(
-        "builtins.open", new_callable=mock_open
-    )  # Mock file operations for status file
+    @patch("builtins.open", new_callable=mock_open)  # Mock file operations for status file
     @patch("os.makedirs")  # Mock directory creation
     @patch("os.remove")
     @patch("os.path.exists")

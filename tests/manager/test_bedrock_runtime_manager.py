@@ -8,12 +8,12 @@ and RFT hyperparameter handling.
 import unittest
 from unittest.mock import MagicMock, patch
 
+from amzn_nova_forge.core.enums import TrainingMethod
 from amzn_nova_forge.manager.runtime_manager import (
     BedrockRuntimeManager,
     JobConfig,
     RuntimeManager,
 )
-from amzn_nova_forge.model.model_enums import TrainingMethod
 
 
 class TestBedrockRuntimeManager(unittest.TestCase):
@@ -106,9 +106,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
                     hasattr(manager, "setup"),
                     f"Config {i}: Manager should have setup method",
                 )
-                self.assertTrue(
-                    callable(manager.setup), f"Config {i}: setup should be callable"
-                )
+                self.assertTrue(callable(manager.setup), f"Config {i}: setup should be callable")
 
                 self.assertTrue(
                     hasattr(manager, "execute"),
@@ -172,9 +170,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
     @patch("boto3.session.Session")
     @patch("boto3.client")
-    def test_property_bedrock_client_initialization(
-        self, mock_boto_client, mock_session_class
-    ):
+    def test_property_bedrock_client_initialization(self, mock_boto_client, mock_session_class):
         """Test Bedrock client initialization across AWS regions."""
         # Test configurations covering AWS regions
         test_regions = [
@@ -207,9 +203,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
                 expected_region = region if region is not None else "us-east-1"
 
                 # Verify bedrock client was created with correct region
-                mock_boto_client.assert_called_once_with(
-                    "bedrock", region_name=expected_region
-                )
+                mock_boto_client.assert_called_once_with("bedrock", region_name=expected_region)
 
                 # Verify manager attributes are set correctly
                 self.assertEqual(
@@ -239,7 +233,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
     def test_get_customization_type_sft_lora(self):
         """Test that SFT_LORA maps to FINE_TUNING."""
-        from amzn_nova_forge.model.model_enums import TrainingMethod
+        from amzn_nova_forge.core.enums import TrainingMethod
         from amzn_nova_forge.util.bedrock import get_customization_type
 
         result = get_customization_type(TrainingMethod.SFT_LORA)
@@ -247,7 +241,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
     def test_get_customization_type_sft_full(self):
         """Test that SFT_FULL raises ValueError (not supported on Bedrock)."""
-        from amzn_nova_forge.model.model_enums import TrainingMethod
+        from amzn_nova_forge.core.enums import TrainingMethod
         from amzn_nova_forge.util.bedrock import get_customization_type
 
         with self.assertRaises(ValueError) as context:
@@ -259,7 +253,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
     def test_get_customization_type_rft_lora(self):
         """Test that RFT_LORA maps to REINFORCEMENT_FINE_TUNING."""
-        from amzn_nova_forge.model.model_enums import TrainingMethod
+        from amzn_nova_forge.core.enums import TrainingMethod
         from amzn_nova_forge.util.bedrock import get_customization_type
 
         result = get_customization_type(TrainingMethod.RFT_LORA)
@@ -267,7 +261,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
     def test_get_customization_type_rft_full(self):
         """Test that RFT_FULL raises ValueError (not supported on Bedrock)."""
-        from amzn_nova_forge.model.model_enums import TrainingMethod
+        from amzn_nova_forge.core.enums import TrainingMethod
         from amzn_nova_forge.util.bedrock import get_customization_type
 
         with self.assertRaises(ValueError) as context:
@@ -279,7 +273,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
     def test_get_customization_type_unsupported_cpt(self):
         """Test that CPT raises ValueError with supported methods listed."""
-        from amzn_nova_forge.model.model_enums import TrainingMethod
+        from amzn_nova_forge.core.enums import TrainingMethod
         from amzn_nova_forge.util.bedrock import get_customization_type
 
         with self.assertRaises(ValueError) as context:
@@ -294,7 +288,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
     def test_get_customization_type_unsupported_dpo_lora(self):
         """Test that DPO_LORA raises ValueError."""
-        from amzn_nova_forge.model.model_enums import TrainingMethod
+        from amzn_nova_forge.core.enums import TrainingMethod
         from amzn_nova_forge.util.bedrock import get_customization_type
 
         with self.assertRaises(ValueError) as context:
@@ -306,7 +300,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
     def test_get_customization_type_unsupported_dpo_full(self):
         """Test that DPO_FULL raises ValueError."""
-        from amzn_nova_forge.model.model_enums import TrainingMethod
+        from amzn_nova_forge.core.enums import TrainingMethod
         from amzn_nova_forge.util.bedrock import get_customization_type
 
         with self.assertRaises(ValueError) as context:
@@ -318,7 +312,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
     def test_get_customization_type_unsupported_rft_multiturn_lora(self):
         """Test that RFT_MULTITURN_LORA raises ValueError."""
-        from amzn_nova_forge.model.model_enums import TrainingMethod
+        from amzn_nova_forge.core.enums import TrainingMethod
         from amzn_nova_forge.util.bedrock import get_customization_type
 
         with self.assertRaises(ValueError) as context:
@@ -330,7 +324,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
     def test_get_customization_type_unsupported_rft_multiturn_full(self):
         """Test that RFT_MULTITURN_FULL raises ValueError."""
-        from amzn_nova_forge.model.model_enums import TrainingMethod
+        from amzn_nova_forge.core.enums import TrainingMethod
         from amzn_nova_forge.util.bedrock import get_customization_type
 
         with self.assertRaises(ValueError) as context:
@@ -346,14 +340,10 @@ class TestBedrockRuntimeManager(unittest.TestCase):
             resolve_base_model_identifier,
         )
 
-        explicit_identifier = (
-            "arn:aws:bedrock:us-west-2::foundation-model/custom-model:0"
-        )
+        explicit_identifier = "arn:aws:bedrock:us-west-2::foundation-model/custom-model:0"
 
         # Should return the explicit identifier without parsing recipe
-        result = resolve_base_model_identifier(
-            "dummy_recipe_path.yaml", explicit_identifier
-        )
+        result = resolve_base_model_identifier("dummy_recipe_path.yaml", explicit_identifier)
         self.assertEqual(result, explicit_identifier)
 
     @patch("yaml.safe_load")
@@ -375,18 +365,14 @@ class TestBedrockRuntimeManager(unittest.TestCase):
             }
         }
 
-        result = resolve_base_model_identifier(
-            "/path/to/recipe.yaml", region="us-east-1"
-        )
+        result = resolve_base_model_identifier("/path/to/recipe.yaml", region="us-east-1")
 
         self.assertIn("arn:aws:bedrock:us-east-1::foundation-model", result)
         self.assertIn("nova-micro", result)
 
     @patch("yaml.safe_load")
     @patch("builtins.open", create=True)
-    def test_resolve_base_model_identifier_respects_region(
-        self, mock_open, mock_yaml_load
-    ):
+    def test_resolve_base_model_identifier_respects_region(self, mock_open, mock_yaml_load):
         """Test that resolve_base_model_identifier uses the provided region in ARN."""
         from amzn_nova_forge.util.bedrock import (
             resolve_base_model_identifier,
@@ -402,16 +388,12 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         }
 
         # Test us-west-2 region
-        result_pdx = resolve_base_model_identifier(
-            "/path/to/recipe.yaml", region="us-west-2"
-        )
+        result_pdx = resolve_base_model_identifier("/path/to/recipe.yaml", region="us-west-2")
         self.assertIn("arn:aws:bedrock:us-west-2::foundation-model", result_pdx)
         self.assertIn("nova-micro", result_pdx)
 
         # Test eu-west-1 region
-        result_eu = resolve_base_model_identifier(
-            "/path/to/recipe.yaml", region="eu-west-1"
-        )
+        result_eu = resolve_base_model_identifier("/path/to/recipe.yaml", region="eu-west-1")
         self.assertIn("arn:aws:bedrock:eu-west-1::foundation-model", result_eu)
         self.assertIn("nova-micro", result_eu)
 
@@ -434,9 +416,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
             }
         }
 
-        result = resolve_base_model_identifier(
-            "/path/to/recipe.yaml", region="us-east-1"
-        )
+        result = resolve_base_model_identifier("/path/to/recipe.yaml", region="us-east-1")
 
         self.assertIn("arn:aws:bedrock:us-east-1::foundation-model", result)
         self.assertIn("nova-lite", result)
@@ -460,9 +440,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
             }
         }
 
-        result = resolve_base_model_identifier(
-            "/path/to/recipe.yaml", region="us-east-1"
-        )
+        result = resolve_base_model_identifier("/path/to/recipe.yaml", region="us-east-1")
 
         self.assertIn("arn:aws:bedrock:us-east-1::foundation-model", result)
         self.assertIn("nova-2-lite", result)
@@ -486,9 +464,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
             }
         }
 
-        result = resolve_base_model_identifier(
-            "/path/to/recipe.yaml", region="us-east-1"
-        )
+        result = resolve_base_model_identifier("/path/to/recipe.yaml", region="us-east-1")
 
         self.assertIn("arn:aws:bedrock:us-east-1::foundation-model", result)
         self.assertIn("nova-pro", result)
@@ -519,9 +495,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
     @patch("yaml.safe_load")
     @patch("builtins.open", create=True)
-    def test_resolve_base_model_identifier_unrecognized_model_type(
-        self, mock_open, mock_yaml_load
-    ):
+    def test_resolve_base_model_identifier_unrecognized_model_type(self, mock_open, mock_yaml_load):
         """Test that unrecognized model_type raises ValueError."""
         from amzn_nova_forge.util.bedrock import (
             resolve_base_model_identifier,
@@ -555,9 +529,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
     @patch("yaml.safe_load")
     @patch("builtins.open", create=True)
-    def test_resolve_base_model_identifier_invalid_yaml(
-        self, mock_open, mock_yaml_load
-    ):
+    def test_resolve_base_model_identifier_invalid_yaml(self, mock_open, mock_yaml_load):
         """Test that invalid YAML raises exception."""
         from amzn_nova_forge.util.bedrock import (
             resolve_base_model_identifier,
@@ -605,12 +577,10 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         }
 
         # Create manager
-        manager = BedrockRuntimeManager(
-            execution_role="arn:aws:iam::123456789012:role/BedrockRole"
-        )
+        manager = BedrockRuntimeManager(execution_role="arn:aws:iam::123456789012:role/BedrockRole")
 
         # Create job config
-        from amzn_nova_forge.model.model_enums import TrainingMethod
+        from amzn_nova_forge.core.enums import TrainingMethod
 
         job_config = JobConfig(
             job_name="test-bedrock-job",
@@ -639,9 +609,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         # Verify required fields
         self.assertEqual(call_args["jobName"], "test-bedrock-job")
         self.assertIn("test-bedrock-job", call_args["customModelName"])
-        self.assertEqual(
-            call_args["roleArn"], "arn:aws:iam::123456789012:role/BedrockRole"
-        )
+        self.assertEqual(call_args["roleArn"], "arn:aws:iam::123456789012:role/BedrockRole")
         self.assertIn("nova-micro", call_args["baseModelIdentifier"])
         self.assertEqual(call_args["customizationType"], "FINE_TUNING")
 
@@ -696,12 +664,10 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         }
 
         # Create manager
-        manager = BedrockRuntimeManager(
-            execution_role="arn:aws:iam::123456789012:role/BedrockRole"
-        )
+        manager = BedrockRuntimeManager(execution_role="arn:aws:iam::123456789012:role/BedrockRole")
 
         # Create job config with validation data
-        from amzn_nova_forge.model.model_enums import TrainingMethod
+        from amzn_nova_forge.core.enums import TrainingMethod
 
         job_config = JobConfig(
             job_name="test-bedrock-job",
@@ -764,12 +730,10 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         }
 
         # Create manager
-        manager = BedrockRuntimeManager(
-            execution_role="arn:aws:iam::123456789012:role/BedrockRole"
-        )
+        manager = BedrockRuntimeManager(execution_role="arn:aws:iam::123456789012:role/BedrockRole")
 
         # Create job config without training data
-        from amzn_nova_forge.model.model_enums import TrainingMethod
+        from amzn_nova_forge.core.enums import TrainingMethod
 
         job_config = JobConfig(
             job_name="test-bedrock-job",
@@ -829,7 +793,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         )
 
         # Create job config
-        from amzn_nova_forge.model.model_enums import TrainingMethod
+        from amzn_nova_forge.core.enums import TrainingMethod
 
         job_config = JobConfig(
             job_name="test-bedrock-job",
@@ -851,9 +815,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
         # Verify vpcConfig is included
         self.assertIn("vpcConfig", call_args)
-        self.assertEqual(
-            call_args["vpcConfig"]["subnetIds"], ["subnet-12345", "subnet-67890"]
-        )
+        self.assertEqual(call_args["vpcConfig"]["subnetIds"], ["subnet-12345", "subnet-67890"])
         self.assertEqual(call_args["vpcConfig"]["securityGroupIds"], ["sg-abcdef"])
 
     @patch("boto3.session.Session")
@@ -896,7 +858,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         )
 
         # Create job config
-        from amzn_nova_forge.model.model_enums import TrainingMethod
+        from amzn_nova_forge.core.enums import TrainingMethod
 
         job_config = JobConfig(
             job_name="test-bedrock-job",
@@ -965,9 +927,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         }
 
         # Create manager
-        manager = BedrockRuntimeManager(
-            execution_role="arn:aws:iam::123456789012:role/BedrockRole"
-        )
+        manager = BedrockRuntimeManager(execution_role="arn:aws:iam::123456789012:role/BedrockRole")
 
         # Create job config
         job_config = JobConfig(
@@ -982,9 +942,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         with self.assertRaises(ValueError) as context:
             manager.execute(job_config)
 
-        self.assertIn(
-            "Training method must be provided in job_config", str(context.exception)
-        )
+        self.assertIn("Training method must be provided in job_config", str(context.exception))
 
     @patch("boto3.session.Session")
     @patch("boto3.client")
@@ -1032,12 +990,10 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         }
 
         # Create manager
-        manager = BedrockRuntimeManager(
-            execution_role="arn:aws:iam::123456789012:role/BedrockRole"
-        )
+        manager = BedrockRuntimeManager(execution_role="arn:aws:iam::123456789012:role/BedrockRole")
 
         # Create job config with RFT Lambda ARN
-        from amzn_nova_forge.model.model_enums import TrainingMethod
+        from amzn_nova_forge.core.enums import TrainingMethod
 
         job_config = JobConfig(
             job_name="test-rft-job",
@@ -1076,9 +1032,9 @@ class TestBedrockRuntimeManager(unittest.TestCase):
             call_args["customizationConfig"]["rftConfig"]["graderConfig"],
         )
         self.assertEqual(
-            call_args["customizationConfig"]["rftConfig"]["graderConfig"][
-                "lambdaGrader"
-            ]["lambdaArn"],
+            call_args["customizationConfig"]["rftConfig"]["graderConfig"]["lambdaGrader"][
+                "lambdaArn"
+            ],
             "arn:aws:lambda:us-east-1:123456789012:function:my-rft-grader",
         )
 
@@ -1124,12 +1080,10 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         }
 
         # Create manager
-        manager = BedrockRuntimeManager(
-            execution_role="arn:aws:iam::123456789012:role/BedrockRole"
-        )
+        manager = BedrockRuntimeManager(execution_role="arn:aws:iam::123456789012:role/BedrockRole")
 
         # Create job config WITHOUT RFT Lambda ARN
-        from amzn_nova_forge.model.model_enums import TrainingMethod
+        from amzn_nova_forge.core.enums import TrainingMethod
 
         job_config = JobConfig(
             job_name="test-rft-job",
@@ -1150,18 +1104,14 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
     @patch("boto3.session.Session")
     @patch("boto3.client")
-    def test_validation_data_s3_path_supported_for_sft(
-        self, mock_boto_client, mock_session_class
-    ):
+    def test_validation_data_s3_path_supported_for_sft(self, mock_boto_client, mock_session_class):
         """Test that validation_data_s3_path is supported for SFT on Bedrock."""
         # Mock session
         mock_session = mock_session_class.return_value
         mock_session.region_name = "us-east-1"
 
         # Create manager
-        manager = BedrockRuntimeManager(
-            execution_role="arn:aws:iam::123456789012:role/BedrockRole"
-        )
+        manager = BedrockRuntimeManager(execution_role="arn:aws:iam::123456789012:role/BedrockRole")
 
         # Create job config with validation data for SFT
         job_config = JobConfig(
@@ -1179,18 +1129,14 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
     @patch("boto3.session.Session")
     @patch("boto3.client")
-    def test_validation_data_s3_path_supported_for_rft(
-        self, mock_boto_client, mock_session_class
-    ):
+    def test_validation_data_s3_path_supported_for_rft(self, mock_boto_client, mock_session_class):
         """Test that validation_data_s3_path is supported for RFT on Bedrock."""
         # Mock session
         mock_session = mock_session_class.return_value
         mock_session.region_name = "us-east-1"
 
         # Create manager
-        manager = BedrockRuntimeManager(
-            execution_role="arn:aws:iam::123456789012:role/BedrockRole"
-        )
+        manager = BedrockRuntimeManager(execution_role="arn:aws:iam::123456789012:role/BedrockRole")
 
         # Create job config with validation data for RFT
         job_config = JobConfig(
@@ -1214,8 +1160,8 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         self, mock_open, mock_yaml_load, mock_boto_client, mock_session_class
     ):
         """Test that validation_data_s3_path logs warning and is ignored for Nova Lite 2 on Bedrock."""
+        from amzn_nova_forge.core.enums import TrainingMethod
         from amzn_nova_forge.manager.runtime_manager import JobConfig
-        from amzn_nova_forge.model.model_enums import TrainingMethod
 
         # Mock session
         mock_session = mock_session_class.return_value
@@ -1241,9 +1187,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         }
 
         # Create manager
-        manager = BedrockRuntimeManager(
-            execution_role="arn:aws:iam::123456789012:role/BedrockRole"
-        )
+        manager = BedrockRuntimeManager(execution_role="arn:aws:iam::123456789012:role/BedrockRole")
 
         # Create job config with validation data for Nova Lite 2
         job_config = JobConfig(
@@ -1265,8 +1209,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
         # Verify warning was logged
         warning_found = any(
-            "Validation datasets are not supported for Nova Lite 2" in msg
-            for msg in log.output
+            "Validation datasets are not supported for Nova Lite 2" in msg for msg in log.output
         )
         self.assertTrue(
             warning_found,
@@ -1297,12 +1240,10 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         }
 
         # Create manager
-        manager = BedrockRuntimeManager(
-            execution_role="arn:aws:iam::123456789012:role/BedrockRole"
-        )
+        manager = BedrockRuntimeManager(execution_role="arn:aws:iam::123456789012:role/BedrockRole")
 
         # Get job status
-        from amzn_nova_forge.model.result.job_result import (
+        from amzn_nova_forge.core.result.job_result import (
             BedrockStatusManager,
         )
 
@@ -1312,7 +1253,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         )
 
         # Verify status
-        from amzn_nova_forge.model.result.job_result import JobStatus
+        from amzn_nova_forge.core.result.job_result import JobStatus
 
         self.assertEqual(status, JobStatus.COMPLETED)
 
@@ -1332,12 +1273,10 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         }
 
         # Create manager
-        manager = BedrockRuntimeManager(
-            execution_role="arn:aws:iam::123456789012:role/BedrockRole"
-        )
+        manager = BedrockRuntimeManager(execution_role="arn:aws:iam::123456789012:role/BedrockRole")
 
         # Get job status
-        from amzn_nova_forge.model.result.job_result import (
+        from amzn_nova_forge.core.result.job_result import (
             BedrockStatusManager,
         )
 
@@ -1347,7 +1286,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         )
 
         # Verify status
-        from amzn_nova_forge.model.result.job_result import JobStatus
+        from amzn_nova_forge.core.result.job_result import JobStatus
 
         self.assertEqual(status, JobStatus.IN_PROGRESS)
 
@@ -1368,12 +1307,10 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         }
 
         # Create manager
-        manager = BedrockRuntimeManager(
-            execution_role="arn:aws:iam::123456789012:role/BedrockRole"
-        )
+        manager = BedrockRuntimeManager(execution_role="arn:aws:iam::123456789012:role/BedrockRole")
 
         # Get job status
-        from amzn_nova_forge.model.result.job_result import (
+        from amzn_nova_forge.core.result.job_result import (
             BedrockStatusManager,
         )
 
@@ -1383,7 +1320,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         )
 
         # Verify status
-        from amzn_nova_forge.model.result.job_result import JobStatus
+        from amzn_nova_forge.core.result.job_result import JobStatus
 
         self.assertEqual(status, JobStatus.FAILED)
         self.assertEqual(message, "Failed")
@@ -1442,18 +1379,14 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
     @patch("boto3.session.Session")
     @patch("boto3.client")
-    def test_execute_without_method_raises_error(
-        self, mock_boto_client, mock_session_class
-    ):
+    def test_execute_without_method_raises_error(self, mock_boto_client, mock_session_class):
         """Test that execute raises error when method is not provided."""
         # Mock session
         mock_session = mock_session_class.return_value
         mock_session.region_name = "us-east-1"
 
         # Create manager
-        manager = BedrockRuntimeManager(
-            execution_role="arn:aws:iam::123456789012:role/BedrockRole"
-        )
+        manager = BedrockRuntimeManager(execution_role="arn:aws:iam::123456789012:role/BedrockRole")
 
         # Create job config without method
         job_config = JobConfig(
@@ -1526,12 +1459,10 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         }
 
         # Create manager
-        manager = BedrockRuntimeManager(
-            execution_role="arn:aws:iam::123456789012:role/BedrockRole"
-        )
+        manager = BedrockRuntimeManager(execution_role="arn:aws:iam::123456789012:role/BedrockRole")
 
         # Create job config with RFT Lambda ARN
-        from amzn_nova_forge.model.model_enums import TrainingMethod
+        from amzn_nova_forge.core.enums import TrainingMethod
 
         job_config = JobConfig(
             job_name="test-rft-job",
@@ -1557,9 +1488,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         self.assertIn("rftConfig", call_args["customizationConfig"])
         self.assertIn("hyperParameters", call_args["customizationConfig"]["rftConfig"])
 
-        rft_hyperparams = call_args["customizationConfig"]["rftConfig"][
-            "hyperParameters"
-        ]
+        rft_hyperparams = call_args["customizationConfig"]["rftConfig"]["hyperParameters"]
 
         # CRITICAL: Verify integer hyperparameters are integers, NOT strings
         self.assertIsInstance(rft_hyperparams["epochCount"], int)
@@ -1640,12 +1569,10 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         }
 
         # Create manager
-        manager = BedrockRuntimeManager(
-            execution_role="arn:aws:iam::123456789012:role/BedrockRole"
-        )
+        manager = BedrockRuntimeManager(execution_role="arn:aws:iam::123456789012:role/BedrockRole")
 
         # Create job config
-        from amzn_nova_forge.model.model_enums import TrainingMethod
+        from amzn_nova_forge.core.enums import TrainingMethod
 
         job_config = JobConfig(
             job_name="test-sft-job",
@@ -1753,9 +1680,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
             client.get_function.return_value = {"Configuration": {"FunctionArn": arn}}
             client.update_function_code.return_value = {"FunctionArn": arn}
         else:
-            client.get_function.side_effect = (
-                client.exceptions.ResourceNotFoundException()
-            )
+            client.get_function.side_effect = client.exceptions.ResourceNotFoundException()
             client.create_function.return_value = {"FunctionArn": arn}
         client.get_waiter.return_value = MagicMock()
         return client
@@ -1781,12 +1706,8 @@ class TestBedrockRuntimeManager(unittest.TestCase):
             mock_lambda.create_function.assert_called_once()
             call_kwargs = mock_lambda.create_function.call_args.kwargs
             self.assertEqual(call_kwargs["FunctionName"], "SageMaker-my-reward")
-            self.assertEqual(
-                call_kwargs["Role"], "arn:aws:iam::123456789012:role/BedrockRole"
-            )
-            self.assertEqual(
-                returned_arn, "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
-            )
+            self.assertEqual(call_kwargs["Role"], "arn:aws:iam::123456789012:role/BedrockRole")
+            self.assertEqual(returned_arn, "arn:aws:lambda:us-east-1:123456789012:function:my-fn")
             self.assertEqual(mgr.rft_lambda_arn, returned_arn)
         finally:
             os.unlink(src)
@@ -1854,9 +1775,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
     @patch("amzn_nova_forge.validation.validator.verify_rft_lambda")
     @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
-    def test_validate_lambda_uses_rft_lambda_arn_property(
-        self, mock_boto_client, mock_verify
-    ):
+    def test_validate_lambda_uses_rft_lambda_arn_property(self, mock_boto_client, mock_verify):
         arn = "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
         mgr = self._make_bedrock_mgr(rft_lambda=arn)
         mgr.validate_lambda(data_s3_path="s3://bucket/data.jsonl")
@@ -1868,9 +1787,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
 
     @patch("amzn_nova_forge.validation.validator.verify_rft_lambda")
     @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
-    def test_validate_lambda_uses_rft_lambda_when_arn(
-        self, mock_boto_client, mock_verify
-    ):
+    def test_validate_lambda_uses_rft_lambda_when_arn(self, mock_boto_client, mock_verify):
         arn = "arn:aws:lambda:us-east-1:123456789012:function:my-fn"
         mgr = self._make_bedrock_mgr(rft_lambda=arn)
         mgr.validate_lambda(data_s3_path="s3://bucket/data.jsonl")
@@ -1890,9 +1807,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         mgr = self._make_bedrock_mgr()
         with self.assertRaises(ValueError) as ctx:
             mgr.validate_lambda(data_s3_path="s3://bucket/data.jsonl")
-        self.assertIn(
-            "Either lambda_arn or lambda_source must be provided", str(ctx.exception)
-        )
+        self.assertIn("Either lambda_arn or lambda_source must be provided", str(ctx.exception))
 
     @patch("amzn_nova_forge.manager.runtime_manager.verify_reward_function")
     @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
@@ -1905,9 +1820,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
         mock_s3 = MagicMock()
         mock_s3.get_object.return_value = {
             "Body": MagicMock(
-                iter_lines=lambda: [
-                    b'{"id": "1", "messages": [{"role": "user", "content": "hi"}]}'
-                ]
+                iter_lines=lambda: [b'{"id": "1", "messages": [{"role": "user", "content": "hi"}]}']
             )
         }
         mock_boto_client.return_value = mock_s3
@@ -1921,9 +1834,7 @@ class TestBedrockRuntimeManager(unittest.TestCase):
             mgr.validate_lambda(data_s3_path="s3://bucket/data.jsonl")
 
             mock_verify_reward.assert_called_once()
-            self.assertEqual(
-                mock_verify_reward.call_args.kwargs["reward_function"], src
-            )
+            self.assertEqual(mock_verify_reward.call_args.kwargs["reward_function"], src)
         finally:
             os.unlink(src)
 

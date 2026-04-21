@@ -2,9 +2,9 @@ import unittest
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-from amzn_nova_forge.model.model_config import ModelArtifacts
-from amzn_nova_forge.model.model_enums import Platform
-from amzn_nova_forge.model.result.job_result import BaseJobResult
+from amzn_nova_forge.core.enums import Platform
+from amzn_nova_forge.core.result.job_result import BaseJobResult
+from amzn_nova_forge.core.types import ModelArtifacts
 from amzn_nova_forge.notifications.notification_manager import (
     NotificationManagerInfraError,
 )
@@ -39,7 +39,7 @@ class MockJobResult(BaseJobResult):
 
     def _create_status_manager(self):
         """Create a mock status manager."""
-        from amzn_nova_forge.model.result.job_result import (
+        from amzn_nova_forge.core.result.job_result import (
             SMTJStatusManager,
         )
 
@@ -94,9 +94,7 @@ class TestJobResultNotifications(unittest.TestCase):
         )
 
     @patch("amzn_nova_forge.notifications.SMTJNotificationManager")
-    def test_enable_job_notifications_with_explicit_output_path(
-        self, mock_manager_class
-    ):
+    def test_enable_job_notifications_with_explicit_output_path(self, mock_manager_class):
         """Test enable_job_notifications with explicitly provided output_s3_path."""
         mock_manager = MagicMock()
         mock_manager_class.return_value = mock_manager
@@ -201,9 +199,7 @@ class TestJobResultNotifications(unittest.TestCase):
         self.assertIn("output_s3_path is required", str(context.exception))
 
     @patch("amzn_nova_forge.notifications.SMTJNotificationManager")
-    def test_enable_job_notifications_explicit_overrides_model_artifacts(
-        self, mock_manager_class
-    ):
+    def test_enable_job_notifications_explicit_overrides_model_artifacts(self, mock_manager_class):
         """Test explicit output_s3_path overrides model_artifacts path."""
         mock_manager = MagicMock()
         mock_manager_class.return_value = mock_manager
@@ -282,9 +278,7 @@ class TestJobResultNotifications(unittest.TestCase):
 
     def test_enable_job_notifications_default_region(self):
         """Test enable_job_notifications uses default region when not specified."""
-        with patch(
-            "amzn_nova_forge.notifications.SMTJNotificationManager"
-        ) as mock_manager_class:
+        with patch("amzn_nova_forge.notifications.SMTJNotificationManager") as mock_manager_class:
             mock_manager = MagicMock()
             mock_manager_class.return_value = mock_manager
 

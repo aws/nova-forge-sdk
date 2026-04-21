@@ -1,7 +1,8 @@
 import unittest
 
-from amzn_nova_forge.model.model_enums import Model
+from amzn_nova_forge.core.enums import Model
 from amzn_nova_forge.validation.endpoint_validator import (
+    is_sagemaker_arn,
     validate_endpoint_arn,
     validate_s3_uri_prefix,
     validate_sagemaker_environment_variables,
@@ -74,9 +75,7 @@ class TestEndpointValidator(unittest.TestCase):
             validate_endpoint_arn("bad_arn")
 
     def test_validate_endpoint_arn_valid_arn(self):
-        validate_endpoint_arn(
-            "arn:aws:sagemaker:us-east-1:123456789012:endpoint/endpoint"
-        )
+        validate_endpoint_arn("arn:aws:sagemaker:us-east-1:123456789012:endpoint/endpoint")
         validate_endpoint_arn(
             "arn:aws:bedrock:us-east-1:123456789012:custom-model-deployment/model"
         )
@@ -98,14 +97,14 @@ class TestEndpointValidator(unittest.TestCase):
 
     def test_smi_valid_within_tier(self):
         """Valid: context_length and concurrency within a known tier."""
-        env = {"CONTEXT_LENGTH": "4000", "MAX_CONCURRENCY": "32"}
+        env = {"CONTEXT_LENGTH": "4000", "MAX_CONCURRENCY": "12"}
         validate_sagemaker_environment_variables(
             env, model=Model.NOVA_MICRO, instance_type="ml.g5.12xlarge"
         )
 
     def test_smi_valid_lower_context_same_concurrency(self):
         """Valid: lower context length inherits the tier's max concurrency."""
-        env = {"CONTEXT_LENGTH": "2000", "MAX_CONCURRENCY": "32"}
+        env = {"CONTEXT_LENGTH": "2000", "MAX_CONCURRENCY": "12"}
         validate_sagemaker_environment_variables(
             env, model=Model.NOVA_MICRO, instance_type="ml.g5.12xlarge"
         )
@@ -137,28 +136,28 @@ class TestEndpointValidator(unittest.TestCase):
 
     def test_smi_p5_multi_tier(self):
         """Valid: p5.48xlarge supports multiple tiers."""
-        # Tier 1: context<=8000, concurrency<=32
+        # Tier 1: context<=16000, concurrency<=128
         validate_sagemaker_environment_variables(
-            {"CONTEXT_LENGTH": "8000", "MAX_CONCURRENCY": "32"},
+            {"CONTEXT_LENGTH": "16000", "MAX_CONCURRENCY": "128"},
             model=Model.NOVA_MICRO,
             instance_type="ml.p5.48xlarge",
         )
-        # Tier 2: context<=16000, concurrency<=2
+        # Tier 2: context<=64000, concurrency<=32
         validate_sagemaker_environment_variables(
-            {"CONTEXT_LENGTH": "16000", "MAX_CONCURRENCY": "2"},
+            {"CONTEXT_LENGTH": "64000", "MAX_CONCURRENCY": "32"},
             model=Model.NOVA_MICRO,
             instance_type="ml.p5.48xlarge",
         )
-        # Tier 3: context<=24000, concurrency<=1
+        # Tier 3: context<=128000, concurrency<=8
         validate_sagemaker_environment_variables(
-            {"CONTEXT_LENGTH": "24000", "MAX_CONCURRENCY": "1"},
+            {"CONTEXT_LENGTH": "128000", "MAX_CONCURRENCY": "8"},
             model=Model.NOVA_MICRO,
             instance_type="ml.p5.48xlarge",
         )
 
     def test_smi_p5_concurrency_exceeds_mid_tier(self):
-        """Invalid: concurrency 10 at context 12000 falls in tier <=16000 which allows max 2."""
-        env = {"CONTEXT_LENGTH": "12000", "MAX_CONCURRENCY": "10"}
+        """Invalid: concurrency 50 at context 20000 falls in tier <=64000 which allows max 32."""
+        env = {"CONTEXT_LENGTH": "20000", "MAX_CONCURRENCY": "50"}
         with self.assertRaises(ValueError):
             validate_sagemaker_environment_variables(
                 env, model=Model.NOVA_MICRO, instance_type="ml.p5.48xlarge"
@@ -175,6 +174,30 @@ class TestEndpointValidator(unittest.TestCase):
         """Without model/instance_type, no bounds check (backward compat)."""
         env = {"CONTEXT_LENGTH": "100000", "MAX_CONCURRENCY": "999"}
         validate_sagemaker_environment_variables(env)
+
+    def test_is_sagemaker_arn_standard_partition(self):
+        self.assertTrue(is_sagemaker_arn("arn:aws:sagemaker:us-east-1:123:model-package/group/1"))
+
+    def test_is_sagemaker_arn_govcloud(self):
+        self.assertTrue(
+            is_sagemaker_arn("arn:aws-us-gov:sagemaker:us-gov-east-1:123:model-package/group/1")
+        )
+
+    def test_is_sagemaker_arn_china(self):
+        self.assertTrue(
+            is_sagemaker_arn("arn:aws-cn:sagemaker:cn-north-1:123:model-package/group/1")
+        )
+
+    def test_is_sagemaker_arn_rejects_s3_path(self):
+        self.assertFalse(is_sagemaker_arn("s3://bucket/checkpoint/"))
+
+    def test_is_sagemaker_arn_rejects_empty_string(self):
+        self.assertFalse(is_sagemaker_arn(""))
+
+    def test_is_sagemaker_arn_rejects_bedrock_arn(self):
+        self.assertFalse(
+            is_sagemaker_arn("arn:aws:bedrock:us-east-1:123:model-customization-job/abc")
+        )
 
 
 if __name__ == "__main__":

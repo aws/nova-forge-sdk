@@ -12,8 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .iam_role_creator import (
+    create_bedrock_batch_inference_execution_role,
     create_bedrock_execution_role,
     create_sagemaker_execution_role,
+    create_sagemaker_invoke_role,
+    create_smtj_dataprep_execution_role,
 )
 
-__all__ = ["create_bedrock_execution_role", "create_sagemaker_execution_role"]
+__all__ = [
+    "create_bedrock_batch_inference_execution_role",
+    "create_bedrock_execution_role",
+    "create_sagemaker_execution_role",
+    "create_sagemaker_invoke_role",
+    "create_smtj_dataprep_execution_role",
+]

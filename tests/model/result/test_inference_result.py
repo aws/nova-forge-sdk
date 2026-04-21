@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from amzn_nova_forge.model.result import (
+from amzn_nova_forge.core.result import (
     JobStatus,
     SingleInferenceResult,
     SMTJBatchInferenceResult,
@@ -259,9 +259,7 @@ class TestSMTJBatchInferenceResult(unittest.TestCase):
         status2, raw_status2 = self.result.get_job_status()
         self.assertEqual(status2, JobStatus.COMPLETED)
         self.assertEqual(raw_status2, "Completed")
-        self.assertEqual(
-            self.mock_sagemaker_client.describe_training_job.call_count, 1
-        )  # Still 1
+        self.assertEqual(self.mock_sagemaker_client.describe_training_job.call_count, 1)  # Still 1
 
     def test_job_status_caching_in_progress_then_completed(self):
         """Test job status change from IN_PROGRESS to COMPLETED"""
@@ -293,9 +291,7 @@ class TestSMTJBatchInferenceResult(unittest.TestCase):
         status3, raw_status3 = self.result.get_job_status()
         self.assertEqual(status3, JobStatus.COMPLETED)
         self.assertEqual(raw_status3, "Completed")
-        self.assertEqual(
-            self.mock_sagemaker_client.describe_training_job.call_count, 2
-        )  # Still 2
+        self.assertEqual(self.mock_sagemaker_client.describe_training_job.call_count, 2)  # Still 2
 
     def test_job_status_caching_failed_no_cache(self):
         """Test FAILED status should be cached"""
@@ -313,9 +309,7 @@ class TestSMTJBatchInferenceResult(unittest.TestCase):
         status2, raw_status2 = self.result.get_job_status()
         self.assertEqual(status2, JobStatus.FAILED)
         self.assertEqual(raw_status2, "Failed")
-        self.assertEqual(
-            self.mock_sagemaker_client.describe_training_job.call_count, 1
-        )  # Still 1)
+        self.assertEqual(self.mock_sagemaker_client.describe_training_job.call_count, 1)  # Still 1)
 
     @patch("boto3.client")
     @patch("builtins.print")
@@ -423,9 +417,7 @@ class TestSMTJBatchInferenceResult(unittest.TestCase):
                 self.assertIn("system", parsed)
                 self.assertIn("query", parsed)
 
-                mock_print.assert_any_call(
-                    f"Successfully saved the results to {s3_save_path}."
-                )
+                mock_print.assert_any_call(f"Successfully saved the results to {s3_save_path}.")
 
     @patch("builtins.print")
     def test_get_completed_with_local_save(self, mock_print):
@@ -465,9 +457,7 @@ class TestSMTJBatchInferenceResult(unittest.TestCase):
                         mock_s3_client.download_file.side_effect = mock_download_file
 
                         with patch("tempfile.mkdtemp", return_value=cache_dir):
-                            local_save_path = (
-                                Path(output_dir) / "results" / "output.jsonl"
-                            )
+                            local_save_path = Path(output_dir) / "results" / "output.jsonl"
                             result = self.result.get(s3_path=str(local_save_path))
 
                     self.assertTrue(local_save_path.exists())
@@ -643,7 +633,7 @@ class TestSingleInferenceResult(unittest.TestCase):
             nonstreaming_get["inference_results"]["response"], "Non-streaming response"
         )
 
-    @patch("amzn_nova_forge.model.result.inference_result.logger")
+    @patch("amzn_nova_forge.core.result.inference_result.logger")
     def test_show(self, mock_logger):
         # Test streaming result show
         self.streaming_result.show()

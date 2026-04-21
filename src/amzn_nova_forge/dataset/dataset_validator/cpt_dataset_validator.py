@@ -22,7 +22,7 @@ from typing import Dict, Iterator, List
 
 from pydantic import BaseModel, field_validator, model_validator
 
-from amzn_nova_forge.model.model_enums import Model
+from amzn_nova_forge.core.enums import Model
 
 from .dataset_validator import BaseDatasetValidator
 
@@ -86,13 +86,14 @@ class CPTDatasetValidator(BaseDatasetValidator):
         """
         return OPTIONAL_FIELDS
 
-    def validate(self, dataset: Iterator[Dict], model: Model) -> None:
+    def validate(self, dataset: Iterator[Dict], model: Model, **kwargs) -> None:
         """
         Validates the entire CPT dataset.
 
         Args:
             dataset: List of dataset samples to validate
             model: The Nova model being used
+            **kwargs: Optional platform, training_method for row-count checks.
 
         Raises:
             ValueError: If validation fails
@@ -105,5 +106,12 @@ class CPTDatasetValidator(BaseDatasetValidator):
                 self.num_samples += 1
             except Exception as e:
                 raise ValueError(f"Sample {index} validation failed: {str(e)}")
+
+        # Row count checks
+        self._validate_row_counts(
+            model,
+            kwargs.get("platform"),
+            kwargs.get("training_method"),
+        )
 
         print(f"{self.get_success_message()}")

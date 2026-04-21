@@ -1,16 +1,16 @@
 import unittest
 from unittest.mock import MagicMock, Mock, patch
 
-from amzn_nova_forge.manager.runtime_manager import (
-    SMHPRuntimeManager,
-    SMTJRuntimeManager,
-)
-from amzn_nova_forge.model.model_enums import (
+from amzn_nova_forge.core.enums import (
+    EvaluationTask,
     Model,
     Platform,
     TrainingMethod,
 )
-from amzn_nova_forge.recipe.recipe_config import EvaluationTask
+from amzn_nova_forge.manager.runtime_manager import (
+    SMHPRuntimeManager,
+    SMTJRuntimeManager,
+)
 from amzn_nova_forge.validation.validator import (
     CLUSTER_NAME_REGEX,
     JOB_NAME_REGEX,
@@ -29,9 +29,7 @@ class TestValidator(unittest.TestCase):
         self.mock_smhp_infra.region = "us-east-1"
 
         self.mock_smtj_infra = Mock(spec=SMTJRuntimeManager)
-        self.mock_smtj_infra.execution_role = (
-            "arn:aws:iam::123456789012:role/TestExecutionRole"
-        )
+        self.mock_smtj_infra.execution_role = "arn:aws:iam::123456789012:role/TestExecutionRole"
         self.mock_smtj_infra.instance_type = "ml.p5.48xlarge"
         self.mock_smtj_infra.region = "us-east-1"
 
@@ -106,12 +104,8 @@ class TestValidator(unittest.TestCase):
         mock_boto3_client.side_effect = mock_client_factory
 
         try:
-            with patch(
-                "amzn_nova_forge.manager.runtime_manager.SMHPRuntimeManager.setup"
-            ):
-                smhp_infra = SMHPRuntimeManager(
-                    "ml.p5.48xlarge", 4, "test-cluster", "kubeflow"
-                )
+            with patch("amzn_nova_forge.manager.runtime_manager.SMHPRuntimeManager.setup"):
+                smhp_infra = SMHPRuntimeManager("ml.p5.48xlarge", 4, "test-cluster", "kubeflow")
 
                 Validator.validate(
                     platform=Platform.SMHP,
@@ -201,12 +195,8 @@ class TestValidator(unittest.TestCase):
         }[service]
 
         with self.assertRaises(ValueError) as context:
-            with patch(
-                "amzn_nova_forge.manager.runtime_manager.SMHPRuntimeManager.setup"
-            ):
-                smhp_infra = SMHPRuntimeManager(
-                    "ml.p5.48xlarge", 4, "test-cluster", "kubeflow"
-                )
+            with patch("amzn_nova_forge.manager.runtime_manager.SMHPRuntimeManager.setup"):
+                smhp_infra = SMHPRuntimeManager("ml.p5.48xlarge", 4, "test-cluster", "kubeflow")
 
                 Validator.validate(
                     platform=Platform.SMHP,
@@ -216,9 +206,7 @@ class TestValidator(unittest.TestCase):
                     overrides_template={},
                 )
 
-        self.assertIn(
-            "Instance type 'ml.p5.48xlarge' not available", str(context.exception)
-        )
+        self.assertIn("Instance type 'ml.p5.48xlarge' not available", str(context.exception))
         self.assertIn(
             "Available types: ['ml.g5.12xlarge', 'ml.g5.24xlarge']",
             str(context.exception),
@@ -257,9 +245,7 @@ class TestValidator(unittest.TestCase):
                 ]
             }
         }
-        mock_iam_client.list_attached_role_policies.return_value = {
-            "AttachedPolicies": []
-        }
+        mock_iam_client.list_attached_role_policies.return_value = {"AttachedPolicies": []}
 
         # Mock STS client to return same account (making it same-account role)
         mock_sts_client = Mock()
@@ -282,26 +268,18 @@ class TestValidator(unittest.TestCase):
 
         mock_boto3_client.side_effect = mock_client_factory
 
-        with patch(
-            "sagemaker.core.helper.session_helper.get_execution_role"
-        ) as mock_get_role:
+        with patch("sagemaker.core.helper.session_helper.get_execution_role") as mock_get_role:
             with patch(
                 "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.required_calling_role_permissions",
                 return_value=[],
             ):
-                with patch(
-                    "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.setup"
-                ):
-                    mock_get_role.return_value = (
-                        "arn:aws:iam::123456789012:role/ValidRole"
-                    )
+                with patch("amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.setup"):
+                    mock_get_role.return_value = "arn:aws:iam::123456789012:role/ValidRole"
 
                     smtj_infra = SMTJRuntimeManager(
                         "ml.p5.48xlarge", 1, "arn:aws:iam::123456789012:role/ValidRole"
                     )
-                    smtj_infra.execution_role = (
-                        "arn:aws:iam::123456789012:role/ValidRole"
-                    )
+                    smtj_infra.execution_role = "arn:aws:iam::123456789012:role/ValidRole"
 
                 errors = []
                 Validator._validate_iam_permissions(
@@ -325,9 +303,7 @@ class TestValidator(unittest.TestCase):
                     "Statement": [
                         {
                             "Effect": "Allow",
-                            "Principal": {
-                                "Service": "ec2.amazonaws.com"
-                            },  # Wrong service
+                            "Principal": {"Service": "ec2.amazonaws.com"},  # Wrong service
                             "Action": "sts:AssumeRole",
                         }
                     ]
@@ -335,9 +311,7 @@ class TestValidator(unittest.TestCase):
             }
         }
         mock_iam_client.list_role_policies.return_value = {"PolicyNames": []}
-        mock_iam_client.list_attached_role_policies.return_value = {
-            "AttachedPolicies": []
-        }
+        mock_iam_client.list_attached_role_policies.return_value = {"AttachedPolicies": []}
 
         # Mock STS client to return same account (making it same-account role)
         mock_sts_client = Mock()
@@ -360,28 +334,20 @@ class TestValidator(unittest.TestCase):
 
         mock_boto3_client.side_effect = mock_client_factory
 
-        with patch(
-            "sagemaker.core.helper.session_helper.get_execution_role"
-        ) as mock_get_role:
+        with patch("sagemaker.core.helper.session_helper.get_execution_role") as mock_get_role:
             with patch(
                 "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.required_calling_role_permissions",
                 return_value=[],
             ):
-                with patch(
-                    "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.setup"
-                ):
-                    mock_get_role.return_value = (
-                        "arn:aws:iam::123456789012:role/InvalidRole"
-                    )
+                with patch("amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.setup"):
+                    mock_get_role.return_value = "arn:aws:iam::123456789012:role/InvalidRole"
 
                     smtj_infra = SMTJRuntimeManager(
                         "ml.p5.48xlarge",
                         1,
                         "arn:aws:iam::123456789012:role/InvalidRole",
                     )
-                    smtj_infra.execution_role = (
-                        "arn:aws:iam::123456789012:role/InvalidRole"
-                    )
+                    smtj_infra.execution_role = "arn:aws:iam::123456789012:role/InvalidRole"
 
                 errors = []
                 Validator._validate_iam_permissions(
@@ -447,9 +413,7 @@ class TestValidator(unittest.TestCase):
                 ]
             }
         }
-        mock_iam_client.list_attached_role_policies.return_value = {
-            "AttachedPolicies": []
-        }
+        mock_iam_client.list_attached_role_policies.return_value = {"AttachedPolicies": []}
 
         # Mock IAM simulation for calling role permissions
         mock_iam_client.simulate_principal_policy.return_value = {
@@ -465,28 +429,20 @@ class TestValidator(unittest.TestCase):
 
         mock_boto3_client.side_effect = mock_client_factory
 
-        with patch(
-            "sagemaker.core.helper.session_helper.get_execution_role"
-        ) as mock_get_role:
+        with patch("sagemaker.core.helper.session_helper.get_execution_role") as mock_get_role:
             with patch(
                 "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.required_calling_role_permissions",
                 return_value=[],
             ):
-                with patch(
-                    "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.setup"
-                ):
-                    mock_get_role.return_value = (
-                        "arn:aws:iam::222222222222:role/CrossAccountRole"
-                    )
+                with patch("amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.setup"):
+                    mock_get_role.return_value = "arn:aws:iam::222222222222:role/CrossAccountRole"
 
                     smtj_infra = SMTJRuntimeManager(
                         "ml.p5.48xlarge",
                         1,
                         "arn:aws:iam::222222222222:role/CrossAccountRole",
                     )
-                    smtj_infra.execution_role = (
-                        "arn:aws:iam::222222222222:role/CrossAccountRole"
-                    )
+                    smtj_infra.execution_role = "arn:aws:iam::222222222222:role/CrossAccountRole"
 
                 errors = []
                 Validator._validate_iam_permissions(
@@ -500,9 +456,7 @@ class TestValidator(unittest.TestCase):
                 self.assertEqual(len(errors), 0)
 
     @patch("amzn_nova_forge.validation.validator.boto3.client")
-    def test_validate_iam_permissions_cross_account_assume_fail(
-        self, mock_boto3_client
-    ):
+    def test_validate_iam_permissions_cross_account_assume_fail(self, mock_boto3_client):
         """Test IAM validation for cross-account role when assume role fails."""
         # Mock STS client for cross-account detection (different accounts)
         mock_sts_client = Mock()
@@ -529,19 +483,13 @@ class TestValidator(unittest.TestCase):
 
         mock_boto3_client.side_effect = mock_client_factory
 
-        with patch(
-            "sagemaker.core.helper.session_helper.get_execution_role"
-        ) as mock_get_role:
+        with patch("sagemaker.core.helper.session_helper.get_execution_role") as mock_get_role:
             with patch(
                 "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.required_calling_role_permissions",
                 return_value=[],
             ):
-                with patch(
-                    "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.setup"
-                ):
-                    cross_account_role = (
-                        "arn:aws:iam::222222222222:role/CrossAccountRole"
-                    )
+                with patch("amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.setup"):
+                    cross_account_role = "arn:aws:iam::222222222222:role/CrossAccountRole"
                     mock_get_role.return_value = cross_account_role
 
                     smtj_infra = SMTJRuntimeManager(
@@ -561,9 +509,7 @@ class TestValidator(unittest.TestCase):
                     self.assertEqual(len(errors), 0)
 
     @patch("amzn_nova_forge.validation.validator.boto3.client")
-    def test_validate_iam_permissions_cross_account_limited_permissions(
-        self, mock_boto3_client
-    ):
+    def test_validate_iam_permissions_cross_account_limited_permissions(self, mock_boto3_client):
         """Test IAM validation for cross-account role with limited IAM permissions."""
         # Mock STS client for cross-account detection (different accounts)
         mock_sts_client = Mock()
@@ -613,28 +559,20 @@ class TestValidator(unittest.TestCase):
 
         mock_boto3_client.side_effect = mock_client_factory
 
-        with patch(
-            "sagemaker.core.helper.session_helper.get_execution_role"
-        ) as mock_get_role:
+        with patch("sagemaker.core.helper.session_helper.get_execution_role") as mock_get_role:
             with patch(
                 "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.required_calling_role_permissions",
                 return_value=[],
             ):
-                with patch(
-                    "amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.setup"
-                ):
-                    mock_get_role.return_value = (
-                        "arn:aws:iam::222222222222:role/CrossAccountRole"
-                    )
+                with patch("amzn_nova_forge.manager.runtime_manager.SMTJRuntimeManager.setup"):
+                    mock_get_role.return_value = "arn:aws:iam::222222222222:role/CrossAccountRole"
 
                     smtj_infra = SMTJRuntimeManager(
                         "ml.p5.48xlarge",
                         1,
                         "arn:aws:iam::222222222222:role/CrossAccountRole",
                     )
-                    smtj_infra.execution_role = (
-                        "arn:aws:iam::222222222222:role/CrossAccountRole"
-                    )
+                    smtj_infra.execution_role = "arn:aws:iam::222222222222:role/CrossAccountRole"
 
                     errors = []
                     Validator._validate_iam_permissions(
@@ -649,9 +587,7 @@ class TestValidator(unittest.TestCase):
 
     @patch("amzn_nova_forge.validation.validator.get_cluster_instance_info")
     @patch("amzn_nova_forge.validation.validator.boto3.client")
-    def test_validate_infrastructure_directly(
-        self, mock_boto3_client, mock_get_cluster_info
-    ):
+    def test_validate_infrastructure_directly(self, mock_boto3_client, mock_get_cluster_info):
         """Test infrastructure validation method directly."""
         # Mock successful cluster info
         mock_get_cluster_info.return_value = {
@@ -798,9 +734,7 @@ class TestValidationConfig(unittest.TestCase):
                 infra=mock_infra,
                 recipe={},
                 overrides_template={},
-                validation_config={
-                    "iam": False
-                },  # infra not specified, should default to True
+                validation_config={"iam": False},  # infra not specified, should default to True
             )
         except ValueError as e:
             # Should not fail due to IAM validation (disabled)
@@ -1029,9 +963,7 @@ class TestEvaluationValidation(unittest.TestCase):
             self.fail("Evaluation validate() raised ValueError unexpectedly!")
 
     @patch("amzn_nova_forge.validation.validator.boto3.client")
-    def test_eval_validator_with_processor_config_but_not_needed(
-        self, mock_boto3_client
-    ):
+    def test_eval_validator_with_processor_config_but_not_needed(self, mock_boto3_client):
         """Test eval validator fails when processor config is provided but not needed"""
         mock_infra = Mock(spec=SMTJRuntimeManager)
         mock_infra.instance_type = "ml.p5.48xlarge"
@@ -1049,14 +981,10 @@ class TestEvaluationValidation(unittest.TestCase):
                 validation_config={"iam": False, "infra": False},
             )
 
-        self.assertIn(
-            "processor_config is only supported for gen_qa task", str(context.exception)
-        )
+        self.assertIn("processor_config is only supported for gen_qa task", str(context.exception))
 
     @patch("amzn_nova_forge.validation.validator.boto3.client")
-    def test_eval_validator_with_processor_config_missing_lambda_arn(
-        self, mock_boto3_client
-    ):
+    def test_eval_validator_with_processor_config_missing_lambda_arn(self, mock_boto3_client):
         """Test eval validator fails when processor config is provided but is missing lambda_arn"""
         mock_infra = Mock(spec=SMTJRuntimeManager)
         mock_infra.instance_type = "ml.p5.48xlarge"
@@ -1074,14 +1002,10 @@ class TestEvaluationValidation(unittest.TestCase):
                 validation_config={"iam": False, "infra": False},
             )
 
-        self.assertIn(
-            "processor_config must contain a lambda_arn", str(context.exception)
-        )
+        self.assertIn("processor_config must contain a lambda_arn", str(context.exception))
 
     @patch("amzn_nova_forge.validation.validator.boto3.client")
-    def test_eval_validator_with_rl_env_config_missing_reward_lambda_arn(
-        self, mock_boto3_client
-    ):
+    def test_eval_validator_with_rl_env_config_missing_reward_lambda_arn(self, mock_boto3_client):
         """Test eval validator fails when rl_env_config is provided but is missing reward_lambda_arn"""
         mock_infra = Mock(spec=SMTJRuntimeManager)
         mock_infra.instance_type = "ml.p5.48xlarge"
@@ -1179,9 +1103,7 @@ class TestRecipeValidation(unittest.TestCase):
         """Test instance_type validation with valid value"""
         recipe = {}
 
-        overrides_template = {
-            "instance_type": {"enum": ["ml.g5.48xlarge", "ml.p5.48xlarge"]}
-        }
+        overrides_template = {"instance_type": {"enum": ["ml.g5.48xlarge", "ml.p5.48xlarge"]}}
 
         errors = []
         Validator._validate_recipe(
@@ -1198,9 +1120,7 @@ class TestRecipeValidation(unittest.TestCase):
         """Test instance_type validation with invalid value"""
         recipe = {}
 
-        overrides_template = {
-            "instance_type": {"enum": ["ml.g5.48xlarge", "ml.p5.48xlarge"]}
-        }
+        overrides_template = {"instance_type": {"enum": ["ml.g5.48xlarge", "ml.p5.48xlarge"]}}
 
         errors = []
         Validator._validate_recipe(
@@ -1246,9 +1166,7 @@ class TestRecipeValidation(unittest.TestCase):
         )
 
         self.assertEqual(len(errors), 1)
-        self.assertIn(
-            "'max_steps' is required, but was not found in your recipe", errors[0]
-        )
+        self.assertIn("'max_steps' is required, but was not found in your recipe", errors[0])
 
     def test_validate_recipe_type_validation_string(self):
         """Test type validation for string type"""
@@ -1651,9 +1569,7 @@ class TestRecipeValidation(unittest.TestCase):
         self.assertEqual(len(errors), 0)
 
     @patch("amzn_nova_forge.validation.validator.boto3.client")
-    def test_validate_recipe_integration_with_full_validate_method(
-        self, mock_boto3_client
-    ):
+    def test_validate_recipe_integration_with_full_validate_method(self, mock_boto3_client):
         """Test recipe validation as part of full validate() method"""
         recipe = {"training_config": {"max_steps": 2}}  # Below minimum
         overrides_template = {"max_steps": {"type": "integer", "min": 4}}
@@ -1884,9 +1800,7 @@ class TestCallingRolePermissionsValidation(unittest.TestCase):
         )
 
     @patch("boto3.client")
-    def test_validate_calling_role_permissions_simulation_error(
-        self, mock_boto3_client
-    ):
+    def test_validate_calling_role_permissions_simulation_error(self, mock_boto3_client):
         """Test handling of IAM simulation errors"""
         # Mock clients
         mock_iam_client = MagicMock()
@@ -1904,9 +1818,7 @@ class TestCallingRolePermissionsValidation(unittest.TestCase):
         }
 
         # Mock IAM simulation error
-        mock_iam_client.simulate_principal_policy.side_effect = Exception(
-            "Simulation failed"
-        )
+        mock_iam_client.simulate_principal_policy.side_effect = Exception("Simulation failed")
 
         errors = []
         required_permissions = [("sagemaker:CreateTrainingJob", "*")]
@@ -1946,9 +1858,7 @@ class TestCallingRolePermissionsValidation(unittest.TestCase):
 
         # Should have error about calling role validation failure
         self.assertEqual(len(errors), 1)
-        self.assertIn(
-            "Failed to validate calling role permissions: STS failed", errors[0]
-        )
+        self.assertIn("Failed to validate calling role permissions: STS failed", errors[0])
 
 
 class TestPermissionValidationMethods(unittest.TestCase):
@@ -1969,35 +1879,25 @@ class TestPermissionValidationMethods(unittest.TestCase):
         ]
 
         required_permissions = ["s3:GetObject", "s3:PutObject"]
-        missing = Validator._check_policy_json_permissions(
-            policies, required_permissions
-        )
+        missing = Validator._check_policy_json_permissions(policies, required_permissions)
 
         self.assertEqual(len(missing), 0)
 
     def test_check_policy_json_permissions_supports_wildcards(self):
         """Test policy JSON permission checking with wildcards"""
-        policies = [
-            {"Statement": [{"Effect": "Allow", "Action": "s3:*", "Resource": "*"}]}
-        ]
+        policies = [{"Statement": [{"Effect": "Allow", "Action": "s3:*", "Resource": "*"}]}]
 
         required_permissions = ["s3:GetObject", "s3:PutObject"]
-        missing = Validator._check_policy_json_permissions(
-            policies, required_permissions
-        )
+        missing = Validator._check_policy_json_permissions(policies, required_permissions)
 
         self.assertEqual(len(missing), 0)
 
     def test_check_policy_json_permissions_supports_action_prefix_wildcards(self):
         """Test policy JSON permission checking with action prefix wildcards like iam:Get*"""
-        policies = [
-            {"Statement": [{"Effect": "Allow", "Action": "iam:Get*", "Resource": "*"}]}
-        ]
+        policies = [{"Statement": [{"Effect": "Allow", "Action": "iam:Get*", "Resource": "*"}]}]
 
         required_permissions = ["iam:GetRole", "iam:GetPolicy", "iam:GetUser"]
-        missing = Validator._check_policy_json_permissions(
-            policies, required_permissions
-        )
+        missing = Validator._check_policy_json_permissions(policies, required_permissions)
 
         # Should now support prefix wildcards like iam:Get*
         self.assertEqual(len(missing), 0)
@@ -2006,14 +1906,10 @@ class TestPermissionValidationMethods(unittest.TestCase):
         self,
     ):
         """Test that action prefix wildcards don't match unrelated actions"""
-        policies = [
-            {"Statement": [{"Effect": "Allow", "Action": "iam:Get*", "Resource": "*"}]}
-        ]
+        policies = [{"Statement": [{"Effect": "Allow", "Action": "iam:Get*", "Resource": "*"}]}]
 
         required_permissions = ["iam:CreateRole", "s3:GetObject", "iam:PutRole"]
-        missing = Validator._check_policy_json_permissions(
-            policies, required_permissions
-        )
+        missing = Validator._check_policy_json_permissions(policies, required_permissions)
 
         # iam:Get* should not match iam:CreateRole, s3:GetObject, or iam:PutRole
         self.assertEqual(len(missing), 3)
@@ -2023,36 +1919,20 @@ class TestPermissionValidationMethods(unittest.TestCase):
 
     def test_check_policy_json_permissions_supports_infix_wildcards(self):
         """Test policy JSON permission checking with infix wildcards like s3:*Object"""
-        policies = [
-            {
-                "Statement": [
-                    {"Effect": "Allow", "Action": "s3:*Object", "Resource": "*"}
-                ]
-            }
-        ]
+        policies = [{"Statement": [{"Effect": "Allow", "Action": "s3:*Object", "Resource": "*"}]}]
 
         required_permissions = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
-        missing = Validator._check_policy_json_permissions(
-            policies, required_permissions
-        )
+        missing = Validator._check_policy_json_permissions(policies, required_permissions)
 
         # Should support infix wildcards like s3:*Object
         self.assertEqual(len(missing), 0)
 
     def test_check_policy_json_permissions_infix_wildcards_no_false_positives(self):
         """Test that infix wildcards don't match unrelated actions"""
-        policies = [
-            {
-                "Statement": [
-                    {"Effect": "Allow", "Action": "s3:*Object", "Resource": "*"}
-                ]
-            }
-        ]
+        policies = [{"Statement": [{"Effect": "Allow", "Action": "s3:*Object", "Resource": "*"}]}]
 
         required_permissions = ["s3:ListBucket", "s3:GetBucketLocation", "iam:GetRole"]
-        missing = Validator._check_policy_json_permissions(
-            policies, required_permissions
-        )
+        missing = Validator._check_policy_json_permissions(policies, required_permissions)
 
         # s3:*Object should not match s3:ListBucket, s3:GetBucketLocation, or iam:GetRole
         self.assertEqual(len(missing), 3)
@@ -2063,17 +1943,11 @@ class TestPermissionValidationMethods(unittest.TestCase):
     def test_check_policy_json_permissions_identifies_missing_actions(self):
         """Test policy JSON permission checking with missing permissions"""
         policies = [
-            {
-                "Statement": [
-                    {"Effect": "Allow", "Action": ["s3:GetObject"], "Resource": "*"}
-                ]
-            }
+            {"Statement": [{"Effect": "Allow", "Action": ["s3:GetObject"], "Resource": "*"}]}
         ]
 
         required_permissions = ["s3:GetObject", "s3:PutObject", "iam:PassRole"]
-        missing = Validator._check_policy_json_permissions(
-            policies, required_permissions
-        )
+        missing = Validator._check_policy_json_permissions(policies, required_permissions)
 
         self.assertEqual(len(missing), 2)
         self.assertIn("s3:PutObject", missing)
@@ -2116,9 +1990,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
         )
 
     @patch("boto3.client")
-    def test_validate_permissions_with_dynamic_resource_generation(
-        self, mock_boto3_client
-    ):
+    def test_validate_permissions_with_dynamic_resource_generation(self, mock_boto3_client):
         """Test permission validation using lambda functions to generate resource ARNs"""
         mock_iam_client = MagicMock()
         mock_sts_client = MagicMock()
@@ -2146,9 +2018,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
         required_permissions = [
             (
                 "sagemaker:DescribeCluster",
-                lambda infra: (
-                    f"arn:aws:sagemaker:{infra.region}:*:cluster/{infra.cluster_name}"
-                ),
+                lambda infra: f"arn:aws:sagemaker:{infra.region}:*:cluster/{infra.cluster_name}",
             )
         ]
 
@@ -2164,9 +2034,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
         )
 
     @patch("boto3.client")
-    def test_validate_permissions_using_policy_document_parsing(
-        self, mock_boto3_client
-    ):
+    def test_validate_permissions_using_policy_document_parsing(self, mock_boto3_client):
         """Test permission validation using JSON policy document parsing for simple strings"""
         mock_iam_client = MagicMock()
         mock_sts_client = MagicMock()
@@ -2182,9 +2050,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
         }
 
         # Mock policy retrieval for JSON parsing
-        mock_iam_client.list_role_policies.return_value = {
-            "PolicyNames": ["InlinePolicy"]
-        }
+        mock_iam_client.list_role_policies.return_value = {"PolicyNames": ["InlinePolicy"]}
         mock_iam_client.get_role_policy.return_value = {
             "PolicyDocument": {
                 "Statement": [
@@ -2196,14 +2062,10 @@ class TestPermissionValidationMethods(unittest.TestCase):
                 ]
             }
         }
-        mock_iam_client.list_attached_role_policies.return_value = {
-            "AttachedPolicies": []
-        }
+        mock_iam_client.list_attached_role_policies.return_value = {"AttachedPolicies": []}
 
         errors = []
-        required_permissions = [
-            "iam:PassRole"
-        ]  # Simple string - should use JSON parsing
+        required_permissions = ["iam:PassRole"]  # Simple string - should use JSON parsing
 
         Validator._validate_calling_role_permissions(
             errors, required_permissions, None, "us-east-1"
@@ -2217,9 +2079,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
         )
 
     @patch("amzn_nova_forge.validation.validator.boto3.client")
-    def test_validate_permissions_with_insufficient_resource_permissions(
-        self, mock_boto3_client
-    ):
+    def test_validate_permissions_with_insufficient_resource_permissions(self, mock_boto3_client):
         """Test that validation fails when policy has specific resources but not the required ones"""
         mock_iam_client = Mock()
         mock_sts_client = Mock()
@@ -2250,9 +2110,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
                 ]
             }
         }
-        mock_iam_client.list_attached_role_policies.return_value = {
-            "AttachedPolicies": []
-        }
+        mock_iam_client.list_attached_role_policies.return_value = {"AttachedPolicies": []}
 
         # Mock IAM simulation that will be called for resource-specific permissions
         mock_iam_client.simulate_principal_policy.return_value = {
@@ -2275,9 +2133,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
 
         # Should have 2 errors - one from JSON parsing, one from IAM simulation
         self.assertEqual(len(errors), 2)
-        self.assertIn(
-            "Missing required calling role permission: iam:PassRole", errors[0]
-        )
+        self.assertIn("Missing required calling role permission: iam:PassRole", errors[0])
         self.assertIn(
             "Missing required calling role permission: s3:GetObject on arn:aws:s3:::required-bucket/*",
             errors[1],
@@ -2321,9 +2177,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
 
         # Should have separate permissions for each bucket and object path
         s3_permissions = [
-            p
-            for p in required_permissions
-            if isinstance(p, tuple) and p[0].startswith("s3:")
+            p for p in required_permissions if isinstance(p, tuple) and p[0].startswith("s3:")
         ]
 
         # Should have 7 S3 permissions: 2 buckets × 2 bucket perms + 1 data path read + 2 output path read/write
@@ -2341,9 +2195,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
         input_permissions = [p for p in s3_permissions if "bucket1/data" in p[1]]
         self.assertEqual(len(input_permissions), 1)  # Only GetObject
         self.assertEqual(input_permissions[0][0], "s3:GetObject")
-        self.assertEqual(
-            input_permissions[0][1], "arn:aws:s3:::bucket1/data/train.jsonl*"
-        )
+        self.assertEqual(input_permissions[0][1], "arn:aws:s3:::bucket1/data/train.jsonl*")
 
         # Check output_s3_path permissions (read-write)
         output_permissions = [p for p in s3_permissions if "bucket2/output" in p[1]]
@@ -2435,10 +2287,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
             for action in ActionNames:
                 for resource in ResourceArns:
                     # Allow bucket-level operations but deny specific object path access
-                    if (
-                        "s3:ListBucket" in action
-                        and resource == "arn:aws:s3:::test-bucket"
-                    ):
+                    if "s3:ListBucket" in action and resource == "arn:aws:s3:::test-bucket":
                         decision = "allowed"
                     elif "s3:GetObject" in action and "specific/path" in resource:
                         decision = "denied"  # Deny access to specific object path
@@ -2522,9 +2371,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
         mock_run.return_value.stderr = ""
 
         # Mock sagemaker execution role for SMTJ
-        mock_get_execution_role.return_value = (
-            "arn:aws:iam::123456789012:role/test-role"
-        )
+        mock_get_execution_role.return_value = "arn:aws:iam::123456789012:role/test-role"
 
         # Test SMHP permissions
         smhp_permissions = SMHPRuntimeManager.required_calling_role_permissions()
@@ -2545,6 +2392,57 @@ class TestPermissionValidationMethods(unittest.TestCase):
         has_strings = any(isinstance(p, str) for p in smtj_permissions)
         self.assertTrue(has_tuples, "SMTJ should have tuple permissions")
         self.assertTrue(has_strings, "SMTJ should have string permissions")
+
+    @patch("subprocess.run")
+    @patch("amzn_nova_forge.manager.runtime_manager._get_caller_account_id")
+    def test_smhp_required_permissions_uses_caller_account_id(self, mock_get_account_id, mock_run):
+        """Happy path: account ID from STS appears in generated ARNs."""
+        mock_run.return_value.stdout = ""
+        mock_run.return_value.stderr = ""
+        mock_get_account_id.return_value = "123456789012"
+
+        mock_infra = MagicMock()
+        mock_infra.region = "us-east-1"
+        mock_infra.cluster_name = "forge-poc-dev"
+
+        permissions = SMHPRuntimeManager.required_calling_role_permissions()
+        lambda_perms = [(k, v) for k, v in permissions if callable(v)]
+
+        self.assertGreater(len(lambda_perms), 0, "Should have lambda-based permissions")
+        for action, resource_fn in lambda_perms:
+            arn = resource_fn(mock_infra)
+            self.assertIn(
+                "123456789012",
+                arn,
+                f"{action} ARN should contain caller account ID, got: {arn}",
+            )
+
+    @patch("subprocess.run")
+    @patch("amzn_nova_forge.manager.runtime_manager._get_caller_account_id")
+    def test_smhp_required_permissions_falls_back_to_wildcard_on_sts_error(
+        self, mock_get_account_id, mock_run
+    ):
+        """Fallback path: wildcard used when STS call raises an exception."""
+        mock_run.return_value.stdout = ""
+        mock_run.return_value.stderr = ""
+        mock_get_account_id.return_value = "*"
+
+        mock_infra = MagicMock()
+        mock_infra.region = "us-west-2"
+        mock_infra.cluster_name = "my-cluster"
+
+        permissions = SMHPRuntimeManager.required_calling_role_permissions()
+        lambda_perms = [(k, v) for k, v in permissions if callable(v)]
+
+        self.assertGreater(len(lambda_perms), 0, "Should have lambda-based permissions")
+        for action, resource_fn in lambda_perms:
+            arn = resource_fn(mock_infra)
+            account_field = arn.split(":")[4]
+            self.assertEqual(
+                account_field,
+                "*",
+                f"{action} ARN account field should be wildcard on STS error, got: {arn}",
+            )
 
     @patch("amzn_nova_forge.validation.validator.boto3.client")
     def test_validate_calling_role_permissions_with_action_prefix_wildcards(
@@ -2577,9 +2475,7 @@ class TestPermissionValidationMethods(unittest.TestCase):
                 ]
             }
         }
-        mock_iam_client.list_attached_role_policies.return_value = {
-            "AttachedPolicies": []
-        }
+        mock_iam_client.list_attached_role_policies.return_value = {"AttachedPolicies": []}
 
         errors = []
         required_permissions = ["iam:GetRole"]  # Should be covered by iam:Get*
@@ -2712,9 +2608,7 @@ class TestBedrockRegionValidation(unittest.TestCase):
                 self.fail(f"Validation failed with region error: {e}")
 
     @patch("amzn_nova_forge.validation.validator.boto3.client")
-    def test_bedrock_region_validation_runs_even_with_iam_disabled(
-        self, mock_boto3_client
-    ):
+    def test_bedrock_region_validation_runs_even_with_iam_disabled(self, mock_boto3_client):
         """Test that region validation runs even when IAM validation is disabled"""
         from amzn_nova_forge.manager.runtime_manager import (
             BedrockRuntimeManager,

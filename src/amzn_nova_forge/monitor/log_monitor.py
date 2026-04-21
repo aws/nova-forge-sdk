@@ -19,14 +19,16 @@ import boto3
 import pandas
 from matplotlib import pyplot
 
-from amzn_nova_forge.model.model_enums import Platform, TrainingMethod
-from amzn_nova_forge.model.result.job_result import (
+from amzn_nova_forge.core.enums import Platform, TrainingMethod
+from amzn_nova_forge.core.result.job_result import (
     BaseJobResult,
     JobStatus,
     JobStatusManager,
     SMHPStatusManager,
     SMTJStatusManager,
 )
+from amzn_nova_forge.telemetry.constants import UNKNOWN, Feature
+from amzn_nova_forge.telemetry.telemetry_logging import _telemetry_emitter
 from amzn_nova_forge.util.bedrock import (
     get_bedrock_job_details,
     log_bedrock_job_status,
@@ -35,6 +37,8 @@ from amzn_nova_forge.util.logging import logger
 from amzn_nova_forge.util.metric_util import get_metrics
 
 DEFAULT_SMHP_NAMESPACE = "kubeflow"
+
+_SMTJ_PLATFORMS = {Platform.SMTJ, Platform.SMTJServerless}
 
 
 class PlatformStrategy(ABC):
@@ -82,11 +86,7 @@ class SMTJStrategy(PlatformStrategy):
         response = cloudwatch_logs_client.describe_log_streams(
             logGroupName=log_group_name, logStreamNamePrefix=job_id
         )
-        return (
-            response["logStreams"][0]["logStreamName"]
-            if response["logStreams"]
-            else None
-        )
+        return response["logStreams"][0]["logStreamName"] if response["logStreams"] else None
 
     def get_logs(
         self,
@@ -164,9 +164,7 @@ class SMHPStrategy(PlatformStrategy):
 
     def get_log_group_name(self, job_id: str) -> str:
         if not self._cluster_id:
-            response = self.sagemaker_client.describe_cluster(
-                ClusterName=self.cluster_name
-            )
+            response = self.sagemaker_client.describe_cluster(ClusterName=self.cluster_name)
             cluster_arn = response["ClusterArn"]
             self._cluster_id = cluster_arn.split("/")[-1]
         return f"/aws/sagemaker/Clusters/{self.cluster_name}/{self._cluster_id}"
@@ -275,9 +273,7 @@ class BedrockStrategy(PlatformStrategy):
         Returns empty list to maintain interface compatibility.
         """
 
-        logger.warning(
-            "CloudWatch logs are not available for Bedrock customization jobs."
-        )
+        logger.warning("CloudWatch logs are not available for Bedrock customization jobs.")
 
         # Get and display current job status using shared utility
         try:
@@ -319,7 +315,7 @@ class CloudWatchLogMonitor:
 
     @staticmethod
     def _create_strategy(platform: Platform, **kwargs):
-        if platform == Platform.SMTJ:
+        if platform in _SMTJ_PLATFORMS:
             return SMTJStrategy()
         elif platform == Platform.SMHP:
             cluster_name = kwargs.get("cluster_name")
@@ -338,6 +334,13 @@ class CloudWatchLogMonitor:
             raise NotImplementedError(f"Unsupported platform: {platform}")
 
     @classmethod
+    @_telemetry_emitter(
+        Feature.MONITOR,
+        "from_job_id",
+        extra_info_fn=lambda cls, *args, **kwargs: {
+            "platform": kwargs.get("platform", UNKNOWN),
+        },
+    )
     def from_job_id(
         cls,
         job_id: str,
@@ -359,13 +362,11 @@ class CloudWatchLogMonitor:
         )
 
     @staticmethod
-    def _resolve_start_time_ms(
-        job_id: str, platform: Platform, **kwargs
-    ) -> Optional[int]:
+    def _resolve_start_time_ms(job_id: str, platform: Platform, **kwargs) -> Optional[int]:
         """Try to resolve start time from the platform API. Returns epoch ms or None."""
         try:
             manager: JobStatusManager
-            if platform == Platform.SMTJ:
+            if platform in _SMTJ_PLATFORMS:
                 sagemaker_client = kwargs.get("sagemaker_client")
                 manager = SMTJStatusManager(sagemaker_client)
             elif platform == Platform.SMHP:
@@ -389,8 +390,9 @@ class CloudWatchLogMonitor:
             return None
 
     @classmethod
+    @_telemetry_emitter(Feature.MONITOR, "from_job_result")
     def from_job_result(cls, job_result: BaseJobResult, cloudwatch_logs_client=None):
-        if job_result.platform == Platform.SMTJ:
+        if job_result.platform in _SMTJ_PLATFORMS:
             return cls(
                 job_id=job_result.job_id,
                 platform=job_result.platform,
@@ -429,7 +431,7 @@ class CloudWatchLogMonitor:
         )
 
     def _create_job_status_manager(self):
-        if self.platform == Platform.SMTJ:
+        if self.platform in _SMTJ_PLATFORMS:
             return SMTJStatusManager()
         elif self.platform == Platform.SMHP:
             strategy = cast(SMHPStrategy, self.strategy)
@@ -458,6 +460,7 @@ class CloudWatchLogMonitor:
             )
         return metrics_df
 
+    @_telemetry_emitter(Feature.MONITOR, "get_logs")
     def get_logs(
         self,
         limit: Optional[int] = None,
@@ -479,21 +482,21 @@ class CloudWatchLogMonitor:
 
         return self.logs
 
+    @_telemetry_emitter(Feature.MONITOR, "show_logs")
     def show_logs(
         self,
         limit: Optional[int] = None,
         start_from_head: bool = False,
         end_time: Optional[int] = None,
     ):
-        events = self.get_logs(
-            limit=limit, start_from_head=start_from_head, end_time=end_time
-        )
+        events = self.get_logs(limit=limit, start_from_head=start_from_head, end_time=end_time)
         if events:
             for event in events:
                 print(event["message"].strip())
         else:
             print(f"No logs found for job {self.job_id} yet")
 
+    @_telemetry_emitter(Feature.MONITOR, "plot_metrics")
     def plot_metrics(
         self,
         training_method: TrainingMethod,
@@ -502,14 +505,11 @@ class CloudWatchLogMonitor:
         ending_step: Optional[int] = None,
     ):
         if starting_step and ending_step and starting_step > ending_step:
-            raise ValueError(
-                "Starting iteration must be less than or equal to ending iteration"
-            )
+            raise ValueError("Starting iteration must be less than or equal to ending iteration")
 
         try:
             job_in_progress = (
-                self.job_status_manager.get_job_status(self.job_id)[0]
-                == JobStatus.IN_PROGRESS
+                self.job_status_manager.get_job_status(self.job_id)[0] == JobStatus.IN_PROGRESS
             )
         except Exception:
             job_in_progress = False
@@ -520,9 +520,7 @@ class CloudWatchLogMonitor:
             raise ValueError("No logs found for this job")
 
         metrics_df = self.strategy.get_metrics(training_method, self.logs, metrics)
-        metrics_df = self._get_in_range_dataframe(
-            metrics_df, starting_step, ending_step
-        )
+        metrics_df = self._get_in_range_dataframe(metrics_df, starting_step, ending_step)
         metrics_df = metrics_df.sort_values("global_step").reset_index(drop=True)
 
         pyplot.figure(figsize=(8, 5))

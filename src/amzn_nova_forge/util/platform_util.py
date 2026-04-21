@@ -17,7 +17,7 @@ Utility functions for platform detection and validation
 
 from typing import Optional
 
-from amzn_nova_forge.model.model_enums import Platform
+from amzn_nova_forge.core.enums import Platform
 
 
 def detect_platform_from_path(s3_path: str) -> Optional[Platform]:
@@ -74,9 +74,13 @@ def validate_platform_compatibility(
         return
 
     if checkpoint_platform != execution_platform:
-        raise ValueError(
-            f"Platform mismatch: {checkpoint_source} was trained on {checkpoint_platform.value} "
-            f"but you are trying to run on {execution_platform.value}. "
-            f"Checkpoints must be evaluated/used on the same platform they were trained on. "
-            f"Please use {checkpoint_platform.value} for this checkpoint."
-        )
+        # SMTJ and SMTJServerless share the same format for escrow bucket and checkpoint,
+        # so SMTJServerless training jobs get resolved as SMTJ
+        smtj_platforms = {Platform.SMTJ, Platform.SMTJServerless}
+        if not ({checkpoint_platform, execution_platform} <= smtj_platforms):
+            raise ValueError(
+                f"Platform mismatch: {checkpoint_source} was trained on {checkpoint_platform.value} "
+                f"but you are trying to run on {execution_platform.value}. "
+                f"Checkpoints must be evaluated/used on the same platform they were trained on. "
+                f"Please use {checkpoint_platform.value} for this checkpoint."
+            )

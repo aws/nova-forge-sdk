@@ -44,7 +44,7 @@ customizer = NovaModelCustomizer(
     method=TrainingMethod.SFT_LORA,
     infra=SMTJRuntimeManager(instance_type="ml.p5.48xlarge", instance_count=2),
     data_s3_path="s3://my-bucket/data.jsonl",
-    output_s3_path="s3://my-bucket/output/"
+    output_s3_path="s3://my-bucket/output"
 )
 
 result = customizer.train(job_name="my-training-job")
@@ -305,7 +305,7 @@ smtj_manager = SMTJNotificationManager(region="us-east-1")
 smtj_manager.enable_notifications(
     job_name="existing-training-job",
     emails=["user@example.com"],
-    output_s3_path="s3://bucket/output/"
+    output_s3_path="s3://bucket/output"
 )
 
 # For SMHP jobs
@@ -313,7 +313,7 @@ smhp_manager = SMHPNotificationManager(cluster_name="my-cluster", region="us-eas
 smhp_manager.enable_notifications(
     job_name="existing-pytorch-job",
     emails=["user@example.com"],
-    output_s3_path="s3://bucket/output/",
+    output_s3_path="s3://bucket/output",
     namespace="kubeflow",
     kubectl_layer_arn="arn:aws:lambda:<region>:123456789012:layer:kubectl:1"
 )

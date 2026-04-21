@@ -11,13 +11,12 @@ from pathlib import Path
 
 import pytest
 
+from amzn_nova_forge.core.enums import EvaluationTask, Model, TrainingMethod
 from amzn_nova_forge.dataset import (
     CSVDatasetLoader,
     JSONDatasetLoader,
     JSONLDatasetLoader,
 )
-from amzn_nova_forge.model.model_enums import Model, TrainingMethod
-from amzn_nova_forge.recipe.recipe_config import EvaluationTask
 
 
 class TestRFTMultiturnValidation:
@@ -40,12 +39,10 @@ class TestRFTMultiturnValidation:
         try:
             loader = JSONLDatasetLoader(id="id", prompt="prompt")
             loader.load(temp_path)
-            loader.transform(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
-            loader.validate(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
+            loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+            loader.execute()
+            loader.execute()
+            loader.validate(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
         finally:
             Path(temp_path).unlink()
 
@@ -78,12 +75,10 @@ class TestRFTMultiturnValidation:
                 id="id", prompt="prompt", answer="answer", task="task", info="info"
             )
             loader.load(temp_path)
-            loader.transform(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
-            loader.validate(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
+            loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+            loader.execute()
+            loader.execute()
+            loader.validate(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
         finally:
             Path(temp_path).unlink()
 
@@ -118,12 +113,10 @@ class TestRFTMultiturnValidation:
         try:
             loader = JSONLDatasetLoader(id="id", metadata="metadata")
             loader.load(temp_path)
-            loader.transform(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
-            loader.validate(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
+            loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+            loader.execute()
+            loader.execute()
+            loader.validate(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
         finally:
             Path(temp_path).unlink()
 
@@ -163,12 +156,10 @@ class TestRFTMultiturnValidation:
                 id="id", prompt="prompt", answer="answer", task="task", info="info"
             )
             loader.load(temp_path)
-            loader.transform(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
-            loader.validate(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
+            loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+            loader.execute()
+            loader.execute()
+            loader.validate(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
         finally:
             Path(temp_path).unlink()
 
@@ -186,12 +177,10 @@ class TestRFTMultiturnValidation:
         try:
             loader = JSONLDatasetLoader(id="id", prompt="prompt", info="info")
             loader.load(temp_path)
-            loader.transform(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
-            loader.validate(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
+            loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+            loader.execute()
+            loader.execute()
+            loader.validate(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
         finally:
             Path(temp_path).unlink()
 
@@ -209,12 +198,10 @@ class TestRFTMultiturnValidation:
         try:
             loader = JSONDatasetLoader(id="id", prompt="prompt", info="info")
             loader.load(temp_path)
-            loader.transform(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
-            loader.validate(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
+            loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+            loader.execute()
+            loader.execute()
+            loader.validate(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
         finally:
             Path(temp_path).unlink()
 
@@ -234,12 +221,10 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
                 id="id", prompt="prompt", answer="answer", task="task", info="info"
             )
             loader.load(temp_path)
-            loader.transform(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
-            loader.validate(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
+            loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+            loader.execute()
+            loader.execute()
+            loader.validate(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
         finally:
             Path(temp_path).unlink()
 
@@ -264,12 +249,10 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
             with pytest.raises(Exception):
                 loader = JSONLDatasetLoader(id="id", prompt="prompt", info="info")
                 loader.load(temp_path)
-                loader.transform(
-                    method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-                )
-                loader.validate(
-                    method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-                )
+                loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+                loader.execute()
+                loader.execute()
+                loader.validate(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
         finally:
             Path(temp_path).unlink()
 
@@ -288,12 +271,10 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
             with pytest.raises(Exception):
                 loader = JSONLDatasetLoader(id="id", prompt="prompt")
                 loader.load(temp_path)
-                loader.transform(
-                    method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-                )
-                loader.validate(
-                    method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-                )
+                loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+                loader.execute()
+                loader.execute()
+                loader.validate(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
         finally:
             Path(temp_path).unlink()
 
@@ -312,12 +293,10 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
             with pytest.raises(Exception):
                 loader = JSONLDatasetLoader(id="id", prompt="prompt")
                 loader.load(temp_path)
-                loader.transform(
-                    method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-                )
-                loader.validate(
-                    method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-                )
+                loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+                loader.execute()
+                loader.execute()
+                loader.validate(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
         finally:
             Path(temp_path).unlink()
 
@@ -341,12 +320,10 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
             with pytest.raises(Exception):
                 loader = JSONLDatasetLoader(id="id", prompt="prompt")
                 loader.load(temp_path)
-                loader.transform(
-                    method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-                )
-                loader.validate(
-                    method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-                )
+                loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+                loader.execute()
+                loader.execute()
+                loader.validate(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
         finally:
             Path(temp_path).unlink()
 
@@ -370,12 +347,10 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
             with pytest.raises(Exception):
                 loader = JSONLDatasetLoader(id="id", prompt="prompt")
                 loader.load(temp_path)
-                loader.transform(
-                    method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-                )
-                loader.validate(
-                    method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-                )
+                loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+                loader.execute()
+                loader.execute()
+                loader.validate(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
         finally:
             Path(temp_path).unlink()
 
@@ -399,12 +374,10 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
             with pytest.raises(Exception):
                 loader = JSONLDatasetLoader(id="id", prompt="prompt")
                 loader.load(temp_path)
-                loader.transform(
-                    method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-                )
-                loader.validate(
-                    method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-                )
+                loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+                loader.execute()
+                loader.execute()
+                loader.validate(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
         finally:
             Path(temp_path).unlink()
 
@@ -426,9 +399,9 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
         try:
             loader = JSONLDatasetLoader(id="id", prompt="prompt")
             loader.load(temp_path)
-            loader.transform(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
+            loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+            loader.execute()
+            loader.execute()
 
             # Check that IDs were auto-generated
             transformed_data = list(loader.dataset())
@@ -454,9 +427,9 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
         try:
             loader = JSONLDatasetLoader(id="id", prompt="prompt")
             loader.load(temp_path)
-            loader.transform(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
+            loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+            loader.execute()
+            loader.execute()
 
             # Check that IDs were auto-generated
             transformed_data = list(loader.dataset())
@@ -481,9 +454,9 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
         try:
             loader = JSONLDatasetLoader(id="id", prompt="prompt")
             loader.load(temp_path)
-            loader.transform(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
+            loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+            loader.execute()
+            loader.execute()
 
             # Check that IDs were auto-generated
             transformed_data = list(loader.dataset())
@@ -510,9 +483,9 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
         try:
             loader = JSONLDatasetLoader(id="id", prompt="prompt")
             loader.load(temp_path)
-            loader.transform(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
+            loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+            loader.execute()
+            loader.execute()
 
             # Check sequential counter behavior
             transformed_data = list(loader.dataset())
@@ -539,9 +512,9 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
         try:
             loader = JSONLDatasetLoader(id="id", prompt="prompt", answer="answer")
             loader.load(temp_path)
-            loader.transform(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
+            loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+            loader.execute()
+            loader.execute()
 
             # Check that answer was converted to string
             transformed_data = list(loader.dataset())
@@ -564,9 +537,9 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
         try:
             loader = JSONLDatasetLoader(id="id", prompt="prompt", answer="answer")
             loader.load(temp_path)
-            loader.transform(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
+            loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+            loader.execute()
+            loader.execute()
 
             # Check that answer was converted to string
             transformed_data = list(loader.dataset())
@@ -589,9 +562,9 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
         try:
             loader = JSONLDatasetLoader(id="id", prompt="prompt", task="task")
             loader.load(temp_path)
-            loader.transform(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
+            loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+            loader.execute()
+            loader.execute()
 
             # Check that task was converted to string
             transformed_data = list(loader.dataset())
@@ -617,13 +590,11 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
             temp_path = f.name
 
         try:
-            loader = JSONLDatasetLoader(
-                id="id", prompt="prompt", answer="answer", task="task"
-            )
+            loader = JSONLDatasetLoader(id="id", prompt="prompt", answer="answer", task="task")
             loader.load(temp_path)
-            loader.transform(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
+            loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+            loader.execute()
+            loader.execute()
 
             # Check that both were converted to strings
             transformed_data = list(loader.dataset())
@@ -648,9 +619,9 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
         try:
             loader = JSONLDatasetLoader(id="id", prompt="prompt", answer="answer")
             loader.load(temp_path)
-            loader.transform(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
+            loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+            loader.execute()
+            loader.execute()
 
             # Empty string should be filtered out (not included in metadata)
             transformed_data = list(loader.dataset())
@@ -676,18 +647,13 @@ sample-002,"Capital of France?","Paris","geography","{""difficulty"": ""easy""}"
         try:
             loader = JSONLDatasetLoader(id="id", prompt="prompt", answer="answer")
             loader.load(temp_path)
-            loader.transform(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
-            loader.validate(
-                method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2
-            )
+            loader.transform(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
+            loader.execute()
+            loader.execute()
+            loader.validate(method=TrainingMethod.RFT_MULTITURN_LORA, model=Model.NOVA_LITE_2)
 
             # Should pass validation with special characters
             transformed_data = list(loader.dataset())
-            assert (
-                transformed_data[0]["metadata"]["answer"]
-                == "Answer with\nnewlines\tand\ttabs"
-            )
+            assert transformed_data[0]["metadata"]["answer"] == "Answer with\nnewlines\tand\ttabs"
         finally:
             Path(temp_path).unlink()

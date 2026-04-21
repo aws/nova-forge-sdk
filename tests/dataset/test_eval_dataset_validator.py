@@ -2,10 +2,10 @@ import json
 import tempfile
 import unittest
 
+from amzn_nova_forge.core.enums import Model, TrainingMethod
 from amzn_nova_forge.dataset.dataset_loader import (
     JSONLDatasetLoader,
 )
-from amzn_nova_forge.model.model_enums import Model, TrainingMethod
 
 
 class TestEvalDatasetValidator(unittest.TestCase):
@@ -90,15 +90,13 @@ class TestEvalDatasetValidator(unittest.TestCase):
                 "metadata": "hello",
             }
         ]
-        test_file = self.create_temp_file(
-            "eval_metadata_success", eval_metadata_success
-        )
+        test_file = self.create_temp_file("eval_metadata_success", eval_metadata_success)
         JSONLDatasetLoader().load(test_file).validate(
             training_method=TrainingMethod.EVALUATION, model=Model.NOVA_LITE
         )
 
     def test_eval_metadata_fail(self):
-        eval_metadata_fail = [
+        eval_metadata_with_reserved_keyword = [
             {
                 "system": "Image inference: ",
                 "query": "What is the number in the image? Please just use one English word to answer.",
@@ -106,12 +104,10 @@ class TestEvalDatasetValidator(unittest.TestCase):
                 "metadata": "<image> bad response",
             }
         ]
-        test_file = self.create_temp_file("eval_metadata_fail", eval_metadata_fail)
+        test_file = self.create_temp_file("eval_metadata_fail", eval_metadata_with_reserved_keyword)
         dataset_loader = JSONLDatasetLoader().load(test_file)
-        with self.assertRaises(ValueError):
-            dataset_loader.validate(
-                training_method=TrainingMethod.EVALUATION, model=Model.NOVA_LITE
-            )
+        # Reserved keyword check is scoped to SFT only; eval should pass
+        dataset_loader.validate(training_method=TrainingMethod.EVALUATION, model=Model.NOVA_LITE)
 
     def tearDown(self):
         """Clean up temporary files created during each unit test."""

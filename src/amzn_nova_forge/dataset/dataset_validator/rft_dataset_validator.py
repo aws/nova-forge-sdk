@@ -22,7 +22,7 @@ from typing import Dict, Iterator, List, Optional, Union
 
 from pydantic import BaseModel, field_validator
 
-from amzn_nova_forge.model.model_enums import Model
+from amzn_nova_forge.core.enums import Model
 
 from .dataset_validator import (
     BaseDatasetValidator,
@@ -152,9 +152,7 @@ class RFTDatasetSample(BaseModel):
             # If there's a system message, it should be first
             first_role = messages[0].role.lower() if messages[0].role else None
             if first_role != "system":
-                raise ValueError(
-                    "Invalid messages, system message must be first if present."
-                )
+                raise ValueError("Invalid messages, system message must be first if present.")
 
         # Check that there's at least one user message
         if not any(msg.role and msg.role.lower() == "user" for msg in messages):
@@ -169,18 +167,12 @@ class RFTDatasetSample(BaseModel):
         if reference_answer is not None:
             if isinstance(reference_answer, str):
                 if not reference_answer.strip():
-                    raise ValueError(
-                        "Invalid reference_answer, the string cannot be empty."
-                    )
+                    raise ValueError("Invalid reference_answer, the string cannot be empty.")
             elif isinstance(reference_answer, dict):
                 if not reference_answer:
-                    raise ValueError(
-                        "Invalid reference_answer, the dict cannot be empty."
-                    )
+                    raise ValueError("Invalid reference_answer, the dict cannot be empty.")
             else:
-                raise ValueError(
-                    "Invalid reference_answer, must be a string or dictionary."
-                )
+                raise ValueError("Invalid reference_answer, must be a string or dictionary.")
         return reference_answer
 
     @field_validator("tools")
@@ -189,9 +181,7 @@ class RFTDatasetSample(BaseModel):
         # tools is optional, but when provided, it cannot be empty and duplicate names can't exist.
         if tools is not None:
             if len(tools) == 0:
-                raise ValueError(
-                    "Invalid tools, tools list cannot be empty when provided."
-                )
+                raise ValueError("Invalid tools, tools list cannot be empty when provided.")
 
             # Check for duplicate tool names
             tool_names = [tool.function.name for tool in tools]

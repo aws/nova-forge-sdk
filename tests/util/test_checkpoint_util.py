@@ -49,9 +49,7 @@ class TestCheckpointUtil(unittest.TestCase):
                 "Message": "The specified bucket does not exist",
             }
         }
-        mock_s3_client.head_object.side_effect = ClientError(
-            error_response, "HeadObject"
-        )
+        mock_s3_client.head_object.side_effect = ClientError(error_response, "HeadObject")
 
         checkpoint_uri = "s3://nonexistent-bucket/path/to/checkpoint.pth"
         region = "us-east-1"
@@ -59,9 +57,7 @@ class TestCheckpointUtil(unittest.TestCase):
         with self.assertRaises(ValueError) as context:
             validate_checkpoint_uri(checkpoint_uri, region)
 
-        self.assertIn(
-            "S3 bucket nonexistent-bucket does not exist", str(context.exception)
-        )
+        self.assertIn("S3 bucket nonexistent-bucket does not exist", str(context.exception))
         self.assertIn(checkpoint_uri, str(context.exception))
 
     @patch("boto3.client")
@@ -75,9 +71,7 @@ class TestCheckpointUtil(unittest.TestCase):
                 "Message": "The specified key does not exist",
             }
         }
-        mock_s3_client.head_object.side_effect = ClientError(
-            error_response, "HeadObject"
-        )
+        mock_s3_client.head_object.side_effect = ClientError(error_response, "HeadObject")
 
         checkpoint_uri = "s3://my-bucket/nonexistent/checkpoint.pth"
         region = "us-east-1"
@@ -114,9 +108,7 @@ class TestCheckpointUtil(unittest.TestCase):
 
         validate_checkpoint_uri(checkpoint_uri, region)
 
-        mock_s3_client.head_object.assert_called_once_with(
-            Bucket="my-bucket", Key="checkpoint.pth"
-        )
+        mock_s3_client.head_object.assert_called_once_with(Bucket="my-bucket", Key="checkpoint.pth")
 
     @patch("boto3.client")
     def test_validate_checkpoint_uri_access_denied(self, mock_boto_client):
@@ -124,9 +116,7 @@ class TestCheckpointUtil(unittest.TestCase):
         mock_boto_client.return_value = mock_s3_client
 
         error_response = {"Error": {"Code": "403", "Message": "Forbidden"}}
-        mock_s3_client.head_object.side_effect = ClientError(
-            error_response, "HeadObject"
-        )
+        mock_s3_client.head_object.side_effect = ClientError(error_response, "HeadObject")
 
         checkpoint_uri = "s3://my-bucket/checkpoint.pth"
         region = "us-east-1"
@@ -202,22 +192,16 @@ class TestExtractCheckpointPath(unittest.TestCase):
     @patch("boto3.client")
     @patch("tempfile.NamedTemporaryFile")
     @patch("tarfile.open")
-    def test_smtj_manifest_path(
-        self, mock_tarfile_open, mock_tempfile, mock_boto_client
-    ):
+    def test_smtj_manifest_path(self, mock_tarfile_open, mock_tempfile, mock_boto_client):
         """Test that SMTJ jobs extract manifest from {base_key}/{job_id}/output/output.tar.gz"""
         mock_s3_client = MagicMock()
         mock_boto_client.return_value = mock_s3_client
 
         # SMTJ manifest structure
-        smtj_manifest = {
-            "checkpoint_s3_bucket": "s3://customer-escrow-123/job-id/checkpoints/192"
-        }
+        smtj_manifest = {"checkpoint_s3_bucket": "s3://customer-escrow-123/job-id/checkpoints/192"}
 
         # Mock get_object to fail (SMHP format not found)
-        mock_s3_client.get_object.side_effect = ClientError(
-            {"Error": {"Code": "404"}}, "GetObject"
-        )
+        mock_s3_client.get_object.side_effect = ClientError({"Error": {"Code": "404"}}, "GetObject")
 
         # Mock download_file for SMTJ
         mock_s3_client.download_file.return_value = None

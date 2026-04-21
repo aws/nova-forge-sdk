@@ -141,26 +141,20 @@ class TestCreateRFTExecutionRole:
         mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
 
         # Mock IAM responses - role doesn't exist
-        mock_iam.exceptions.NoSuchEntityException = type(
-            "NoSuchEntityException", (Exception,), {}
-        )
+        mock_iam.exceptions.NoSuchEntityException = type("NoSuchEntityException", (Exception,), {})
         mock_iam.get_role.side_effect = mock_iam.exceptions.NoSuchEntityException()
         mock_iam.create_role.return_value = {
             "Role": {"Arn": "arn:aws:iam::123456789012:role/RFTExecutionRoleNovaSDK"}
         }
         mock_iam.create_policy.return_value = {
-            "Policy": {
-                "Arn": "arn:aws:iam::123456789012:policy/RFTExecutionRoleNovaSDKPolicy"
-            }
+            "Policy": {"Arn": "arn:aws:iam::123456789012:policy/RFTExecutionRoleNovaSDKPolicy"}
         }
         # First call returns empty (not attached), second call returns attached (after attach)
         mock_iam.list_attached_role_policies.side_effect = [
             {"AttachedPolicies": []},
             {
                 "AttachedPolicies": [
-                    {
-                        "PolicyArn": "arn:aws:iam::123456789012:policy/RFTExecutionRoleNovaSDKPolicy"
-                    }
+                    {"PolicyArn": "arn:aws:iam::123456789012:policy/RFTExecutionRoleNovaSDKPolicy"}
                 ]
             },
         ]
@@ -174,9 +168,7 @@ class TestCreateRFTExecutionRole:
 
     @patch("boto3.client")
     @patch("time.sleep")  # Mock sleep to avoid delays
-    def test_create_rft_execution_role_uses_existing_role(
-        self, mock_sleep, mock_client
-    ):
+    def test_create_rft_execution_role_uses_existing_role(self, mock_sleep, mock_client):
         """Test using an existing RFT execution role."""
         mock_iam = MagicMock()
         mock_sts = MagicMock()
@@ -199,14 +191,10 @@ class TestCreateRFTExecutionRole:
         mock_iam.exceptions.EntityAlreadyExistsException = type(
             "EntityAlreadyExistsException", (Exception,), {}
         )
-        mock_iam.create_policy.side_effect = (
-            mock_iam.exceptions.EntityAlreadyExistsException()
-        )
+        mock_iam.create_policy.side_effect = mock_iam.exceptions.EntityAlreadyExistsException()
         mock_iam.list_attached_role_policies.return_value = {
             "AttachedPolicies": [
-                {
-                    "PolicyArn": "arn:aws:iam::123456789012:policy/RFTExecutionRoleNovaSDKPolicy"
-                }
+                {"PolicyArn": "arn:aws:iam::123456789012:policy/RFTExecutionRoleNovaSDKPolicy"}
             ]
         }
 
@@ -232,9 +220,7 @@ class TestCreateRFTExecutionRole:
         mock_client.side_effect = client_factory
 
         mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
-        mock_iam.exceptions.NoSuchEntityException = type(
-            "NoSuchEntityException", (Exception,), {}
-        )
+        mock_iam.exceptions.NoSuchEntityException = type("NoSuchEntityException", (Exception,), {})
         mock_iam.get_role.side_effect = mock_iam.exceptions.NoSuchEntityException()
         mock_iam.create_role.return_value = {
             "Role": {"Arn": "arn:aws:iam::123456789012:role/CustomRoleName"}
@@ -248,9 +234,7 @@ class TestCreateRFTExecutionRole:
             ]
         }
 
-        role_arn = create_rft_execution_role(
-            region="us-east-1", role_name="CustomRoleName"
-        )
+        role_arn = create_rft_execution_role(region="us-east-1", role_name="CustomRoleName")
 
         assert "CustomRoleName" in role_arn
         call_args = mock_iam.create_role.call_args

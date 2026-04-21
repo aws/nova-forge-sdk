@@ -28,8 +28,8 @@ from typing import Any, Dict, List, Optional
 
 import boto3
 
-from amzn_nova_forge.model.model_enums import TrainingMethod
-from amzn_nova_forge.recipe.recipe_config import EvaluationTask
+from amzn_nova_forge.core.enums import EvaluationTask, TrainingMethod
+from amzn_nova_forge.telemetry import Feature, _telemetry_emitter
 from amzn_nova_forge.util.logging import logger
 
 from .base_infra import (
@@ -50,6 +50,13 @@ from .ecs_infra import ECSRFTInfrastructure
 from .local_infra import LocalRFTInfrastructure
 
 
+@_telemetry_emitter(
+    Feature.INFRA,
+    "list_rft_stacks",
+    extra_info_fn=lambda *args, **kwargs: {
+        "region": kwargs.get("region", "us-east-1"),
+    },
+)
 def list_rft_stacks(region: str = "us-east-1", all_stacks: bool = False) -> List[str]:
     """
     List CloudFormation stacks in the region.
@@ -87,9 +94,7 @@ def list_rft_stacks(region: str = "us-east-1", all_stacks: bool = False) -> List
                     stack_names.append(stack_name)
 
         if not all_stacks:
-            logger.info(
-                f"Found {len(stack_names)} Nova Forge SDK stack(s) in region {region}"
-            )
+            logger.info(f"Found {len(stack_names)} Nova Forge SDK stack(s) in region {region}")
         else:
             logger.info(f"Found {len(stack_names)} stack(s) in region {region}")
 
@@ -212,13 +217,10 @@ class RFTMultiturnInfrastructure:
                 except ValueError:
                     valid_values = [e.value for e in VFEnvId]
                     raise ValueError(
-                        f"Invalid vf_env_id: '{vf_env_id}'. "
-                        f"Must be one of: {valid_values}"
+                        f"Invalid vf_env_id: '{vf_env_id}'. Must be one of: {valid_values}"
                     )
             else:
-                raise TypeError(
-                    f"vf_env_id must be VFEnvId or str, got {type(vf_env_id)}"
-                )
+                raise TypeError(f"vf_env_id must be VFEnvId or str, got {type(vf_env_id)}")
             self.is_custom_env = False
             self.custom_env = None
 
@@ -228,9 +230,7 @@ class RFTMultiturnInfrastructure:
         # Validate custom environment for platform
         if self.is_custom_env and custom_env:
             if self.platform == "local" and not custom_env.local_path:
-                raise ValueError(
-                    "CustomEnvironment.local_path required for LOCAL platform"
-                )
+                raise ValueError("CustomEnvironment.local_path required for LOCAL platform")
             elif self.platform in ["ec2", "ecs"] and not custom_env.s3_uri:
                 raise ValueError(
                     f"CustomEnvironment.s3_uri required for {self.platform.upper()} platform. "
@@ -318,9 +318,7 @@ class RFTMultiturnInfrastructure:
         if self._stack_exists:
             logger.info(f"Using existing CloudFormation stack: '{self.stack_name}'")
         else:
-            logger.info(
-                f"CloudFormation stack with name '{self.stack_name}' will be created"
-            )
+            logger.info(f"CloudFormation stack with name '{self.stack_name}' will be created")
 
         logger.info(f"RFT Infrastructure session ID: {self._session_id}")
 
@@ -345,15 +343,21 @@ class RFTMultiturnInfrastructure:
         """Auto-detect platform from infrastructure ARN"""
         if infrastructure_arn is None:
             return "local"
-        if infrastructure_arn.startswith(
-            "arn:aws:ec2:"
-        ) or infrastructure_arn.startswith("i-"):
+        if infrastructure_arn.startswith("arn:aws:ec2:") or infrastructure_arn.startswith("i-"):
             return "ec2"
         elif infrastructure_arn.startswith("arn:aws:ecs:"):
             return "ecs"
         else:
             raise ValueError(f"Unknown infrastructure ARN format: {infrastructure_arn}")
 
+    @_telemetry_emitter(
+        Feature.INFRA,
+        "setup",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "platform": self.platform,
+            "region": self.region,
+        },
+    )
     def setup(self, s3_bucket: Optional[str] = None) -> Dict[str, Any]:
         """
         Setup RFT multiturn infrastructure and deploy CloudFormation stack.
@@ -497,6 +501,14 @@ class RFTMultiturnInfrastructure:
         logger.info(f"Stack '{self.stack_name}' deployed successfully")
         return self.get_configuration()
 
+    @_telemetry_emitter(
+        Feature.INFRA,
+        "start_environment",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "platform": self.platform,
+            "region": self.region,
+        },
+    )
     def start_environment(
         self,
         env_type: EnvType,
@@ -592,6 +604,14 @@ class RFTMultiturnInfrastructure:
             config_path=config_path,
         )
 
+    @_telemetry_emitter(
+        Feature.INFRA,
+        "start_training_environment",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "platform": self.platform,
+            "region": self.region,
+        },
+    )
     def start_training_environment(
         self,
         vf_env_args: Optional[Dict] = None,
@@ -644,6 +664,14 @@ class RFTMultiturnInfrastructure:
             queue_url=queue_url,
         )
 
+    @_telemetry_emitter(
+        Feature.INFRA,
+        "start_evaluation_environment",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "platform": self.platform,
+            "region": self.region,
+        },
+    )
     def start_evaluation_environment(
         self,
         vf_env_args: Optional[Dict] = None,
@@ -696,6 +724,14 @@ class RFTMultiturnInfrastructure:
             queue_url=queue_url,
         )
 
+    @_telemetry_emitter(
+        Feature.INFRA,
+        "get_logs",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "platform": self.platform,
+            "region": self.region,
+        },
+    )
     def get_logs(
         self,
         env_type: Optional[EnvType] = None,
@@ -719,10 +755,16 @@ class RFTMultiturnInfrastructure:
         if env_type is None:
             env_type = EnvType.TRAIN
 
-        return self.infra.get_logs(
-            env_type, limit, start_from_head, log_stream_name, tail
-        )
+        return self.infra.get_logs(env_type, limit, start_from_head, log_stream_name, tail)
 
+    @_telemetry_emitter(
+        Feature.INFRA,
+        "kill_task",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "platform": self.platform,
+            "region": self.region,
+        },
+    )
     def kill_task(self, env_type: Optional[EnvType] = None, **kwargs):
         """
         Kill training or evaluation task.
@@ -741,6 +783,14 @@ class RFTMultiturnInfrastructure:
         self.infra.kill_task(env_type, **kwargs)
         logger.info(f"Killed {env_type.value} task on {self.platform}")
 
+    @_telemetry_emitter(
+        Feature.INFRA,
+        "cleanup",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "platform": self.platform,
+            "region": self.region,
+        },
+    )
     def cleanup(self, delete_stack: bool = False, cleanup_environment: bool = False):
         """Clean up resources
 
@@ -755,16 +805,30 @@ class RFTMultiturnInfrastructure:
         if delete_stack and self.stack_outputs:
             self._delete_stack(self.stack_name)
 
+    @_telemetry_emitter(
+        Feature.INFRA,
+        "check_all_queues",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "platform": self.platform,
+            "region": self.region,
+        },
+    )
     def check_all_queues(self) -> Dict[str, Dict[str, int]]:
         """Check message counts in all queues"""
         if not self.stack_outputs:
             raise RuntimeError("Stack not deployed. Run setup() first.")
 
         queues = self._get_queue_urls()
-        return {
-            name: self.infra.check_queue_messages(url) for name, url in queues.items()
-        }
+        return {name: self.infra.check_queue_messages(url) for name, url in queues.items()}
 
+    @_telemetry_emitter(
+        Feature.INFRA,
+        "flush_all_queues",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "platform": self.platform,
+            "region": self.region,
+        },
+    )
     def flush_all_queues(self):
         """Flush all messages from all queues"""
         if not self.stack_outputs:
@@ -774,6 +838,14 @@ class RFTMultiturnInfrastructure:
             self.infra.flush_queue(url)
             logger.info(f"Flushed {name} queue")
 
+    @_telemetry_emitter(
+        Feature.INFRA,
+        "get_configuration",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "platform": self.platform,
+            "region": self.region,
+        },
+    )
     def get_configuration(self) -> Dict[str, Any]:
         """Get complete configuration"""
         config = {
@@ -794,6 +866,14 @@ class RFTMultiturnInfrastructure:
 
         return config
 
+    @_telemetry_emitter(
+        Feature.INFRA,
+        "get_recipe_path",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "platform": self.platform,
+            "region": self.region,
+        },
+    )
     def get_recipe_path(self, method) -> str:
         """Download and cache specific recipe file from S3"""
         recipe_map = {
@@ -823,6 +903,14 @@ class RFTMultiturnInfrastructure:
 
         return local_path
 
+    @_telemetry_emitter(
+        Feature.INFRA,
+        "get_recipe_overrides",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "platform": self.platform,
+            "region": self.region,
+        },
+    )
     def get_recipe_overrides(self) -> Dict[str, Any]:
         """Get recipe parameter overrides for RFT multiturn jobs"""
         if not self.stack_outputs:
@@ -885,14 +973,10 @@ class RFTMultiturnInfrastructure:
 
         self.stack_outputs = StackOutputs(
             rollout_request_arn=f"arn:aws:lambda:{self.region}:{account_id}:function:{rollout_function_name}",
-            rollout_response_sqs_url=self._get_output(
-                outputs, "RolloutFinishedQueueUrl"
-            ),
+            rollout_response_sqs_url=self._get_output(outputs, "RolloutFinishedQueueUrl"),
             rollout_request_queue_url=self._get_output(outputs, "RolloutQueueUrl"),
             generate_request_sqs_url=self._get_output(outputs, "RequestQueueUrl"),
-            generate_response_sqs_url=self._get_output(
-                outputs, "RequestResponseQueueUrl"
-            ),
+            generate_response_sqs_url=self._get_output(outputs, "RequestResponseQueueUrl"),
             proxy_function_url=self._get_output(outputs, "ProxyFunctionUrl"),
             dynamo_table_name=self._get_output(outputs, "TasksTableName"),
         )
@@ -902,9 +986,7 @@ class RFTMultiturnInfrastructure:
         lambda_client = boto3.client("lambda", region_name=self.region)
         function_name = f"{stack_name}-SageMaker-proxy"
 
-        lambda_client.update_function_url_config(
-            FunctionName=function_name, AuthType="AWS_IAM"
-        )
+        lambda_client.update_function_url_config(FunctionName=function_name, AuthType="AWS_IAM")
 
     def _delete_stack(self, stack_name: str):
         """Delete CloudFormation stack"""
@@ -923,6 +1005,14 @@ class RFTMultiturnInfrastructure:
         """Get the unique session identifier for this infrastructure instance"""
         return self._session_id
 
+    @_telemetry_emitter(
+        Feature.INFRA,
+        "dump",
+        extra_info_fn=lambda self, *args, **kwargs: {
+            "platform": self.platform,
+            "region": self.region,
+        },
+    )
     def dump(
         self,
         file_path: Optional[str] = None,
@@ -983,9 +1073,7 @@ class RFTMultiturnInfrastructure:
                 if self.custom_env
                 else None
             ),
-            "stack_outputs": (
-                asdict(self.stack_outputs) if self.stack_outputs else None
-            ),
+            "stack_outputs": (asdict(self.stack_outputs) if self.stack_outputs else None),
             "infra_state": self.infra.get_state(),
             "dumped_at": datetime.now().isoformat(),
         }
@@ -998,9 +1086,8 @@ class RFTMultiturnInfrastructure:
         return full_path
 
     @classmethod
-    def load(
-        cls, file_path: str, auto_reconnect: bool = True
-    ) -> "RFTMultiturnInfrastructure":
+    @_telemetry_emitter(Feature.INFRA, "load")
+    def load(cls, file_path: str, auto_reconnect: bool = True) -> "RFTMultiturnInfrastructure":
         """
         Load infrastructure state from file and reconnect to running processes.
 
