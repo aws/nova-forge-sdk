@@ -13,14 +13,46 @@
 # limitations under the License.
 """Base classes for all dataset operations, organized by operation family."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Any
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from amzn_nova_forge.dataset.data_state import DataState
 
 
 class DataPrepError(Exception):
     """Custom exception for data preparation errors."""
 
     pass
+
+
+@dataclass
+class OperationResult:
+    """Common result returned by all dataset operations."""
+
+    status: str
+    output_state: Optional["DataState"] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to a plain dict (mirrors the legacy return format)."""
+        return {k: v for k, v in self.__dict__.items() if v is not None}
+
+
+@dataclass
+class FilterOperationResult(OperationResult):
+    """Result for local filter operations (e.g. invalid-records filter).
+
+    Inherits ``status`` from ``OperationResult``; callers must supply it
+    (e.g. ``"SUCCEEDED"`` or ``"SKIPPED"``).
+    """
+
+    filtered_count: int = 0
+    total_count: int = 0
+    filters_applied: List[str] = field(default_factory=list)
 
 
 class BaseOperation(ABC):
@@ -43,6 +75,22 @@ class BaseOperation(ABC):
             Operation-specific return value.
         """
         pass
+
+    def prepare_input(self, state: DataState, **kwargs) -> DataState:
+        """Prepare the input data for this operation if needed.
+
+        The default implementation is a no-op passthrough. Operations
+        with specific runtime constraints (e.g. requiring S3 paths or
+        a particular format) override this to convert or upload data.
+
+        Args:
+            state: Current data state.
+            **kwargs: Operation-specific arguments (e.g. output_path).
+
+        Returns:
+            A (possibly new) DataState ready for this operation.
+        """
+        return state
 
 
 # --- Typed operation families ---
@@ -75,5 +123,22 @@ class NovaForgeSaveOperation(BaseOperation):
 
 class NovaForgeSplitOperation(BaseOperation):
     """Base class for all dataset splitting operations."""
+
+    pass
+
+
+class NovaForgeFilterOperation(BaseOperation):
+    """Base class for all data filtering operations.
+
+    Filter operations accept a ``DataState`` describing the current data
+    and call ``prepare_input()`` internally to handle any conversion or
+    upload before running the filter pipeline.
+    """
+
+    pass
+
+
+class NovaForgeAnalyzeOperation(BaseOperation):
+    """Base class for all analyze operations. Reads dataset and produces analysis results."""
 
     pass

@@ -134,9 +134,7 @@ class TestMLflowMonitor(unittest.TestCase):
 
     @patch("amzn_nova_forge.monitor.mlflow_monitor.validate_mlflow_overrides")
     @patch("amzn_nova_forge.monitor.mlflow_monitor.get_default_mlflow_tracking_uri")
-    def test_mlflow_monitor_override_default_discovery(
-        self, mock_get_default, mock_validate
-    ):
+    def test_mlflow_monitor_override_default_discovery(self, mock_get_default, mock_validate):
         """Test that explicit tracking URI overrides default discovery."""
         # Setup mocks
         mock_get_default.return_value = (
@@ -244,9 +242,7 @@ class TestMLflowMonitor(unittest.TestCase):
         url = monitor.get_presigned_url()
 
         # Verify URL was returned
-        self.assertEqual(
-            url, "https://mlflow-server.example.com/presigned?token=legacy123"
-        )
+        self.assertEqual(url, "https://mlflow-server.example.com/presigned?token=legacy123")
 
         # Verify API was called with tracking server name (not full ARN)
         mock_sagemaker.create_presigned_mlflow_tracking_server_url.assert_called_once_with(
@@ -274,9 +270,7 @@ class TestMLflowMonitor(unittest.TestCase):
         mock_validate.return_value = []
         mock_sagemaker = MagicMock()
         mock_boto_client.return_value = mock_sagemaker
-        mock_sagemaker.create_presigned_mlflow_app_url.side_effect = Exception(
-            "API Error"
-        )
+        mock_sagemaker.create_presigned_mlflow_app_url.side_effect = Exception("API Error")
 
         # Create monitor
         monitor = MLflowMonitor(
@@ -291,9 +285,7 @@ class TestMLflowMonitor(unittest.TestCase):
 
     @patch("boto3.client")
     @patch("amzn_nova_forge.monitor.mlflow_monitor.validate_mlflow_overrides")
-    def test_get_presigned_url_no_url_in_response(
-        self, mock_validate, mock_boto_client
-    ):
+    def test_get_presigned_url_no_url_in_response(self, mock_validate, mock_boto_client):
         """Test that get_presigned_url handles missing URL in API response."""
         # Setup mocks
         mock_validate.return_value = []

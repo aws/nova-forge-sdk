@@ -11,21 +11,25 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from amzn_nova_forge.model.result.eval_result import (
+"""Re-exported from amzn_nova_forge.core.result for backward compatibility."""
+
+from amzn_nova_forge.core.enums import ModelStatus
+from amzn_nova_forge.core.result.eval_result import (
     BedrockEvaluationResult,
     EvaluationResult,
     SMHPEvaluationResult,
     SMTJEvaluationResult,
 )
-from amzn_nova_forge.model.result.inference_result import (
+from amzn_nova_forge.core.result.inference_result import (
     InferenceResult,
     SingleInferenceResult,
     SMTJBatchInferenceResult,
 )
-from amzn_nova_forge.model.result.job_result import BaseJobResult, JobStatus
-from amzn_nova_forge.model.result.training_result import (
+from amzn_nova_forge.core.result.job_result import BaseJobResult, JobStatus
+from amzn_nova_forge.core.result.training_result import (
     BedrockTrainingResult,
     SMHPTrainingResult,
     SMTJTrainingResult,
     TrainingResult,
 )
+from amzn_nova_forge.model.model_config import ModelDeployResult

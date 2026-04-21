@@ -58,10 +58,7 @@ class TestECSRFTInfrastructure:
         )
 
         assert infra.region == "us-east-1"
-        assert (
-            infra.cluster_arn
-            == "arn:aws:ecs:us-east-1:123456789012:cluster/test-cluster"
-        )
+        assert infra.cluster_arn == "arn:aws:ecs:us-east-1:123456789012:cluster/test-cluster"
         assert infra.account_id == "123456789012"
         assert infra.python_venv_name == "test_venv"
 
@@ -326,9 +323,7 @@ class TestECSRFTInfrastructure:
         mock_ecs = MagicMock()
         mock_ecs.describe_tasks.return_value = {
             "tasks": [
-                {
-                    "taskDefinitionArn": "arn:aws:ecs:us-east-1:123456789012:task-definition/test:1"
-                }
+                {"taskDefinitionArn": "arn:aws:ecs:us-east-1:123456789012:task-definition/test:1"}
             ]
         }
         mock_boto_client.return_value = mock_ecs
@@ -378,9 +373,7 @@ class TestECSRFTInfrastructure:
         mock_ecs = MagicMock()
         mock_ecs.describe_tasks.return_value = {
             "tasks": [
-                {
-                    "taskDefinitionArn": "arn:aws:ecs:us-east-1:123456789012:task-definition/test:1"
-                }
+                {"taskDefinitionArn": "arn:aws:ecs:us-east-1:123456789012:task-definition/test:1"}
             ]
         }
         mock_boto_client.return_value = mock_ecs
@@ -423,10 +416,7 @@ class TestECSRFTInfrastructure:
 
         state = infra.get_state()
 
-        assert (
-            state["cluster_arn"]
-            == "arn:aws:ecs:us-east-1:123456789012:cluster/test-cluster"
-        )
+        assert state["cluster_arn"] == "arn:aws:ecs:us-east-1:123456789012:cluster/test-cluster"
         assert state["account_id"] == "123456789012"
         assert state["python_venv_name"] == "test_venv"
         assert state["latest_train_task_id"] == "task-train-123"

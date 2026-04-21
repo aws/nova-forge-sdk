@@ -26,14 +26,45 @@ Running list of potential default values:
     CPT: text
 """
 
+import base64
 import json
+import re
+import urllib.request
+from dataclasses import dataclass
+from typing import Any, Optional
+from urllib.parse import urlparse
+
+import boto3
+
+from amzn_nova_forge.util.logging import logger
+
+SUPPORTED_IMAGE_FORMATS = ["gif", "jpeg", "jpg", "png", "webp"]
+MAX_IMAGE_SIZE = 50 * 1024 * 1024  # 50 MB
+REQUEST_TIMEOUT_SECONDS = 30
+
+
+@dataclass
+class TransformContext:
+    """Shared state passed to transformer functions during a single transform pass.
+
+    Tracks the S3 destination (bucket, prefix, bucket_owner) and mutable counters
+    (record_index, block_index) used to generate unique S3 keys when uploading
+    multimodal content like images."""
+
+    bucket: str
+    prefix: str
+    bucket_owner: str
+    record_index: int = 0
+    block_index: int = 0
 
 
 class DatasetTransformer:
-    default_system_msg = "You are a helpful assistant who answers the question based on the task assigned"
+    default_system_msg = (
+        "You are a helpful assistant who answers the question based on the task assigned"
+    )
 
     @staticmethod
-    def convert_to_converse_sft_nova_one(rec, column_mappings):
+    def convert_to_converse_sft_nova_one(rec, column_mappings, transform_ctx=None, s3_client=None):
         # These are the required columns for SFT Converse format for Nova 1.0.
         question_col = column_mappings.get("question")
         answer_col = column_mappings.get("answer")
@@ -120,9 +151,7 @@ class DatasetTransformer:
             "messages": [
                 {
                     "role": "user",
-                    "content": user_content
-                    if user_content
-                    else [{"text": rec[question_col]}],
+                    "content": user_content if user_content else [{"text": rec[question_col]}],
                 },
                 {"role": "assistant", "content": [{"text": rec[answer_col]}]},
             ],
@@ -130,7 +159,7 @@ class DatasetTransformer:
         return conversation
 
     @staticmethod
-    def convert_to_converse_sft_nova_two(rec, column_mappings):
+    def convert_to_converse_sft_nova_two(rec, column_mappings, transform_ctx=None, s3_client=None):
         # These are the required columns for SFT Converse format for Nova 2.0.
         question_col = column_mappings.get("question")
         answer_col = column_mappings.get("answer")
@@ -228,9 +257,7 @@ class DatasetTransformer:
             "messages": [
                 {
                     "role": "user",
-                    "content": user_content
-                    if user_content
-                    else [{"text": rec[question_col]}],
+                    "content": user_content if user_content else [{"text": rec[question_col]}],
                 },
                 {"role": "assistant", "content": assistant_content},
             ],
@@ -238,7 +265,7 @@ class DatasetTransformer:
         return conversation
 
     @staticmethod
-    def convert_to_openai_rft(rec, column_mappings):
+    def convert_to_openai_rft(rec, column_mappings, transform_ctx=None, s3_client=None):
         # These are the required columns for RFT OpenAI format.
         question_col = column_mappings.get("question")
         ref_answer_col = column_mappings.get("reference_answer")
@@ -265,15 +292,11 @@ class DatasetTransformer:
                     "messages": [
                         {
                             "role": "system",
-                            "content": rec.get(
-                                system_col, "You are a helpful AI assistant."
-                            ),
+                            "content": rec.get(system_col, "You are a helpful AI assistant."),
                         },
                         {"role": "user", "content": rec[question_col]},
                     ],
-                    "reference_answer": rec[
-                        ref_answer_col
-                    ],  # TODO: Maybe move this to metadata
+                    "reference_answer": rec[ref_answer_col],  # TODO: Maybe move this to metadata
                 }
             )
             # Add metadata -- can be any length/number of mappings.
@@ -285,7 +308,7 @@ class DatasetTransformer:
             return rft_format
 
     @staticmethod
-    def convert_to_evaluation(rec, column_mappings):
+    def convert_to_evaluation(rec, column_mappings, transform_ctx=None, s3_client=None):
         # These are the required columns for Eval format.
         query_col = column_mappings.get("query")
         response_col = column_mappings.get("response")
@@ -360,7 +383,239 @@ class DatasetTransformer:
         return None
 
     @staticmethod
-    def _convert_openai_messages_to_converse(messages, nova_version="1.0"):
+    def _parse_data_uri(url):
+        """Parse a data:image/<fmt>;base64,<data> URI and return (image_format, base64_data)."""
+        match = re.match(r"^data:image/([^;]+);base64,(.+)$", url, re.DOTALL)
+        if not match:
+            raise ValueError(
+                f"Invalid data URI format. Expected 'data:image/<format>;base64,<data>', got: {url[:80]}"
+            )
+        image_format = match.group(1).lower()
+        if image_format not in SUPPORTED_IMAGE_FORMATS:
+            raise ValueError(
+                f"Unsupported image format '{image_format}'. Supported formats: {SUPPORTED_IMAGE_FORMATS}"
+            )
+        base64_data = match.group(2)
+        return image_format, base64_data
+
+    @staticmethod
+    def _fetch_image_from_url(url):
+        """Fetch image from an HTTP/HTTPS URL and return (image_format, image_bytes).
+
+        Uses a HEAD request to check Content-Type before downloading the body.
+        Raises ValueError if the image format cannot be determined from either
+        the URL extension or the Content-Type header.
+
+        Decision matrix (ext = file extension, header = Content-Type from HEAD):
+          a. ext=None, header=None       → FAIL: no indication this is an image
+          b. ext=None, header=not-image  → FAIL: server says it's not an image
+          c. ext=None, header=image      → Use header format
+          d. ext=image, header=None      → Use ext format
+          e. ext=image, header=not-image → WARN + use ext format (server misconfigured)
+          f. ext=image, header=match     → Use ext format (confirmed)
+          g. ext=image, header=diff      → WARN + use ext format (server may normalize e.g. jpg→jpeg)
+        """
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(f"Only http and https URLs are supported, got: '{parsed.scheme}'")
+
+        # Step 1: Try to infer format from file extension
+        path = parsed.path.lower()
+        ext_format = None
+        for extension in SUPPORTED_IMAGE_FORMATS:
+            if path.endswith(f".{extension}"):
+                ext_format = extension
+                break
+
+        # Step 2: HEAD request to get Content-Type
+        header_format = None
+        content_type = ""
+        try:
+            head_req = urllib.request.Request(url, method="HEAD")
+            with urllib.request.urlopen(head_req, timeout=REQUEST_TIMEOUT_SECONDS) as head_response:
+                content_type = head_response.headers.get("Content-Type", "")
+                ct_match = re.match(r"image/(\w+)", content_type)
+                if ct_match:
+                    header_format = ct_match.group(1).lower()
+        except Exception as e:
+            logger.warning(
+                f"HEAD request failed for '{url}': {e}. Falling back to extension-based detection."
+            )
+
+        # Step 3: Decision matrix
+        if ext_format is None and header_format is None:
+            # Case a/b: no extension, no image Content-Type
+            raise ValueError(
+                f"Cannot determine image format from URL '{url}' "
+                f"or from header Content-Type: '{content_type}'. "
+                f"Ensure the URL points to a valid image."
+            )
+        elif ext_format is None and header_format is not None:
+            # Case c: no extension, but header says image
+            image_format = header_format
+        elif ext_format is not None and header_format is None:
+            # Cases d/e: extension present, header didn't confirm image
+            logger.warning(
+                f"URL '{url}' has image extension '.{ext_format}' but Content-Type "
+                f"header could not confirm it (Content-Type: '{content_type}'). "
+                f"Proceeding with extension-based format."
+            )
+            image_format = ext_format
+        else:
+            # Both present
+            if ext_format == header_format:
+                # Case f: match
+                image_format = ext_format
+            else:
+                # Case g: mismatch
+                logger.warning(
+                    f"URL '{url}' extension suggests '{ext_format}' but Content-Type header indicates '{header_format}'. "
+                    f"Using extension-based format."
+                )
+                image_format = ext_format
+
+        # Step 4: Download image body
+        try:
+            with urllib.request.urlopen(url, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+                image_bytes = response.read(MAX_IMAGE_SIZE + 1)
+                if len(image_bytes) > MAX_IMAGE_SIZE:
+                    raise ValueError(
+                        f"Image exceeds maximum allowed size of {MAX_IMAGE_SIZE} bytes for URL: {url}"
+                    )
+        except ValueError:
+            raise
+        except Exception as e:
+            raise ValueError(f"Failed to fetch image from URL '{url}': {e}")
+
+        return image_format, image_bytes
+
+    @staticmethod
+    def _build_s3_image_key(transform_ctx: TransformContext, image_format: str) -> str:
+        """Build S3 key like: {prefix}/record_0001_block_001.png"""
+        return f"{transform_ctx.prefix}record_{transform_ctx.record_index:04d}_block_{transform_ctx.block_index:03d}.{image_format}"
+
+    @staticmethod
+    def _upload_image_bytes_to_s3(transform_ctx, image_format, image_bytes, s3_client):
+        """Build S3 key and upload raw image bytes via put_object."""
+        s3_key = DatasetTransformer._build_s3_image_key(transform_ctx, image_format)
+        try:
+            s3_client.put_object(
+                Bucket=transform_ctx.bucket,
+                Key=s3_key,
+                Body=image_bytes,
+            )
+        except Exception as e:
+            raise ValueError(
+                f"Failed to upload image to S3 's3://{transform_ctx.bucket}/{s3_key}': {e}"
+            )
+        return s3_key
+
+    @staticmethod
+    def _parse_image_url(url, transform_ctx=None, s3_client=None):
+        """
+        Check url prefix and use appropriate handler.
+        When transform_ctx is provided, uploads/copies images to S3 and returns s3Location blocks.
+        When transform_ctx is None, raises ValueError if an image_url block is encountered.
+        """
+        if transform_ctx is None:
+            raise ValueError(
+                "multimodal_data_s3_path is required for datasets containing images. "
+                "Pass it as a kwarg to transform()."
+            )
+
+        if url.startswith("data:"):
+            image_format, base64_data = DatasetTransformer._parse_data_uri(url)
+            image_bytes = base64.b64decode(base64_data)
+            s3_key = DatasetTransformer._upload_image_bytes_to_s3(
+                transform_ctx, image_format, image_bytes, s3_client
+            )
+        elif url.startswith("http://") or url.startswith("https://"):
+            image_format, image_bytes = DatasetTransformer._fetch_image_from_url(url)
+            if image_format not in SUPPORTED_IMAGE_FORMATS:
+                raise ValueError(
+                    f"Unsupported image format '{image_format}' for URL '{url}'. "
+                    f"Supported formats: {SUPPORTED_IMAGE_FORMATS}"
+                )
+            s3_key = DatasetTransformer._upload_image_bytes_to_s3(
+                transform_ctx, image_format, image_bytes, s3_client
+            )
+        elif url.startswith("s3://"):
+            parsed = urlparse(url)
+            source_bucket = parsed.netloc
+            source_key = parsed.path.lstrip("/")
+            # Determine image format from extension
+            image_format = None
+            for extension in SUPPORTED_IMAGE_FORMATS:
+                if source_key.lower().endswith(f".{extension}"):
+                    image_format = extension
+                    break
+            if image_format is None:
+                raise ValueError(
+                    f"Could not determine image format from S3 URI '{url}'. "
+                    f"The key must end with a supported extension: {SUPPORTED_IMAGE_FORMATS}"
+                )
+            s3_key = DatasetTransformer._build_s3_image_key(transform_ctx, image_format)
+            try:
+                s3_client.copy_object(
+                    Bucket=transform_ctx.bucket,
+                    Key=s3_key,
+                    CopySource={"Bucket": source_bucket, "Key": source_key},
+                )
+            except Exception as e:
+                raise ValueError(
+                    f"Failed to upload image to S3 's3://{transform_ctx.bucket}/{s3_key}': {e}"
+                )
+        else:
+            raise ValueError(
+                f"Unsupported URL scheme in image_url. Expected data:, http://, https://, or s3://. Got: {url[:80]}"
+            )
+
+        transform_ctx.block_index += 1
+        return {
+            "image": {
+                "format": image_format,
+                "source": {
+                    "s3Location": {
+                        "uri": f"s3://{transform_ctx.bucket}/{s3_key}",
+                        "bucketOwner": transform_ctx.bucket_owner,
+                    }
+                },
+            }
+        }
+
+    @staticmethod
+    def _convert_content_blocks(content_blocks, transform_ctx=None, s3_client=None):
+        """
+        Convert OpenAI array-type content blocks to Converse content items.
+        """
+        converse_content = []
+        for block in content_blocks:
+            block_type = block.get("type")
+            if block_type == "text":
+                text_value = block.get("text", "")
+                if text_value:
+                    converse_content.append({"text": text_value})
+            elif block_type == "image_url":
+                image_url_obj = block.get("image_url", {})
+                url = image_url_obj.get("url", "")
+                image_block = DatasetTransformer._parse_image_url(url, transform_ctx, s3_client)
+                converse_content.append(image_block)
+            else:
+                raise ValueError(
+                    f"Unsupported content block type '{block_type}'. "
+                    f"Supported types: 'text', 'image_url'"
+                )
+        return converse_content
+
+    @staticmethod
+    def _append_user_message(converse_messages, converse_content):
+        """Append a user message with the given Converse content list."""
+        converse_messages.append({"role": "user", "content": converse_content})
+
+    @staticmethod
+    def _convert_openai_messages_to_converse(
+        messages, nova_version="1.0", transform_ctx=None, s3_client=None
+    ):
         """
         Convert OpenAI messages to Converse format for Nova 1.0 and 2.0 SFT.
         Merges consecutive tool messages into a single user message to ensure alternating roles.
@@ -383,22 +638,22 @@ class DatasetTransformer:
             elif role == "user":
                 # If we have pending tool results, add them first as a user message
                 if nova_version == "2.0" and pending_tool_results:
-                    converse_messages.append(
-                        {"role": "user", "content": pending_tool_results}
-                    )
+                    converse_messages.append({"role": "user", "content": pending_tool_results})
                     pending_tool_results = []
 
-                # Then add the regular user message if it has content
-                if content:
-                    converse_messages.append(
-                        {"role": "user", "content": [{"text": content}]}
+                # Handle array-type content (multimodal) vs string content
+                if isinstance(content, list):
+                    converse_content = DatasetTransformer._convert_content_blocks(
+                        content, transform_ctx, s3_client
                     )
+                    if converse_content:
+                        DatasetTransformer._append_user_message(converse_messages, converse_content)
+                elif content:
+                    DatasetTransformer._append_user_message(converse_messages, [{"text": content}])
             elif role == "assistant":
                 # If we have pending tool results, add them first as a user message
                 if nova_version == "2.0" and pending_tool_results:
-                    converse_messages.append(
-                        {"role": "user", "content": pending_tool_results}
-                    )
+                    converse_messages.append({"role": "user", "content": pending_tool_results})
                     pending_tool_results = []
 
                 assistant_content = []
@@ -431,9 +686,7 @@ class DatasetTransformer:
                             assistant_content.append(tool_use_block)
 
                 if assistant_content:
-                    converse_messages.append(
-                        {"role": "assistant", "content": assistant_content}
-                    )
+                    converse_messages.append({"role": "assistant", "content": assistant_content})
             elif role == "tool":
                 # Collect tool results to merge (only for Nova 2.0)
                 if nova_version == "2.0":
@@ -473,23 +726,21 @@ class DatasetTransformer:
         }
 
         # Add toolConfig if tools are present
-        tool_config = DatasetTransformer._convert_openai_tools_to_converse_toolconfig(
-            tools
-        )
+        tool_config = DatasetTransformer._convert_openai_tools_to_converse_toolconfig(tools)
         if tool_config:
             conversation.update(tool_config)
 
         return conversation
 
     @staticmethod
-    def convert_openai_to_converse_sft_nova_one(rec, column_mappings=None):
+    def convert_openai_to_converse_sft_nova_one(
+        rec, column_mappings=None, transform_ctx=None, s3_client=None
+    ):
         """
         Convert OpenAI format to Converse format for Nova 1.0.
         """
         if "messages" not in rec:
-            raise ValueError(
-                f"'messages' key not found in record {rec}. Expected OpenAI format."
-            )
+            raise ValueError(f"'messages' key not found in record {rec}. Expected OpenAI format.")
 
         messages = rec["messages"]
 
@@ -502,42 +753,52 @@ class DatasetTransformer:
                 "Please use Nova 2.0 for tool calling capabilities."
             )
 
-        system_content, converse_messages = (
-            DatasetTransformer._convert_openai_messages_to_converse(
-                messages, nova_version="1.0"
-            )
+        system_content, converse_messages = DatasetTransformer._convert_openai_messages_to_converse(
+            messages,
+            nova_version="1.0",
+            transform_ctx=transform_ctx,
+            s3_client=s3_client,
         )
+
+        if transform_ctx is not None:
+            transform_ctx.record_index += 1
+            transform_ctx.block_index = 0
 
         return DatasetTransformer._build_converse_conversation(
             system_content, converse_messages, tools=None
         )
 
     @staticmethod
-    def convert_openai_to_converse_sft_nova_two(rec, column_mappings=None):
+    def convert_openai_to_converse_sft_nova_two(
+        rec, column_mappings=None, transform_ctx=None, s3_client=None
+    ):
         """
         Convert OpenAI format to Converse format for Nova 2.0.
         Supports optional 'reasoning' field in assistant messages, tool/function calls, and tool configurations.
         """
         if "messages" not in rec:
-            raise ValueError(
-                f"'messages' key not found in record {rec}. Expected OpenAI format."
-            )
+            raise ValueError(f"'messages' key not found in record {rec}. Expected OpenAI format.")
 
         messages = rec["messages"]
         tools = rec.get("tools")
 
-        system_content, converse_messages = (
-            DatasetTransformer._convert_openai_messages_to_converse(
-                messages, nova_version="2.0"
-            )
+        system_content, converse_messages = DatasetTransformer._convert_openai_messages_to_converse(
+            messages,
+            nova_version="2.0",
+            transform_ctx=transform_ctx,
+            s3_client=s3_client,
         )
+
+        if transform_ctx is not None:
+            transform_ctx.record_index += 1
+            transform_ctx.block_index = 0
 
         return DatasetTransformer._build_converse_conversation(
             system_content, converse_messages, tools
         )
 
     @staticmethod
-    def convert_to_cpt(rec, column_mappings):
+    def convert_to_cpt(rec, column_mappings, transform_ctx=None, s3_client=None):
         # These are the required columns for CPT format.
         text_col = column_mappings.get("text")
 
@@ -552,7 +813,7 @@ class DatasetTransformer:
             return result
 
     @staticmethod
-    def convert_to_rft_multiturn(rec, column_mappings):
+    def convert_to_rft_multiturn(rec, column_mappings, transform_ctx=None, s3_client=None):
         """
         Convert flat format to nested RFT multiturn format.
 

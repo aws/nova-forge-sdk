@@ -160,9 +160,7 @@ class LocalRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
                     continue
 
         if train_jobs or eval_jobs:
-            error_msg = build_duplicate_job_error_message(
-                stack_name, train_jobs, eval_jobs
-            )
+            error_msg = build_duplicate_job_error_message(stack_name, train_jobs, eval_jobs)
             logger.warning(error_msg)
             return error_msg
 
@@ -211,17 +209,13 @@ class LocalRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
             logger.info(f"Using custom starter kit: {self.starter_kit_path_attr}")
         else:
             # No custom path - use default location
-            self.starter_kit_path_attr = os.path.join(
-                os.path.dirname(workspace_dir), "v1"
-            )
+            self.starter_kit_path_attr = os.path.join(os.path.dirname(workspace_dir), "v1")
             self.starter_kit_path = self.starter_kit_path_attr
             logger.info(f"Using default starter kit path: {self.starter_kit_path_attr}")
 
         self.base_path = self.starter_kit_path_attr
 
-        if not validate_starter_kit_path(
-            self.starter_kit_path_attr, raise_on_invalid=False
-        ):
+        if not validate_starter_kit_path(self.starter_kit_path_attr, raise_on_invalid=False):
             logger.info(f"Starter kit not found at {self.starter_kit_path_attr}")
             # Will be downloaded by install_local_environment
 
@@ -242,13 +236,9 @@ class LocalRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         venv_path = os.path.join(self.base_path, self.python_venv_name)
 
         if os.path.exists(venv_path):
-            logger.info(
-                f"Using existing virtual environment for '{vf_env_id}' at {venv_path}"
-            )
+            logger.info(f"Using existing virtual environment for '{vf_env_id}' at {venv_path}")
         else:
-            logger.info(
-                f"Creating virtual environment for '{vf_env_id}' at {venv_path}"
-            )
+            logger.info(f"Creating virtual environment for '{vf_env_id}' at {venv_path}")
 
         # Use common setup commands (includes downloading starter kit)
         setup_commands = self._build_setup_commands(vf_env_id, self.base_path)
@@ -269,9 +259,7 @@ class LocalRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
             # Cleanup on failure
             if self.starter_kit_path and os.path.exists(self.starter_kit_path):
                 shutil.rmtree(self.starter_kit_path, ignore_errors=True)
-                logger.warning(
-                    f"Cleaned up partial installation at {self.starter_kit_path}"
-                )
+                logger.warning(f"Cleaned up partial installation at {self.starter_kit_path}")
             raise
 
     def deploy_sam_stack(self, s3_bucket: Optional[str] = None):
@@ -297,9 +285,7 @@ class LocalRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
         if os.path.exists(venv_path):
             logger.info(f"Using existing venv: {venv_path}")
         else:
-            logger.info(
-                f"Creating venv named {self.python_venv_name} at {self.sam_base_dir}/v1/"
-            )
+            logger.info(f"Creating venv named {self.python_venv_name} at {self.sam_base_dir}/v1/")
 
         # Get SAM deployment commands from common infra
         commands = self._build_sam_deploy_commands()
@@ -485,9 +471,7 @@ class LocalRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
                 logger.info(f"No logs directory found")
                 return
 
-            logger.info(
-                f"Killing ALL {env_type.value} jobs for stack '{self.stack_name}'"
-            )
+            logger.info(f"Killing ALL {env_type.value} jobs for stack '{self.stack_name}'")
 
             killed_count = 0
             for filename in os.listdir(logs_dir):
@@ -516,9 +500,7 @@ class LocalRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
                             if os.path.exists(pid_file):
                                 os.remove(pid_file)
                         else:
-                            log_file = os.path.join(
-                                logs_dir, f"{session_id}_{env_type.value}.log"
-                            )
+                            log_file = os.path.join(logs_dir, f"{session_id}_{env_type.value}.log")
                             for file_path in [log_file, pid_file, status_file]:
                                 if os.path.exists(file_path):
                                     os.remove(file_path)
@@ -528,9 +510,7 @@ class LocalRFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
             status_msg = " (logs preserved)" if preserve_logs else ""
             logger.info(f"Killed {killed_count} {env_type.value} job(s){status_msg}")
         else:
-            process = (
-                self.train_process if env_type == EnvType.TRAIN else self.eval_process
-            )
+            process = self.train_process if env_type == EnvType.TRAIN else self.eval_process
             session_id = getattr(self, "session_id", "default")
 
             log_file = self._get_log_file_path(session_id, env_type)

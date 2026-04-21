@@ -27,6 +27,7 @@ from typing import Dict, List, Optional
 import boto3
 import sagemaker
 
+from amzn_nova_forge.telemetry import Feature, _telemetry_emitter
 from amzn_nova_forge.util.logging import logger
 from amzn_nova_forge.validation.rft_multiturn_validator import (
     validate_stack_name,
@@ -71,9 +72,7 @@ def _wait_for_iam_propagation(
         except Exception:
             pass
 
-    logger.warning(
-        f"IAM propagation check timed out after {timeout}s, proceeding anyway"
-    )
+    logger.warning(f"IAM propagation check timed out after {timeout}s, proceeding anyway")
 
 
 class EnvType(Enum):
@@ -190,9 +189,7 @@ def _build_combined_policy_document(
                 f"Invalid resource in {policy_name}: must be string, got {type(resource)}"
             )
         if not (resource.startswith("arn:") or resource == "*"):
-            raise ValueError(
-                f"Invalid resource in {policy_name}: '{resource}' must be ARN or '*'"
-            )
+            raise ValueError(f"Invalid resource in {policy_name}: '{resource}' must be ARN or '*'")
 
     for policy_key, policy in policies.items():
         if policy_key == "trust_policy":
@@ -226,6 +223,7 @@ def _build_combined_policy_document(
     return {"Version": "2012-10-17", "Statement": combined_statements}
 
 
+@_telemetry_emitter(Feature.INFRA, "create_rft_execution_role")
 def create_rft_execution_role(
     region: str = "us-east-1",
     role_name: Optional[str] = None,
@@ -272,14 +270,10 @@ def create_rft_execution_role(
         )
         logger.info(f"Created role {role_name}")
     except Exception as e:
-        raise Exception(
-            f"Failed to create the RFT execution role {role_name}: {str(e)}"
-        )
+        raise Exception(f"Failed to create the RFT execution role {role_name}: {str(e)}")
 
     # Get combined policy document
-    policy_document = _build_combined_policy_document(
-        region, account_id, custom_policy_path
-    )
+    policy_document = _build_combined_policy_document(region, account_id, custom_policy_path)
     policy_name = f"{role_name}Policy"
     policy_arn = f"arn:aws:iam::{account_id}:policy/{policy_name}"
 
@@ -297,9 +291,7 @@ def create_rft_execution_role(
     # Check if already attached
     try:
         attached_policies = iam_client.list_attached_role_policies(RoleName=role_name)
-        if not any(
-            p["PolicyArn"] == policy_arn for p in attached_policies["AttachedPolicies"]
-        ):
+        if not any(p["PolicyArn"] == policy_arn for p in attached_policies["AttachedPolicies"]):
             iam_client.attach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
             logger.info(f"Attached policy {policy_name} to role {role_name}")
         else:
@@ -437,13 +429,8 @@ class BaseRFTInfrastructure:
 
         # Check if policy already attached
         try:
-            attached_policies = self.iam_client.list_attached_role_policies(
-                RoleName=role_name
-            )
-            if any(
-                p["PolicyArn"] == policy_arn
-                for p in attached_policies["AttachedPolicies"]
-            ):
+            attached_policies = self.iam_client.list_attached_role_policies(RoleName=role_name)
+            if any(p["PolicyArn"] == policy_arn for p in attached_policies["AttachedPolicies"]):
                 logger.info(f"RFT policy already attached to role {role_name}")
                 return
         except Exception as e:
@@ -486,9 +473,7 @@ class BaseRFTInfrastructure:
 
         role_name = self.get_current_role_name()
         if not role_name:
-            logger.warning(
-                "Could not determine current role, skipping policy attachment"
-            )
+            logger.warning("Could not determine current role, skipping policy attachment")
             return
 
         self.attach_rft_policy_to_role(role_name)
@@ -524,9 +509,7 @@ class BaseRFTInfrastructure:
                     f"Failed to access starter kit repository at {STARTER_KIT_S3}: {str(e)}"
                 ) from e
         except Exception as e:
-            raise RuntimeError(
-                f"Unexpected error validating starter kit access: {str(e)}"
-            ) from e
+            raise RuntimeError(f"Unexpected error validating starter kit access: {str(e)}") from e
 
     def check_queue_messages(self, queue_url: str) -> Dict[str, int]:
         """
@@ -680,9 +663,7 @@ class BaseRFTInfrastructure:
         """
         raise NotImplementedError
 
-    def _upload_starter_kit_to_s3(
-        self, local_path: str, s3_bucket: str, region: str
-    ) -> str:
+    def _upload_starter_kit_to_s3(self, local_path: str, s3_bucket: str, region: str) -> str:
         """
         Package and upload local starter kit to S3.
 
@@ -765,11 +746,7 @@ class BaseRFTInfrastructure:
         # Determine S3 bucket
         if not s3_bucket:
             # Try to get from custom_env if available
-            if (
-                hasattr(self, "custom_env")
-                and self.custom_env
-                and self.custom_env.s3_uri
-            ):
+            if hasattr(self, "custom_env") and self.custom_env and self.custom_env.s3_uri:
                 s3_bucket = self.custom_env.s3_uri.split("/")[2]
                 logger.info(f"Using bucket from custom_env: {s3_bucket}")
             else:
@@ -777,9 +754,7 @@ class BaseRFTInfrastructure:
                 try:
                     if sagemaker is None:
                         raise ImportError("sagemaker package not installed")
-                    session = sagemaker.Session(
-                        boto_session=boto3.Session(region_name=self.region)
-                    )
+                    session = sagemaker.Session(boto_session=boto3.Session(region_name=self.region))
                     s3_bucket = session.default_bucket()
                     logger.info(f"Using SageMaker default bucket: {s3_bucket}")
                 except ImportError:

@@ -2,27 +2,42 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, PropertyMock, create_autospec, patch
 
 import boto3
 from botocore.exceptions import ClientError
 
-from amzn_nova_forge.manager.runtime_manager import (
-    SMHPRuntimeManager,
-    SMTJRuntimeManager,
-)
-from amzn_nova_forge.model.model_config import ModelArtifacts
-from amzn_nova_forge.model.model_enums import (
+from amzn_nova_forge.core.enums import (
     DeploymentMode,
     DeployPlatform,
+    EvaluationTask,
     Model,
     Platform,
     TrainingMethod,
 )
+from amzn_nova_forge.core.result import (
+    EvaluationResult,
+    SMTJBatchInferenceResult,
+    SMTJEvaluationResult,
+)
+from amzn_nova_forge.core.result.job_result import JobStatus
+from amzn_nova_forge.core.result.training_result import (
+    SMTJTrainingResult,
+    TrainingResult,
+)
+from amzn_nova_forge.core.types import EndpointInfo, ModelArtifacts
+from amzn_nova_forge.manager.runtime_manager import (
+    SMHPRuntimeManager,
+    SMTJRuntimeManager,
+    SMTJServerlessRuntimeManager,
+)
+from amzn_nova_forge.model.model_config import ModelDeployResult
 from amzn_nova_forge.model.nova_model_customizer import (
     NovaModelCustomizer,
+    _invoke_inference_extra_info,
+    _resolve_deploy_platform,
 )
 from amzn_nova_forge.model.nova_model_customizer_util import (
     collect_all_parameters,
@@ -34,17 +49,7 @@ from amzn_nova_forge.model.nova_model_customizer_util import (
     persist_result,
     should_persist_results,
 )
-from amzn_nova_forge.model.result import (
-    EvaluationResult,
-    SMTJBatchInferenceResult,
-    SMTJEvaluationResult,
-)
-from amzn_nova_forge.model.result.job_result import JobStatus
-from amzn_nova_forge.model.result.training_result import (
-    SMTJTrainingResult,
-    TrainingResult,
-)
-from amzn_nova_forge.recipe.recipe_config import EvaluationTask
+from amzn_nova_forge.util.bedrock import BEDROCK_EXECUTION_ROLE_NAME
 from amzn_nova_forge.util.recipe import RecipePath
 from amzn_nova_forge.util.sagemaker import (
     DEFAULT_CONTEXT_LENGTH,
@@ -68,79 +73,91 @@ class MockRecipePath(RecipePath):
 
 class TestNovaModelCustomizer(unittest.TestCase):
     def setUp(self):
+
         self.model = Model.NOVA_MICRO
         self.method = TrainingMethod.SFT_LORA
         self.data_s3_path = "s3://test-bucket/data"
         self.output_s3_path = "s3://test-bucket/output"
 
         self.mock_runtime_manager = create_autospec(SMTJRuntimeManager)
+        self.mock_runtime_manager.platform = Platform.SMTJ
         self.mock_runtime_manager.instance_count = 2
 
-        with (
-            patch("boto3.client") as mock_client,
-            patch(
-                "sagemaker.core.helper.session_helper.get_execution_role"
-            ) as mock_get_execution_role,
-            patch(
-                "amzn_nova_forge.util.recipe.get_hub_recipe_metadata"
-            ) as mock_get_hub_metadata,
-            patch(
-                "amzn_nova_forge.util.recipe.download_templates_from_s3"
-            ) as mock_download_s3,
-        ):
-            mock_get_execution_role.return_value = (
-                "arn:aws:iam::123456789012:role/SageMakerExecutionRole"
-            )
+        # Keep mocks alive for the full test lifecycle (not just __init__) so
+        # that facade delegation to service classes can construct boto3 clients.
+        p_client = patch("boto3.client")
+        p_session = patch("boto3.session.Session")
+        p_exec_role = patch("sagemaker.core.helper.session_helper.get_execution_role")
+        p_hub_meta = patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
+        p_download = patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
 
-            # Mock recipe metadata and templates
-            mock_get_hub_metadata.return_value = {
-                "SmtjRecipeTemplateS3Uri": "s3://test-bucket/recipe.yaml",
-                "SmtjOverrideParamsS3Uri": "s3://test-bucket/overrides.json",
-            }
-            mock_download_s3.return_value = ({}, {})
+        mock_client = p_client.start()
+        mock_session = p_session.start()
+        mock_get_execution_role = p_exec_role.start()
+        mock_get_hub_metadata = p_hub_meta.start()
+        mock_download_s3 = p_download.start()
 
-            mock_sts = MagicMock()
-            mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
-            mock_s3 = MagicMock()
-            mock_s3.head_bucket.return_value = {}
+        self.addCleanup(p_client.stop)
+        self.addCleanup(p_session.stop)
+        self.addCleanup(p_exec_role.stop)
+        self.addCleanup(p_hub_meta.stop)
+        self.addCleanup(p_download.stop)
 
-            # Add IAM and SageMaker mocking for validation
-            mock_iam = MagicMock()
-            mock_iam.get_role.return_value = {
-                "Role": {
-                    "AssumeRolePolicyDocument": {
-                        "Statement": [
-                            {
-                                "Effect": "Allow",
-                                "Principal": {"Service": "sagemaker.amazonaws.com"},
-                                "Action": "sts:AssumeRole",
-                            }
-                        ]
-                    }
+        type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
+        mock_get_execution_role.return_value = (
+            "arn:aws:iam::123456789012:role/SageMakerExecutionRole"
+        )
+
+        # Mock recipe metadata and templates
+        mock_get_hub_metadata.return_value = {
+            "SmtjRecipeTemplateS3Uri": "s3://test-bucket/recipe.yaml",
+            "SmtjOverrideParamsS3Uri": "s3://test-bucket/overrides.json",
+        }
+        mock_download_s3.return_value = ({}, {})
+
+        mock_sts = MagicMock()
+        mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
+        mock_s3 = MagicMock()
+        mock_s3.head_bucket.return_value = {}
+
+        # Add IAM and SageMaker mocking for validation
+        mock_iam = MagicMock()
+        mock_iam.get_role.return_value = {
+            "Role": {
+                "AssumeRolePolicyDocument": {
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {"Service": "sagemaker.amazonaws.com"},
+                            "Action": "sts:AssumeRole",
+                        }
+                    ]
                 }
             }
-            mock_sagemaker = MagicMock()
+        }
+        mock_sagemaker = MagicMock()
 
-            def client_side_effect(service, **kwargs):
-                if service == "sts":
-                    return mock_sts
-                elif service == "s3":
-                    return mock_s3
-                elif service == "iam":
-                    return mock_iam
-                elif service == "sagemaker":
-                    return mock_sagemaker
-                return MagicMock()
+        def client_side_effect(service, **kwargs):
+            if service == "sts":
+                return mock_sts
+            elif service == "s3":
+                return mock_s3
+            elif service == "iam":
+                return mock_iam
+            elif service == "sagemaker":
+                return mock_sagemaker
+            return MagicMock()
 
-            mock_client.side_effect = client_side_effect
+        mock_client.side_effect = client_side_effect
+        self._mock_boto_client = mock_client
 
-            self.customizer = NovaModelCustomizer(
-                model=self.model,
-                method=self.method,
-                infra=self.mock_runtime_manager,
-                data_s3_path=self.data_s3_path,
-                output_s3_path=self.output_s3_path,
-            )
+        self.customizer = NovaModelCustomizer(
+            model=self.model,
+            method=self.method,
+            infra=self.mock_runtime_manager,
+            data_s3_path=self.data_s3_path,
+            output_s3_path=self.output_s3_path,
+        )
 
     def test_init_raises_value_error_on_unsupported_region(self):
         with patch("boto3.session.Session") as mock_session:
@@ -158,6 +175,48 @@ class TestNovaModelCustomizer(unittest.TestCase):
             self.assertIn("unsupported-region", str(context.exception))
             self.assertIn("not supported", str(context.exception))
 
+    @patch.object(SMTJServerlessRuntimeManager, "setup", return_value=None)
+    def test_serverless_model_path_must_be_arn(self, mock_setup):
+        """model_path for SMTJServerless must be a SageMaker model package ARN."""
+        runtime = SMTJServerlessRuntimeManager(model_package_group_name="test-group")
+        runtime.execution_role = "arn:aws:iam::123:role/test"
+        runtime.sagemaker_client = MagicMock()
+        runtime.region = "us-east-1"
+        runtime.model_package_group_arn = "arn:aws:sagemaker:us-east-1:123:model-package-group/test"
+
+        with (
+            patch("boto3.client"),
+            patch(
+                "amzn_nova_forge.model.nova_model_customizer.set_output_s3_path",
+                return_value="s3://bucket/output",
+            ),
+        ):
+            # S3 path should raise ValueError
+            with self.assertRaises(ValueError) as ctx:
+                NovaModelCustomizer(
+                    model=Model.NOVA_MICRO,
+                    method=TrainingMethod.SFT_LORA,
+                    infra=runtime,
+                    model_path="s3://bucket/checkpoint/",
+                )
+            self.assertIn("model package ARN", str(ctx.exception))
+
+            # Valid ARN should not raise
+            NovaModelCustomizer(
+                model=Model.NOVA_MICRO,
+                method=TrainingMethod.SFT_LORA,
+                infra=runtime,
+                model_path="arn:aws:sagemaker:us-east-1:123:model-package/group/1",
+            )
+
+            # None should not raise (no iterative training)
+            NovaModelCustomizer(
+                model=Model.NOVA_MICRO,
+                method=TrainingMethod.SFT_LORA,
+                infra=runtime,
+                model_path=None,
+            )
+
     def test_set_model_config_variants(self):
         for model in Model:
             mock_infra = create_autospec(SMTJRuntimeManager)
@@ -167,9 +226,7 @@ class TestNovaModelCustomizer(unittest.TestCase):
                 patch(
                     "amzn_nova_forge.util.recipe.get_hub_recipe_metadata"
                 ) as mock_get_hub_metadata,
-                patch(
-                    "amzn_nova_forge.util.recipe.download_templates_from_s3"
-                ) as mock_download_s3,
+                patch("amzn_nova_forge.util.recipe.download_templates_from_s3") as mock_download_s3,
             ):
                 mock_get_hub_metadata.return_value = {
                     "SmtjRecipeTemplateS3Uri": "s3://test-bucket/recipe.yaml",
@@ -207,12 +264,8 @@ class TestNovaModelCustomizer(unittest.TestCase):
 
         with (
             patch("boto3.client") as mock_client,
-            patch(
-                "amzn_nova_forge.util.recipe.get_hub_recipe_metadata"
-            ) as mock_get_hub_metadata,
-            patch(
-                "amzn_nova_forge.util.recipe.download_templates_from_s3"
-            ) as mock_download_s3,
+            patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata") as mock_get_hub_metadata,
+            patch("amzn_nova_forge.util.recipe.download_templates_from_s3") as mock_download_s3,
         ):
             mock_get_hub_metadata.return_value = {
                 "SmtjRecipeTemplateS3Uri": "s3://test-bucket/recipe.yaml",
@@ -273,9 +326,7 @@ class TestNovaModelCustomizer(unittest.TestCase):
                 patch(
                     "amzn_nova_forge.util.recipe.get_hub_recipe_metadata"
                 ) as mock_get_hub_metadata,
-                patch(
-                    "amzn_nova_forge.util.recipe.download_templates_from_s3"
-                ) as mock_download_s3,
+                patch("amzn_nova_forge.util.recipe.download_templates_from_s3") as mock_download_s3,
             ):
                 mock_get_hub_metadata.return_value = {
                     "SmtjRecipeTemplateS3Uri": "s3://test-bucket/recipe.yaml",
@@ -309,10 +360,12 @@ class TestNovaModelCustomizer(unittest.TestCase):
 
     @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
+    @patch("boto3.session.Session")
     @patch("boto3.client")
     def test_auto_generate_output_path_bucket_exists(
-        self, mock_client, mock_get_hub_metadata, mock_download_s3
+        self, mock_client, mock_session, mock_get_hub_metadata, mock_download_s3
     ):
+        type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
         mock_get_hub_metadata.return_value = {
             "SmtjRecipeTemplateS3Uri": "s3://test-bucket/recipe.yaml",
             "SmtjOverrideParamsS3Uri": "s3://test-bucket/overrides.json",
@@ -343,9 +396,7 @@ class TestNovaModelCustomizer(unittest.TestCase):
 
         expected_output = "s3://sagemaker-nova-123456789012-us-east-1/output"
         self.assertEqual(customizer.output_s3_path, expected_output)
-        mock_s3.head_bucket.assert_called_once_with(
-            Bucket="sagemaker-nova-123456789012-us-east-1"
-        )
+        mock_s3.head_bucket.assert_called_once_with(Bucket="sagemaker-nova-123456789012-us-east-1")
         mock_s3.create_bucket.assert_not_called()
 
     @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
@@ -424,7 +475,7 @@ class TestNovaModelCustomizer(unittest.TestCase):
             output_s3_path=custom_output,
         )
 
-        self.assertEqual(customizer.output_s3_path, custom_output)
+        self.assertEqual(customizer.output_s3_path, "s3://my-custom-bucket/my-output")
         mock_s3.head_bucket.assert_called_once()
         mock_s3.create_bucket.assert_not_called()
 
@@ -477,7 +528,7 @@ class TestNovaModelCustomizer(unittest.TestCase):
             output_s3_path=custom_output,
         )
 
-        self.assertEqual(customizer.output_s3_path, custom_output)
+        self.assertEqual(customizer.output_s3_path, "s3://new-bucket/my-output")
 
         mock_s3.head_bucket.assert_called_once_with(
             Bucket="new-bucket", ExpectedBucketOwner="123456789012"
@@ -489,12 +540,8 @@ class TestNovaModelCustomizer(unittest.TestCase):
 
         with (
             patch("boto3.client") as mock_client,
-            patch(
-                "amzn_nova_forge.util.recipe.get_hub_recipe_metadata"
-            ) as mock_get_hub_metadata,
-            patch(
-                "amzn_nova_forge.util.recipe.download_templates_from_s3"
-            ) as mock_download_s3,
+            patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata") as mock_get_hub_metadata,
+            patch("amzn_nova_forge.util.recipe.download_templates_from_s3") as mock_download_s3,
         ):
             mock_get_hub_metadata.return_value = {
                 "SmtjRecipeTemplateS3Uri": "s3://test-bucket/recipe.yaml",
@@ -530,15 +577,12 @@ class TestNovaModelCustomizer(unittest.TestCase):
 
     def test_data_mixing_raises_error_on_unsupported_training_method(self):
         mock_infra = create_autospec(SMHPRuntimeManager)
+        mock_infra.platform = Platform.SMHP
 
         with (
             patch("boto3.client") as mock_client,
-            patch(
-                "amzn_nova_forge.util.recipe.get_hub_recipe_metadata"
-            ) as mock_get_hub_metadata,
-            patch(
-                "amzn_nova_forge.util.recipe.download_templates_from_s3"
-            ) as mock_download_s3,
+            patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata") as mock_get_hub_metadata,
+            patch("amzn_nova_forge.util.recipe.download_templates_from_s3") as mock_download_s3,
         ):
             mock_get_hub_metadata.return_value = {
                 "SmtjRecipeTemplateS3Uri": "s3://test-bucket/recipe.yaml",
@@ -572,14 +616,417 @@ class TestNovaModelCustomizer(unittest.TestCase):
 
             self.assertIn("Data mixing is only supported for", str(context.exception))
 
+    def _make_customizer(self, mock_client, **kwargs):
+        """Helper to create a NovaModelCustomizer with standard mocks."""
+        mock_sts = MagicMock()
+        mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
+        mock_s3 = MagicMock()
+        mock_s3.head_bucket.return_value = {}
+
+        def client_side_effect(service, **kw):
+            if service == "sts":
+                return mock_sts
+            elif service == "s3":
+                return mock_s3
+            return MagicMock()
+
+        mock_client.side_effect = client_side_effect
+        mock_infra = create_autospec(SMTJRuntimeManager)
+
+        return NovaModelCustomizer(
+            model=Model.NOVA_MICRO,
+            method=TrainingMethod.SFT_LORA,
+            infra=mock_infra,
+            data_s3_path=self.data_s3_path,
+            output_s3_path=self.output_s3_path,
+            **kwargs,
+        )
+
+    @patch("boto3.client")
+    def test_is_multimodal_false_when_data_mixing_disabled(self, mock_client):
+        """is_multimodal is always False when data_mixing_enabled=False, regardless of is_multimodal arg."""
+        customizer = self._make_customizer(
+            mock_client, data_mixing_enabled=False, is_multimodal=True
+        )
+        self.assertFalse(customizer.is_multimodal)
+
+    @patch("boto3.client")
+    def test_is_multimodal_explicit_true_honoured(self, mock_client):
+        """Explicit is_multimodal=True is honoured when data_mixing_enabled=True."""
+        with patch(
+            "amzn_nova_forge.model.nova_model_customizer.NovaModelCustomizer._init_data_mixing"
+        ):
+            mock_infra = create_autospec(SMHPRuntimeManager)
+            mock_infra.platform = Platform.SMHP
+            mock_sts = MagicMock()
+            mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
+            mock_s3 = MagicMock()
+            mock_s3.head_bucket.return_value = {}
+
+            def client_side_effect(service, **kw):
+                if service == "sts":
+                    return mock_sts
+                elif service == "s3":
+                    return mock_s3
+                return MagicMock()
+
+            mock_client.side_effect = client_side_effect
+
+            customizer = NovaModelCustomizer(
+                model=Model.NOVA_LITE,
+                method=TrainingMethod.SFT_LORA,
+                infra=mock_infra,
+                data_s3_path=self.data_s3_path,
+                output_s3_path=self.output_s3_path,
+                data_mixing_enabled=True,
+                is_multimodal=True,
+            )
+            self.assertTrue(customizer.is_multimodal)
+
+    @patch("amzn_nova_forge.model.nova_model_customizer.is_multimodal_data")
+    @patch("boto3.client")
+    def test_is_multimodal_auto_detects_from_data_s3_path(
+        self, mock_client, mock_is_multimodal_data
+    ):
+        """When is_multimodal=None and data_s3_path is set, auto-detection runs."""
+        mock_is_multimodal_data.return_value = True
+
+        with patch(
+            "amzn_nova_forge.model.nova_model_customizer.NovaModelCustomizer._init_data_mixing"
+        ):
+            mock_infra = create_autospec(SMHPRuntimeManager)
+            mock_infra.platform = Platform.SMHP
+            mock_sts = MagicMock()
+            mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
+            mock_s3 = MagicMock()
+            mock_s3.head_bucket.return_value = {}
+
+            def client_side_effect(service, **kw):
+                if service == "sts":
+                    return mock_sts
+                elif service == "s3":
+                    return mock_s3
+                return MagicMock()
+
+            mock_client.side_effect = client_side_effect
+
+            customizer = NovaModelCustomizer(
+                model=Model.NOVA_LITE,
+                method=TrainingMethod.SFT_LORA,
+                infra=mock_infra,
+                data_s3_path=self.data_s3_path,
+                output_s3_path=self.output_s3_path,
+                data_mixing_enabled=True,
+                is_multimodal=None,
+            )
+            self.assertTrue(customizer.is_multimodal)
+            mock_is_multimodal_data.assert_called_once_with(self.data_s3_path)
+
+    @patch("boto3.client")
+    def test_is_multimodal_defaults_false_when_no_data_s3_path(self, mock_client):
+        """When is_multimodal=None and no data_s3_path, is_multimodal defaults to False."""
+        with patch(
+            "amzn_nova_forge.model.nova_model_customizer.NovaModelCustomizer._init_data_mixing"
+        ):
+            mock_infra = create_autospec(SMHPRuntimeManager)
+            mock_infra.platform = Platform.SMHP
+            mock_sts = MagicMock()
+            mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
+            mock_s3 = MagicMock()
+            mock_s3.head_bucket.return_value = {}
+
+            def client_side_effect(service, **kw):
+                if service == "sts":
+                    return mock_sts
+                elif service == "s3":
+                    return mock_s3
+                return MagicMock()
+
+            mock_client.side_effect = client_side_effect
+
+            customizer = NovaModelCustomizer(
+                model=Model.NOVA_LITE,
+                method=TrainingMethod.SFT_LORA,
+                infra=mock_infra,
+                data_s3_path=None,
+                output_s3_path=self.output_s3_path,
+                data_mixing_enabled=True,
+                is_multimodal=None,
+            )
+            self.assertFalse(customizer.is_multimodal)
+
+    def _make_smhp_customizer(self, mock_client, **kwargs):
+        """Helper to create a data-mixing-enabled SMHP customizer with _init_data_mixing patched."""
+        mock_sts = MagicMock()
+        mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
+        mock_s3 = MagicMock()
+        mock_s3.head_bucket.return_value = {}
+
+        def client_side_effect(service, **kw):
+            if service == "sts":
+                return mock_sts
+            elif service == "s3":
+                return mock_s3
+            return MagicMock()
+
+        mock_client.side_effect = client_side_effect
+        mock_infra = create_autospec(SMHPRuntimeManager)
+        mock_infra.platform = Platform.SMHP
+
+        with patch(
+            "amzn_nova_forge.model.nova_model_customizer.NovaModelCustomizer._init_data_mixing"
+        ):
+            customizer = NovaModelCustomizer(
+                model=Model.NOVA_LITE,
+                method=TrainingMethod.SFT_LORA,
+                infra=mock_infra,
+                data_s3_path=self.data_s3_path,
+                output_s3_path=self.output_s3_path,
+                data_mixing_enabled=True,
+                **kwargs,
+            )
+        return customizer
+
+    # --- data_s3_path setter ---
+
+    @patch("amzn_nova_forge.model.nova_model_customizer.is_multimodal_data")
+    @patch("boto3.client")
+    def test_data_s3_path_setter_reruns_autodetect_when_user_intent_none(
+        self, mock_client, mock_is_multimodal_data
+    ):
+        """Changing data_s3_path re-runs auto-detection when _user_is_multimodal is None."""
+        mock_is_multimodal_data.return_value = False
+        customizer = self._make_smhp_customizer(mock_client, is_multimodal=None)
+
+        mock_is_multimodal_data.return_value = True
+        with patch.object(customizer, "_init_data_mixing") as mock_init:
+            customizer.data_s3_path = "s3://bucket/new_mm_data.jsonl"
+            self.assertTrue(customizer.is_multimodal)
+            mock_init.assert_called_once()
+
+    @patch("amzn_nova_forge.model.nova_model_customizer.is_multimodal_data")
+    @patch("boto3.client")
+    def test_data_s3_path_setter_preserves_explicit_is_multimodal(
+        self, mock_client, mock_is_multimodal_data
+    ):
+        """Changing data_s3_path does NOT re-run auto-detection when is_multimodal was explicit."""
+        mock_is_multimodal_data.return_value = False
+        customizer = self._make_smhp_customizer(mock_client, is_multimodal=True)
+
+        with patch.object(customizer, "_init_data_mixing") as mock_init:
+            customizer.data_s3_path = "s3://bucket/text_data.jsonl"
+            # explicit True preserved — auto-detection not called
+            mock_is_multimodal_data.assert_not_called()
+            self.assertTrue(customizer.is_multimodal)
+            # recipe still reloaded
+            mock_init.assert_called_once()
+
+    @patch("boto3.client")
+    def test_data_s3_path_setter_reloads_recipe_always(self, mock_client):
+        """data_s3_path setter always reloads recipe templates when data_mixing_enabled."""
+        customizer = self._make_smhp_customizer(mock_client, is_multimodal=True)
+        with patch.object(customizer, "_init_data_mixing") as mock_init:
+            customizer.data_s3_path = "s3://bucket/other.jsonl"
+            mock_init.assert_called_once()
+
+    # --- is_multimodal setter ---
+
+    @patch("boto3.client")
+    def test_is_multimodal_setter_explicit_true_reloads_recipe(self, mock_client):
+        """Setting is_multimodal=True updates flag and reloads recipe."""
+        customizer = self._make_smhp_customizer(mock_client, is_multimodal=False)
+        with patch.object(customizer, "_init_data_mixing") as mock_init:
+            customizer.is_multimodal = True
+            self.assertTrue(customizer.is_multimodal)
+            mock_init.assert_called_once()
+
+    @patch("amzn_nova_forge.model.nova_model_customizer.is_multimodal_data")
+    @patch("boto3.client")
+    def test_is_multimodal_setter_none_reruns_autodetect(
+        self, mock_client, mock_is_multimodal_data
+    ):
+        """Setting is_multimodal=None re-runs auto-detection from current data_s3_path."""
+        mock_is_multimodal_data.return_value = True
+        customizer = self._make_smhp_customizer(mock_client, is_multimodal=False)
+        with patch.object(customizer, "_init_data_mixing"):
+            customizer.is_multimodal = None
+            mock_is_multimodal_data.assert_called_with(self.data_s3_path)
+            self.assertTrue(customizer.is_multimodal)
+
+    @patch("boto3.client")
+    def test_is_multimodal_setter_updates_user_intent(self, mock_client):
+        """is_multimodal setter updates _user_is_multimodal so data_s3_path setter respects it."""
+        customizer = self._make_smhp_customizer(mock_client, is_multimodal=None)
+        with patch.object(customizer, "_init_data_mixing"):
+            customizer.is_multimodal = True
+            self.assertEqual(customizer._user_is_multimodal, True)
+            customizer.is_multimodal = None
+            self.assertIsNone(customizer._user_is_multimodal)
+
+    @patch("boto3.client")
+    def test_is_multimodal_setter_noop_when_data_mixing_disabled(self, mock_client):
+        """is_multimodal setter warns and stays False when data_mixing_enabled=False."""
+        customizer = self._make_customizer(mock_client, data_mixing_enabled=False)
+        customizer.is_multimodal = True
+        self.assertFalse(customizer.is_multimodal)
+
+    # --- data_mixing_enabled setter ---
+
+    @patch("amzn_nova_forge.model.nova_model_customizer.is_multimodal_data")
+    @patch("boto3.client")
+    def test_data_mixing_enabled_setter_enables_and_detects_multimodal(
+        self, mock_client, mock_is_multimodal_data
+    ):
+        """Enabling data_mixing_enabled initializes DataMixing and runs auto-detection."""
+        mock_is_multimodal_data.return_value = True
+        customizer = self._make_customizer(mock_client, data_mixing_enabled=False)
+        self.assertIsNone(customizer.data_mixing)
+
+        with patch.object(customizer, "_init_data_mixing") as mock_init:
+            customizer.data_mixing_enabled = True
+            self.assertTrue(customizer.data_mixing_enabled)
+            self.assertIsNotNone(customizer.data_mixing)
+            self.assertTrue(customizer.is_multimodal)
+            mock_init.assert_called_once()
+
+    @patch("boto3.client")
+    def test_data_mixing_enabled_setter_disables_tears_down(self, mock_client):
+        """Disabling data_mixing_enabled resets DataMixing and is_multimodal."""
+        customizer = self._make_smhp_customizer(mock_client, is_multimodal=True)
+        self.assertTrue(customizer.data_mixing_enabled)
+
+        customizer.data_mixing_enabled = False
+        self.assertFalse(customizer.data_mixing_enabled)
+        self.assertIsNone(customizer.data_mixing)
+        self.assertFalse(customizer.is_multimodal)
+
+    @patch("amzn_nova_forge.model.nova_model_customizer.is_multimodal_data")
+    @patch("boto3.client")
+    def test_data_mixing_enabled_setter_disable_reenable_preserves_user_intent(
+        self, mock_client, mock_is_multimodal_data
+    ):
+        """Disabling then re-enabling data_mixing restores explicit is_multimodal intent."""
+        mock_is_multimodal_data.return_value = False
+        customizer = self._make_smhp_customizer(mock_client, is_multimodal=True)
+
+        customizer.data_mixing_enabled = False
+        self.assertFalse(customizer.is_multimodal)  # reset on disable
+
+        with patch.object(customizer, "_init_data_mixing"):
+            customizer.data_mixing_enabled = True
+        # explicit True intent restored
+        self.assertTrue(customizer.is_multimodal)
+        mock_is_multimodal_data.assert_not_called()
+
+    @patch("boto3.client")
+    def test_data_mixing_enabled_setter_noop_if_unchanged(self, mock_client):
+        """Setting data_mixing_enabled to its current value is a no-op."""
+        customizer = self._make_smhp_customizer(mock_client)
+        with patch.object(customizer, "_init_data_mixing") as mock_init:
+            customizer.data_mixing_enabled = True  # already True
+            mock_init.assert_not_called()
+
+    # --- cross-setter consistency ---
+
+    @patch("amzn_nova_forge.model.nova_model_customizer.is_multimodal_data")
+    @patch("boto3.client")
+    def test_set_is_multimodal_then_change_data_s3_path_preserves_explicit(
+        self, mock_client, mock_is_multimodal_data
+    ):
+        """Explicit is_multimodal=True survives a data_s3_path change (no re-detection)."""
+        mock_is_multimodal_data.return_value = False
+        customizer = self._make_smhp_customizer(mock_client, is_multimodal=None)
+        # init may have called is_multimodal_data during construction; reset before testing setter behavior
+        mock_is_multimodal_data.reset_mock()
+
+        with patch.object(customizer, "_init_data_mixing"):
+            customizer.is_multimodal = True  # explicit override
+            mock_is_multimodal_data.reset_mock()  # is_multimodal setter with value=True doesn't call detection
+            customizer.data_s3_path = "s3://bucket/text_only.jsonl"
+            mock_is_multimodal_data.assert_not_called()
+            self.assertTrue(customizer.is_multimodal)
+
+    @patch("amzn_nova_forge.model.nova_model_customizer.is_multimodal_data")
+    @patch("boto3.client")
+    def test_reset_user_intent_to_none_then_change_path_reruns_detection(
+        self, mock_client, mock_is_multimodal_data
+    ):
+        """After resetting is_multimodal=None, changing data_s3_path re-runs detection."""
+        mock_is_multimodal_data.return_value = False
+        customizer = self._make_smhp_customizer(mock_client, is_multimodal=True)
+
+        with patch.object(customizer, "_init_data_mixing"):
+            customizer.is_multimodal = None  # reset to auto-detect
+            mock_is_multimodal_data.return_value = True
+            customizer.data_s3_path = "s3://bucket/mm_data.jsonl"
+            mock_is_multimodal_data.assert_called_with("s3://bucket/mm_data.jsonl")
+            self.assertTrue(customizer.is_multimodal)
+
+    # --- model/method/platform setter consistency ---
+
+    @patch("boto3.client")
+    def test_model_setter_calls_init_data_mixing_with_new_model(self, mock_client):
+        """model setter calls _init_data_mixing with the new model value."""
+        customizer = self._make_smhp_customizer(mock_client, is_multimodal=True)
+        with patch.object(customizer, "_init_data_mixing") as mock_init:
+            customizer.model = Model.NOVA_PRO
+            mock_init.assert_called_once_with(
+                model=Model.NOVA_PRO,
+                method=customizer.method,
+                platform=customizer.platform,
+            )
+            self.assertEqual(customizer.model, Model.NOVA_PRO)
+
+    @patch("boto3.client")
+    def test_method_setter_calls_init_data_mixing_with_new_method(self, mock_client):
+        """method setter calls _init_data_mixing with the new method value."""
+        customizer = self._make_smhp_customizer(mock_client, is_multimodal=True)
+        with patch.object(customizer, "_init_data_mixing") as mock_init:
+            customizer.method = TrainingMethod.SFT_FULL
+            mock_init.assert_called_once_with(
+                model=customizer.model,
+                method=TrainingMethod.SFT_FULL,
+                platform=customizer.platform,
+            )
+            self.assertEqual(customizer.method, TrainingMethod.SFT_FULL)
+
+    @patch("boto3.client")
+    def test_platform_setter_calls_init_data_mixing_with_new_platform(self, mock_client):
+        """platform setter calls _init_data_mixing with the new platform value."""
+        customizer = self._make_smhp_customizer(mock_client, is_multimodal=True)
+        with patch.object(customizer, "_init_data_mixing") as mock_init:
+            customizer.platform = Platform.SMHP
+            mock_init.assert_called_once_with(
+                model=customizer.model,
+                method=customizer.method,
+                platform=Platform.SMHP,
+            )
+
+    @patch("boto3.client")
+    def test_model_setter_noop_init_when_data_mixing_disabled(self, mock_client):
+        """model setter does NOT call _init_data_mixing when data_mixing_enabled=False."""
+        customizer = self._make_customizer(mock_client, data_mixing_enabled=False)
+        with patch.object(customizer, "_init_data_mixing") as mock_init:
+            customizer.model = Model.NOVA_PRO
+            mock_init.assert_not_called()
+            self.assertEqual(customizer.model, Model.NOVA_PRO)
+
+    @patch("boto3.client")
+    def test_is_multimodal_preserved_across_model_change(self, mock_client):
+        """is_multimodal flag is read at _init_data_mixing call time — explicit value survives model change."""
+        customizer = self._make_smhp_customizer(mock_client, is_multimodal=True)
+        # _init_data_mixing reads self.is_multimodal; verify it's still True after model change
+        with patch.object(customizer, "_init_data_mixing", wraps=lambda **kw: None) as mock_init:
+            customizer.model = Model.NOVA_PRO
+            # is_multimodal was not touched by model setter
+            self.assertTrue(customizer.is_multimodal)
+
 
 class TestTrain(TestNovaModelCustomizer):
     @patch("amzn_nova_forge.recipe.recipe_builder.RecipeBuilder.build_and_validate")
     @patch("uuid.uuid4")
     @patch("boto3.client")
-    def test_train_job_name_truncation(
-        self, mock_boto_client, mock_uuid, mock_build_and_validate
-    ):
+    def test_train_job_name_truncation(self, mock_boto_client, mock_uuid, mock_build_and_validate):
         mock_uuid.return_value = MagicMock()
         mock_uuid.return_value.__str__ = lambda x: "a" * 100  # Very long UUID
         mock_build_and_validate.return_value = (
@@ -608,9 +1055,7 @@ class TestTrain(TestNovaModelCustomizer):
     @patch("amzn_nova_forge.recipe.recipe_builder.RecipeBuilder.build_and_validate")
     @patch("uuid.uuid4")
     @patch("boto3.client")
-    def test_train_sft_basic_success(
-        self, mock_boto_client, mock_uuid, mock_build_and_validate
-    ):
+    def test_train_sft_basic_success(self, mock_boto_client, mock_uuid, mock_build_and_validate):
         mock_uuid.return_value = MagicMock()
         mock_uuid.return_value.__str__ = lambda x: "test-uuid-1234"
         mock_build_and_validate.return_value = (
@@ -639,9 +1084,7 @@ class TestTrain(TestNovaModelCustomizer):
             result.model_artifacts.checkpoint_s3_path,
             "s3://test-bucket/checkpoints/model",
         )
-        self.assertEqual(
-            result.model_artifacts.output_s3_path, "s3://output-bucket/output"
-        )
+        self.assertEqual(result.model_artifacts.output_s3_path, "s3://output-bucket/output")
         self.assertIsInstance(result.started_time, datetime)
 
         self.mock_runtime_manager.execute.assert_called_once()
@@ -655,9 +1098,7 @@ class TestTrain(TestNovaModelCustomizer):
     @patch("amzn_nova_forge.recipe.recipe_builder.RecipeBuilder.build_and_validate")
     @patch("uuid.uuid4")
     @patch("boto3.client")
-    def test_train_rft_basic_success(
-        self, mock_boto_client, mock_uuid, mock_build_and_validate
-    ):
+    def test_train_rft_basic_success(self, mock_boto_client, mock_uuid, mock_build_and_validate):
         mock_uuid.return_value = MagicMock()
         mock_uuid.return_value.__str__ = lambda x: "test-uuid-1234"
         mock_build_and_validate.return_value = (
@@ -690,9 +1131,7 @@ class TestTrain(TestNovaModelCustomizer):
             result.model_artifacts.checkpoint_s3_path,
             "s3://test-bucket/checkpoints/model",
         )
-        self.assertEqual(
-            result.model_artifacts.output_s3_path, "s3://output-bucket/output"
-        )
+        self.assertEqual(result.model_artifacts.output_s3_path, "s3://output-bucket/output")
         self.assertIsInstance(result.started_time, datetime)
 
         self.mock_runtime_manager.execute.assert_called_once()
@@ -744,9 +1183,7 @@ class TestTrain(TestNovaModelCustomizer):
     @patch("amzn_nova_forge.recipe.recipe_builder.RecipeBuilder.build_and_validate")
     @patch("uuid.uuid4")
     @patch("boto3.client")
-    def test_train_smhp_basic_success(
-        self, mock_boto_client, mock_uuid, mock_build_and_validate
-    ):
+    def test_train_smhp_basic_success(self, mock_boto_client, mock_uuid, mock_build_and_validate):
         mock_uuid.return_value = MagicMock()
         mock_uuid.return_value.__str__ = lambda x: "test-uuid-smhp"
         mock_build_and_validate.return_value = (
@@ -760,6 +1197,7 @@ class TestTrain(TestNovaModelCustomizer):
         mock_boto_client.return_value = mock_sagemaker
 
         mock_smhp_infra = create_autospec(SMHPRuntimeManager)
+        mock_smhp_infra.platform = Platform.SMHP
         mock_smhp_infra.cluster_name = "test-cluster"
         mock_smhp_infra.namespace = "test-namespace"
         mock_smhp_infra.rft_lambda_arn = None
@@ -769,12 +1207,8 @@ class TestTrain(TestNovaModelCustomizer):
 
         with (
             patch("boto3.client") as mock_client,
-            patch(
-                "amzn_nova_forge.util.recipe.get_hub_recipe_metadata"
-            ) as mock_get_hub_metadata,
-            patch(
-                "amzn_nova_forge.util.recipe.download_templates_from_s3"
-            ) as mock_download_s3,
+            patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata") as mock_get_hub_metadata,
+            patch("amzn_nova_forge.util.recipe.download_templates_from_s3") as mock_download_s3,
         ):
             mock_get_hub_metadata.return_value = {
                 "SmtjRecipeTemplateS3Uri": "s3://test-bucket/recipe.yaml",
@@ -811,7 +1245,7 @@ class TestTrain(TestNovaModelCustomizer):
         self.assertEqual(result.job_id, expected_job_id)
         self.assertIsInstance(result.started_time, datetime)
 
-        from amzn_nova_forge.model.result import SMHPTrainingResult
+        from amzn_nova_forge.core.result import SMHPTrainingResult
 
         self.assertIsInstance(result, SMHPTrainingResult)
         self.assertEqual(result.cluster_name, "test-cluster")
@@ -829,9 +1263,7 @@ class TestEvaluate(TestNovaModelCustomizer):
     @patch("boto3.client")
     @patch("amzn_nova_forge.recipe.recipe_builder.RecipeBuilder.build_and_validate")
     @patch("uuid.uuid4")
-    def test_evaluate_basic_success(
-        self, mock_uuid, mock_build_and_validate, mock_boto_client
-    ):
+    def test_evaluate_basic_success(self, mock_uuid, mock_build_and_validate, mock_boto_client):
         mock_uuid.return_value = MagicMock()
         mock_uuid.return_value.__str__ = lambda x: "test-eval-uuid"
         mock_build_and_validate.return_value = (
@@ -867,9 +1299,7 @@ class TestEvaluate(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch("amzn_nova_forge.recipe.recipe_builder.RecipeBuilder.build_and_validate")
-    def test_evaluate_runtime_manager_failure(
-        self, mock_build_and_validate, mock_boto_client
-    ):
+    def test_evaluate_runtime_manager_failure(self, mock_build_and_validate, mock_boto_client):
         mock_build_and_validate.return_value = (
             "mock_eval_recipe.yaml",
             self.output_s3_path,
@@ -877,9 +1307,7 @@ class TestEvaluate(TestNovaModelCustomizer):
             "image",
         )
         mock_boto_client.return_value = MagicMock()
-        self.mock_runtime_manager.execute.side_effect = Exception(
-            "Eval runtime failure"
-        )
+        self.mock_runtime_manager.execute.side_effect = Exception("Eval runtime failure")
 
         with self.assertRaises(Exception) as context:
             self.customizer.evaluate(
@@ -892,9 +1320,7 @@ class TestEvaluate(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch("amzn_nova_forge.recipe.recipe_builder.RecipeBuilder.build_and_validate")
-    def test_evaluate_dry_run_returns_none(
-        self, mock_build_and_validate, mock_boto_client
-    ):
+    def test_evaluate_dry_run_returns_none(self, mock_build_and_validate, mock_boto_client):
         mock_build_and_validate.return_value = (
             "mock_eval_recipe.yaml",
             self.output_s3_path,
@@ -970,8 +1396,7 @@ class TestEvaluate(TestNovaModelCustomizer):
         )
         mock_boto_client.return_value = MagicMock()
 
-        # Set customizer's data_s3_path (from training)
-        self.customizer.data_s3_path = "s3://training-data/train.jsonl"
+        # Built-in eval tasks should not use it
 
         expected_job_id = "eval-job-builtin"
         self.mock_runtime_manager.execute.return_value = expected_job_id
@@ -1007,9 +1432,9 @@ class TestEvaluate(TestNovaModelCustomizer):
         )
         mock_boto_client.return_value = MagicMock()
 
-        # Set customizer's data_s3_path (from training)
-        training_data_path = "s3://training-data/train.jsonl"
-        self.customizer.data_s3_path = training_data_path
+        # Customizer has data_s3_path from initialization
+        # BYOD eval tasks should use it
+        training_data_path = self.data_s3_path  # Use the one from setUp
 
         expected_job_id = "eval-job-byod"
         self.mock_runtime_manager.execute.return_value = expected_job_id
@@ -1041,6 +1466,7 @@ class TestEvaluate(TestNovaModelCustomizer):
         mock_boto_client.return_value = MagicMock()
 
         mock_smhp_infra = create_autospec(SMHPRuntimeManager)
+        mock_smhp_infra.platform = Platform.SMHP
         mock_smhp_infra.cluster_name = "test-eval-cluster"
         mock_smhp_infra.namespace = "test-eval-namespace"
 
@@ -1066,9 +1492,7 @@ class TestEvaluate(TestNovaModelCustomizer):
                 patch(
                     "amzn_nova_forge.util.recipe.get_hub_recipe_metadata"
                 ) as mock_get_hub_metadata,
-                patch(
-                    "amzn_nova_forge.util.recipe.download_templates_from_s3"
-                ) as mock_download_s3,
+                patch("amzn_nova_forge.util.recipe.download_templates_from_s3") as mock_download_s3,
             ):
                 mock_get_hub_metadata.return_value = {
                     "SmtjRecipeTemplateS3Uri": "s3://test-bucket/recipe.yaml",
@@ -1095,7 +1519,7 @@ class TestEvaluate(TestNovaModelCustomizer):
         self.assertEqual(result.eval_task, EvaluationTask.MMLU)
         self.assertIsInstance(result.started_time, datetime)
 
-        from amzn_nova_forge.model.result import SMHPEvaluationResult
+        from amzn_nova_forge.core.result import SMHPEvaluationResult
 
         self.assertIsInstance(result, SMHPEvaluationResult)
         self.assertEqual(result.cluster_name, "test-eval-cluster")
@@ -1142,16 +1566,119 @@ class TestEvaluate(TestNovaModelCustomizer):
         self.assertEqual(init_call_kwargs["method"], TrainingMethod.EVALUATION)
 
 
-class TestDeploy(TestNovaModelCustomizer):
+class TestFindPublishedModel(TestNovaModelCustomizer):
+    """Tests for find_published_model()."""
+
     @patch("boto3.client")
-    @patch("amzn_nova_forge.model.nova_model_customizer.create_bedrock_execution_role")
-    @patch("amzn_nova_forge.model.nova_model_customizer.monitor_model_create")
+    def test_skip_model_reuse_returns_none(self, mock_boto_client):
+        result = self.customizer.find_published_model(
+            "bedrock", "s3://path/", skip_model_reuse=True
+        )
+        self.assertIsNone(result)
+        mock_boto_client.assert_not_called()
+
+    def test_session_cache_hit(self):
+        self.customizer._published_models.add(("bedrock", "arn:bedrock:model/cached", "s3://path/"))
+        result = self.customizer.find_published_model("bedrock", "s3://path/")
+        self.assertEqual(result, "arn:bedrock:model/cached")
+
+    def test_session_cache_miss_different_path(self):
+        self.customizer._published_models.add(
+            ("bedrock", "arn:bedrock:model/cached", "s3://other/")
+        )
+        with patch("boto3.client") as mock_boto_client:
+            mock_tagging = MagicMock()
+            mock_tagging.get_resources.return_value = {"ResourceTagMappingList": []}
+            mock_boto_client.return_value = mock_tagging
+            result = self.customizer.find_published_model("bedrock", "s3://path/")
+        self.assertIsNone(result)
+
+    @patch("boto3.client")
+    def test_bedrock_api_lookup_found(self, mock_boto_client):
+        mock_tagging = MagicMock()
+        mock_tagging.get_resources.return_value = {
+            "ResourceTagMappingList": [
+                {"ResourceARN": "arn:aws:bedrock:us-east-1:123456789012:custom-model/found"}
+            ]
+        }
+        mock_bedrock = MagicMock()
+        mock_bedrock.meta.region_name = "us-east-1"
+        mock_boto_client.side_effect = lambda svc, **kw: (
+            mock_tagging if svc == "resourcegroupstaggingapi" else mock_bedrock
+        )
+
+        result = self.customizer.find_published_model("bedrock", "s3://path/")
+        self.assertEqual(result, "arn:aws:bedrock:us-east-1:123456789012:custom-model/found")
+        # Should be cached now
+        self.assertIn(
+            (
+                "bedrock",
+                "arn:aws:bedrock:us-east-1:123456789012:custom-model/found",
+                "s3://path/",
+            ),
+            self.customizer._published_models,
+        )
+
+    @patch("boto3.client")
+    def test_sagemaker_api_lookup_found(self, mock_boto_client):
+        mock_tagging = MagicMock()
+        mock_tagging.get_resources.return_value = {
+            "ResourceTagMappingList": [
+                {"ResourceARN": "arn:aws:sagemaker:us-east-1:123456789012:model/found"}
+            ]
+        }
+        mock_sm = MagicMock()
+        mock_sm.meta.region_name = "us-east-1"
+        mock_boto_client.side_effect = lambda svc, **kw: (
+            mock_tagging if svc == "resourcegroupstaggingapi" else mock_sm
+        )
+
+        result = self.customizer.find_published_model("sagemaker", "s3://path/")
+        self.assertEqual(result, "arn:aws:sagemaker:us-east-1:123456789012:model/found")
+
+    @patch("boto3.client")
+    def test_api_lookup_not_found(self, mock_boto_client):
+        mock_tagging = MagicMock()
+        mock_tagging.get_resources.return_value = {"ResourceTagMappingList": []}
+        mock_boto_client.return_value = mock_tagging
+
+        result = self.customizer.find_published_model("bedrock", "s3://path/")
+        self.assertIsNone(result)
+
+    @patch("boto3.client")
+    def test_api_exception_returns_none(self, mock_boto_client):
+        mock_boto_client.side_effect = Exception("connection error")
+
+        result = self.customizer.find_published_model("bedrock", "s3://path/")
+        self.assertIsNone(result)
+
+
+class TestDeploy(TestNovaModelCustomizer):
+    def _make_boto_client_dispatcher(self, **service_mocks):
+        """Create a boto3.client mock that returns different mocks per service.
+
+        Always includes a resourcegroupstaggingapi mock returning empty results
+        (no existing models) unless overridden.
+        """
+        default_tagging = MagicMock()
+        default_tagging.get_resources.return_value = {"ResourceTagMappingList": []}
+
+        mocks = {"resourcegroupstaggingapi": default_tagging, **service_mocks}
+
+        def dispatcher(service_name, **kwargs):
+            return mocks.get(service_name, MagicMock())
+
+        return dispatcher
+
+    @patch("boto3.client")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_bedrock_execution_role")
+    @patch("amzn_nova_forge.deployer.forge_deployer.monitor_model_create")
     def test_use_deployment_name_if_user_provided(
         self, mock_monitor, mock_bedrock_role_creation, mock_boto_client
     ):
         mock_bedrock = MagicMock()
         mock_bedrock.create_custom_model.return_value = {"modelArn": "test:model:arn"}
-        mock_boto_client.return_value = mock_bedrock
+        mock_boto_client.side_effect = self._make_boto_client_dispatcher(bedrock=mock_bedrock)
 
         mock_bedrock.get_custom_model.return_value = {"modelStatus": "ACTIVE"}
         mock_bedrock.create_custom_model_deployment.return_value = {
@@ -1169,13 +1696,11 @@ class TestDeploy(TestNovaModelCustomizer):
         self.assertEqual("test-endpoint-name", result.endpoint.endpoint_name)
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge.model.nova_model_customizer.create_bedrock_execution_role")
-    def test_bedrock_role_already_created(
-        self, mock_bedrock_role_creation, mock_boto_client
-    ):
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_bedrock_execution_role")
+    def test_bedrock_role_already_created(self, mock_bedrock_role_creation, mock_boto_client):
         mock_bedrock = MagicMock()
         mock_bedrock.create_custom_model.return_value = {"modelArn": "test:model:arn"}
-        mock_boto_client.return_value = mock_bedrock
+        mock_boto_client.side_effect = self._make_boto_client_dispatcher(bedrock=mock_bedrock)
 
         self.endpoint_name = "test-endpoint-name"
 
@@ -1194,14 +1719,14 @@ class TestDeploy(TestNovaModelCustomizer):
         )
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge.model.nova_model_customizer.create_bedrock_execution_role")
-    @patch("amzn_nova_forge.model.nova_model_customizer.monitor_model_create")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_bedrock_execution_role")
+    @patch("amzn_nova_forge.deployer.forge_deployer.monitor_model_create")
     def test_deploy_bedrock_od_success(
         self, mock_monitor, mock_bedrock_role_creation, mock_boto_client
     ):
         mock_bedrock = MagicMock()
         mock_bedrock.create_custom_model.return_value = {"modelArn": "test:model:arn"}
-        mock_boto_client.return_value = mock_bedrock
+        mock_boto_client.side_effect = self._make_boto_client_dispatcher(bedrock=mock_bedrock)
 
         mock_bedrock.get_custom_model.return_value = {"modelStatus": "ACTIVE"}
         mock_bedrock.create_custom_model_deployment.return_value = {
@@ -1221,14 +1746,14 @@ class TestDeploy(TestNovaModelCustomizer):
         self.assertEqual(result.endpoint.uri, "test:on-demand-deployment:arn")
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge.model.nova_model_customizer.create_bedrock_execution_role")
-    @patch("amzn_nova_forge.model.nova_model_customizer.monitor_model_create")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_bedrock_execution_role")
+    @patch("amzn_nova_forge.deployer.forge_deployer.monitor_model_create")
     def test_deploy_bedrock_pt_success(
         self, mock_monitor, mock_bedrock_role_creation, mock_boto_client
     ):
         mock_bedrock = MagicMock()
         mock_bedrock.create_custom_model.return_value = {"modelArn": "test:model:arn"}
-        mock_boto_client.return_value = mock_bedrock
+        mock_boto_client.side_effect = self._make_boto_client_dispatcher(bedrock=mock_bedrock)
 
         mock_bedrock.get_custom_model.return_value = {"modelStatus": "ACTIVE"}
         mock_bedrock.create_provisioned_model_throughput.return_value = {
@@ -1245,24 +1770,27 @@ class TestDeploy(TestNovaModelCustomizer):
         mock_bedrock_role_creation.assert_called_once()
         mock_monitor.assert_called_once()
         self.assertEqual(result.endpoint.platform, DeployPlatform.BEDROCK_PT)
-        self.assertEqual(
-            result.endpoint.uri, "test:provisioned-throughput-deployment:arn"
-        )
+        self.assertEqual(result.endpoint.uri, "test:provisioned-throughput-deployment:arn")
 
     @patch("boto3.client")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_execution_role")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_endpoint")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_model")
     @patch(
-        "amzn_nova_forge.model.nova_model_customizer.create_sagemaker_execution_role"
-    )
-    @patch(
-        "amzn_nova_forge.model.nova_model_customizer.create_model_and_endpoint_config"
+        "amzn_nova_forge.deployer.forge_deployer.find_sagemaker_model_by_tag",
+        return_value=None,
     )
     def test_deploy_sagemaker_success(
-        self, mock_create, mock_sagemaker_role_creation, mock_boto_client
+        self,
+        mock_find_by_tag,
+        mock_create_model,
+        mock_create_endpoint,
+        mock_sagemaker_role_creation,
+        mock_boto_client,
     ):
-        mock_sagemaker_role_creation.return_value = {
-            "Role": {"Arn": "sagemaker:role:arn"}
-        }
-        mock_create.return_value = "sagemaker:endpoint:arn"
+        mock_sagemaker_role_creation.return_value = {"Role": {"Arn": "sagemaker:role:arn"}}
+        mock_create_model.return_value = "arn:aws:sagemaker:us-east-1:123:model/test-model"
+        mock_create_endpoint.return_value = "sagemaker:endpoint:arn"
 
         result = self.customizer.deploy(
             model_artifact_path="s3://test-bucket/model",
@@ -1271,31 +1799,41 @@ class TestDeploy(TestNovaModelCustomizer):
         )
 
         mock_sagemaker_role_creation.assert_called_once()
-        mock_create.assert_called_once()
+        mock_create_model.assert_called_once()
+        mock_create_endpoint.assert_called_once()
         self.assertEqual(result.endpoint.platform, DeployPlatform.SAGEMAKER)
         self.assertEqual(result.endpoint.uri, "sagemaker:endpoint:arn")
+        self.assertIsNotNone(result.model_publish)
+        self.assertEqual(
+            result.model_publish.model_arn,
+            "arn:aws:sagemaker:us-east-1:123:model/test-model",
+        )
 
     @patch("boto3.client")
-    @patch(
-        "amzn_nova_forge.model.nova_model_customizer.create_sagemaker_execution_role"
-    )
-    @patch(
-        "amzn_nova_forge.model.nova_model_customizer.create_model_and_endpoint_config"
-    )
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_execution_role")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_endpoint")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_model")
     @patch("amzn_nova_forge.model.nova_model_customizer.resolve_model_checkpoint_path")
+    @patch(
+        "amzn_nova_forge.deployer.forge_deployer.find_sagemaker_model_by_tag",
+        return_value=None,
+    )
     def test_deploy_sagemaker_with_job_success(
         self,
+        mock_find_by_tag,
         mock_checkpoint_resolution,
-        mock_create,
+        mock_create_model,
+        mock_create_endpoint,
         mock_sagemaker_role_creation,
         mock_boto_client,
     ):
         mock_sagemaker = MagicMock()
         mock_boto_client.return_value = mock_sagemaker
-        mock_sagemaker_role_creation.return_value = {
-            "Role": {"Arn": "sagemaker:role:arn"}
-        }
-        mock_create.return_value = "sagemaker:endpoint:arn"
+        mock_sagemaker_role_creation.return_value = {"Role": {"Arn": "sagemaker:role:arn"}}
+        mock_create_model.return_value = (
+            "arn:aws:sagemaker:us-east-1:123:model/nova-micro-sft-lora-sagemaker-model"
+        )
+        mock_create_endpoint.return_value = "sagemaker:endpoint:arn"
         mock_checkpoint_resolution.return_value = "s3://xn---checkpointbucket/ckpt"
 
         mock_job_result = MagicMock()
@@ -1307,18 +1845,29 @@ class TestDeploy(TestNovaModelCustomizer):
             sagemaker_instance_type="ml.p5.48xlarge",
         )
 
-        mock_create.assert_called_with(
+        mock_create_model.assert_called_once_with(
             region="us-east-1",
             model_name="nova-micro-sft-lora-sagemaker-model",
             model_s3_location="s3://xn---checkpointbucket/ckpt/",
             sagemaker_execution_role_arn="sagemaker:role:arn",
-            endpoint_config_name="nova-micro-sft-lora-sagemaker-config",
-            endpoint_name="nova-micro-sft-lora-sagemaker",
-            instance_type="ml.p5.48xlarge",
+            sagemaker_client=mock_sagemaker,
             environment={
                 "CONTEXT_LENGTH": DEFAULT_CONTEXT_LENGTH,
                 "MAX_CONCURRENCY": DEFAULT_MAX_CONCURRENCY,
             },
+            deployment_mode=DeploymentMode.FAIL_IF_EXISTS,
+            tags=[
+                {
+                    "Key": "sagemaker.amazonaws.com/forge/escrow-uri",
+                    "Value": "s3://xn---checkpointbucket/ckpt/",
+                }
+            ],
+        )
+        mock_create_endpoint.assert_called_once_with(
+            model_name="nova-micro-sft-lora-sagemaker-model",
+            endpoint_config_name="nova-micro-sft-lora-sagemaker-config",
+            endpoint_name="nova-micro-sft-lora-sagemaker",
+            instance_type="ml.p5.48xlarge",
             sagemaker_client=mock_sagemaker,
             initial_instance_count=1,
             deployment_mode=DeploymentMode.FAIL_IF_EXISTS,
@@ -1326,21 +1875,20 @@ class TestDeploy(TestNovaModelCustomizer):
 
         self.assertEqual(result.endpoint.platform, DeployPlatform.SAGEMAKER)
         self.assertEqual(result.endpoint.uri, "sagemaker:endpoint:arn")
+        self.assertIsNotNone(result.model_publish)
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge.model.nova_model_customizer.create_bedrock_execution_role")
-    @patch("amzn_nova_forge.model.nova_model_customizer.monitor_model_create")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_bedrock_execution_role")
+    @patch("amzn_nova_forge.deployer.forge_deployer.monitor_model_create")
     def test_create_custom_model_failure(
         self, mock_monitor, mock_bedrock_role_creation, mock_boto_client
     ):
         mock_bedrock = MagicMock()
         mock_bedrock.create_custom_model.return_value = {"modelArn": "test:model:arn"}
-        mock_boto_client.return_value = mock_bedrock
+        mock_boto_client.side_effect = self._make_boto_client_dispatcher(bedrock=mock_bedrock)
 
         mock_bedrock.get_custom_model.return_value = {"modelStatus": "ACTIVE"}
-        mock_bedrock.create_custom_model.side_effect = Exception(
-            "Failed to create custom model"
-        )
+        mock_bedrock.create_custom_model.side_effect = Exception("Failed to create custom model")
         mock_bedrock.create_custom_model_deployment.return_value = {
             "customModelDeploymentArn": "test:on-demand-deployment:arn"
         }
@@ -1356,19 +1904,24 @@ class TestDeploy(TestNovaModelCustomizer):
         self.assertIn("Failed to create custom model", str(context.exception))
 
     @patch("boto3.client")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_execution_role")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_endpoint")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_model")
     @patch(
-        "amzn_nova_forge.model.nova_model_customizer.create_sagemaker_execution_role"
-    )
-    @patch(
-        "amzn_nova_forge.model.nova_model_customizer.create_model_and_endpoint_config"
+        "amzn_nova_forge.deployer.forge_deployer.find_sagemaker_model_by_tag",
+        return_value=None,
     )
     def test_deploy_sagemaker_failure(
-        self, mock_create, mock_sagemaker_role_creation, mock_boto_client
+        self,
+        mock_find_by_tag,
+        mock_create_model,
+        mock_create_endpoint,
+        mock_sagemaker_role_creation,
+        mock_boto_client,
     ):
-        mock_sagemaker_role_creation.return_value = {
-            "Role": {"Arn": "sagemaker:role:arn"}
-        }
-        mock_create.side_effect = Exception("Failed to create deployment")
+        mock_sagemaker_role_creation.return_value = {"Role": {"Arn": "sagemaker:role:arn"}}
+        mock_create_model.return_value = "arn:aws:sagemaker:us-east-1:123:model/test-model"
+        mock_create_endpoint.side_effect = Exception("Failed to create deployment")
 
         with self.assertRaises(Exception) as context:
             self.customizer.deploy(
@@ -1377,16 +1930,193 @@ class TestDeploy(TestNovaModelCustomizer):
                 sagemaker_instance_type="ml.p5.48xlarge",
             )
         self.assertIn("Failed to create deployment", str(context.exception))
+        mock_create_model.assert_called_once()
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge.model.nova_model_customizer.create_bedrock_execution_role")
-    @patch("amzn_nova_forge.model.nova_model_customizer.monitor_model_create")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_execution_role")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_endpoint")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_model")
+    def test_deploy_to_sagemaker_with_model_deploy_result(
+        self,
+        mock_create_model,
+        mock_create_endpoint,
+        mock_sagemaker_role_creation,
+        mock_boto_client,
+    ):
+        """deploy_to_sagemaker with model_deploy_result skips model creation."""
+        mock_sagemaker_role_creation.return_value = {"Role": {"Arn": "sagemaker:role:arn"}}
+        mock_create_model.return_value = "arn:aws:sagemaker:us-east-1:123:model/test-model"
+        mock_create_endpoint.return_value = "sagemaker:endpoint:arn"
+        mock_boto_client.side_effect = self._make_boto_client_dispatcher()
+
+        model_result = ModelDeployResult(
+            model_arn="arn:aws:sagemaker:us-east-1:123:model/existing-model",
+            model_name="existing-model",
+            escrow_uri="s3://escrow/path/",
+            created_at=datetime.now(timezone.utc),
+        )
+
+        result = self.customizer.deploy_to_sagemaker(
+            model_deploy_result=model_result,
+            instance_type="ml.g5.12xlarge",
+            endpoint_name="test-ep",
+        )
+
+        mock_create_model.assert_not_called()
+        mock_create_endpoint.assert_called_once()
+        self.assertEqual(result.endpoint.uri, "sagemaker:endpoint:arn")
+        self.assertIsNotNone(result.model_publish)
+
+    @patch("boto3.client")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_execution_role")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_endpoint")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_model")
+    def test_deploy_to_sagemaker_endpoint_failure_shows_retry_hint(
+        self,
+        mock_create_model,
+        mock_create_endpoint,
+        mock_sagemaker_role_creation,
+        mock_boto_client,
+    ):
+        """Endpoint failure error message includes model ARN and retry hint."""
+        mock_sagemaker_role_creation.return_value = {"Role": {"Arn": "sagemaker:role:arn"}}
+        mock_create_model.return_value = "arn:aws:sagemaker:us-east-1:123:model/test-model"
+        mock_create_endpoint.side_effect = Exception("Endpoint creation failed")
+        mock_boto_client.side_effect = self._make_boto_client_dispatcher()
+
+        with self.assertRaises(RuntimeError) as context:
+            self.customizer.deploy_to_sagemaker(
+                model_artifact_path="s3://test-bucket/model/",
+                instance_type="ml.g5.12xlarge",
+            )
+        err = str(context.exception)
+        self.assertIn("last_model_publish", err)
+        self.assertIn("SageMaker endpoint creation failed", err)
+
+    def test_deploy_to_bedrock_with_model_deploy_result(self):
+        """deploy_to_bedrock with model_deploy_result uses its ARN."""
+
+        mock_bedrock = MagicMock()
+        mock_bedrock.create_custom_model_deployment.return_value = {
+            "customModelDeploymentArn": "test:deployment:arn"
+        }
+
+        with patch("boto3.client") as mock_boto_client:
+            mock_boto_client.side_effect = self._make_boto_client_dispatcher(bedrock=mock_bedrock)
+
+            model_result = ModelDeployResult(
+                model_arn="arn:aws:bedrock:us-east-1:123:custom-model/my-model",
+                model_name="my-model",
+                escrow_uri="s3://escrow/path/",
+                created_at=datetime.now(timezone.utc),
+            )
+
+            result = self.customizer.deploy_to_bedrock(
+                model_deploy_result=model_result,
+                endpoint_name="test-ep",
+            )
+
+            self.assertEqual(result.model_publish, model_result)
+            self.assertEqual(result.endpoint.uri, "test:deployment:arn")
+
+    def test_deploy_to_bedrock_no_arn_raises(self):
+        """deploy_to_bedrock with no ARN source raises ValueError."""
+        with self.assertRaises(ValueError) as ctx:
+            self.customizer.deploy_to_bedrock()
+        self.assertIn("No model ARN", str(ctx.exception))
+
+    def test_deploy_to_sagemaker_no_input_raises(self):
+        """deploy_to_sagemaker with neither model_deploy_result nor model_artifact_path raises."""
+        with self.assertRaises(ValueError):
+            self.customizer.deploy_to_sagemaker(instance_type="ml.g5.12xlarge")
+
+    @patch("boto3.client")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_execution_role")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_endpoint")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_model")
+    def test_deploy_to_sagemaker_skip_model_reuse(
+        self,
+        mock_create_model,
+        mock_create_endpoint,
+        mock_sagemaker_role_creation,
+        mock_boto_client,
+    ):
+        """deploy_to_sagemaker with skip_model_reuse=True skips tag-based model discovery."""
+        mock_sagemaker_role_creation.return_value = {"Role": {"Arn": "sagemaker:role:arn"}}
+        mock_create_model.return_value = "arn:aws:sagemaker:us-east-1:123:model/test-model"
+        mock_create_endpoint.return_value = "sagemaker:endpoint:arn"
+        mock_boto_client.side_effect = self._make_boto_client_dispatcher()
+
+        with patch(
+            "amzn_nova_forge.deployer.forge_deployer.find_sagemaker_model_by_tag"
+        ) as mock_find_tag:
+            result = self.customizer.deploy_to_sagemaker(
+                model_artifact_path="s3://test-bucket/model/",
+                instance_type="ml.g5.12xlarge",
+                skip_model_reuse=True,
+            )
+
+        # find_sagemaker_model_by_tag should NOT be called when skip_model_reuse=True
+        mock_find_tag.assert_not_called()
+        mock_create_model.assert_called_once()
+        self.assertEqual(result.endpoint.uri, "sagemaker:endpoint:arn")
+
+    @patch("boto3.client")
+    def test_deploy_to_bedrock_waits_on_creating_model(self, mock_boto_client):
+        """deploy_to_bedrock waits when model status is Creating."""
+        mock_bedrock = MagicMock()
+        mock_bedrock.get_custom_model.side_effect = [
+            {"modelStatus": "Creating"},  # first call from status check
+            {"modelStatus": "Active"},  # second call from wait_for_model_ready
+        ]
+        mock_bedrock.create_custom_model_deployment.return_value = {
+            "customModelDeploymentArn": "test:deployment:arn"
+        }
+        mock_boto_client.side_effect = self._make_boto_client_dispatcher(bedrock=mock_bedrock)
+
+        model_result = ModelDeployResult(
+            model_arn="arn:aws:bedrock:us-east-1:123456789012:custom-model/my-model",
+            model_name="my-model",
+            escrow_uri="s3://escrow/path/",
+            created_at=datetime.now(timezone.utc),
+        )
+
+        result = self.customizer.deploy_to_bedrock(
+            model_deploy_result=model_result,
+            endpoint_name="test-ep",
+        )
+        self.assertEqual(result.endpoint.uri, "test:deployment:arn")
+
+    @patch("boto3.client")
+    def test_deploy_to_bedrock_rejects_failed_model(self, mock_boto_client):
+        """deploy_to_bedrock raises ValueError when model status is Failed."""
+        mock_bedrock = MagicMock()
+        mock_bedrock.get_custom_model.return_value = {"modelStatus": "Failed"}
+        mock_boto_client.side_effect = self._make_boto_client_dispatcher(bedrock=mock_bedrock)
+
+        model_result = ModelDeployResult(
+            model_arn="arn:aws:bedrock:us-east-1:123456789012:custom-model/my-model",
+            model_name="my-model",
+            escrow_uri="s3://escrow/path/",
+            created_at=datetime.now(timezone.utc),
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            self.customizer.deploy_to_bedrock(
+                model_deploy_result=model_result,
+                endpoint_name="test-ep",
+            )
+        self.assertIn("Failed", str(ctx.exception))
+
+    @patch("boto3.client")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_bedrock_execution_role")
+    @patch("amzn_nova_forge.deployer.forge_deployer.monitor_model_create")
     def test_auto_generate_deployment_name_if_not_provided(
         self, mock_monitor, mock_bedrock_role_creation, mock_boto_client
     ):
         mock_bedrock = MagicMock()
         mock_bedrock.create_custom_model.return_value = {"modelArn": "test:model:arn"}
-        mock_boto_client.return_value = mock_bedrock
+        mock_boto_client.side_effect = self._make_boto_client_dispatcher(bedrock=mock_bedrock)
 
         mock_bedrock.get_custom_model.return_value = {"modelStatus": "ACTIVE"}
         mock_bedrock.create_custom_model_deployment.return_value = {
@@ -1401,14 +2131,14 @@ class TestDeploy(TestNovaModelCustomizer):
         )
 
         self.assertEqual(
-            "model-nova-micro-trainingmethod-sft-lora-us-east-1",
+            "nova-micro-sft-lora-us-east-1",
             result.endpoint.endpoint_name,
         )
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge.model.nova_model_customizer.create_bedrock_execution_role")
-    @patch("amzn_nova_forge.model.nova_model_customizer.monitor_model_create")
-    @patch("amzn_nova_forge.model.nova_model_customizer.check_existing_deployment")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_bedrock_execution_role")
+    @patch("amzn_nova_forge.deployer.forge_deployer.monitor_model_create")
+    @patch("amzn_nova_forge.deployer.forge_deployer.check_existing_deployment")
     def test_deploy_fails_when_endpoint_exists_and_fail_if_exists_mode(
         self,
         mock_check_existing,
@@ -1433,24 +2163,18 @@ class TestDeploy(TestNovaModelCustomizer):
         self.assertIn("Change deployment_mode", error_msg)
 
         # Verify we checked for existing deployment
-        mock_check_existing.assert_called_once_with(
-            "test-endpoint", DeployPlatform.BEDROCK_OD
-        )
+        mock_check_existing.assert_called_once_with("test-endpoint", DeployPlatform.BEDROCK_OD)
 
         # Verify we didn't proceed with deployment
         mock_bedrock_role_creation.assert_not_called()
         mock_monitor.assert_not_called()
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge.model.nova_model_customizer.create_bedrock_execution_role")
-    @patch("amzn_nova_forge.model.nova_model_customizer.monitor_model_create")
-    @patch("amzn_nova_forge.model.nova_model_customizer.check_existing_deployment")
-    @patch(
-        "amzn_nova_forge.model.nova_model_customizer.update_provisioned_throughput_model"
-    )
-    @patch(
-        "amzn_nova_forge.model.nova_model_customizer.Validator._validate_calling_role_permissions"
-    )
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_bedrock_execution_role")
+    @patch("amzn_nova_forge.deployer.forge_deployer.monitor_model_create")
+    @patch("amzn_nova_forge.deployer.forge_deployer.check_existing_deployment")
+    @patch("amzn_nova_forge.deployer.forge_deployer.update_provisioned_throughput_model")
+    @patch("amzn_nova_forge.validation.validator.Validator._validate_calling_role_permissions")
     def test_deploy_pt_update_success_uses_existing_arn(
         self,
         mock_validate_perms,
@@ -1467,19 +2191,13 @@ class TestDeploy(TestNovaModelCustomizer):
         mock_update_pt.return_value = None  # Success
 
         mock_bedrock = MagicMock()
-        mock_bedrock.create_custom_model.return_value = {
-            "modelArn": "test:new-model:arn"
-        }
-        mock_boto_client.return_value = mock_bedrock
+        mock_bedrock.create_custom_model.return_value = {"modelArn": "test:new-model:arn"}
+        mock_boto_client.side_effect = self._make_boto_client_dispatcher(bedrock=mock_bedrock)
         mock_bedrock_role_creation.return_value = {"Role": {"Arn": "test:role:arn"}}
 
         with (
-            patch(
-                "amzn_nova_forge.util.recipe.get_hub_recipe_metadata"
-            ) as mock_get_hub_metadata_2,
-            patch(
-                "amzn_nova_forge.util.recipe.download_templates_from_s3"
-            ) as mock_download_s3_2,
+            patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata") as mock_get_hub_metadata_2,
+            patch("amzn_nova_forge.util.recipe.download_templates_from_s3") as mock_download_s3_2,
         ):
             mock_get_hub_metadata_2.return_value = {
                 "SmtjRecipeTemplateS3Uri": "s3://test-bucket/recipe.yaml",
@@ -1514,9 +2232,9 @@ class TestDeploy(TestNovaModelCustomizer):
         self.assertEqual(result.endpoint.uri, existing_arn)
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge.model.nova_model_customizer.create_bedrock_execution_role")
-    @patch("amzn_nova_forge.model.nova_model_customizer.monitor_model_create")
-    @patch("amzn_nova_forge.model.nova_model_customizer.check_existing_deployment")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_bedrock_execution_role")
+    @patch("amzn_nova_forge.deployer.forge_deployer.monitor_model_create")
+    @patch("amzn_nova_forge.deployer.forge_deployer.check_existing_deployment")
     def test_deploy_succeeds_when_no_existing_endpoint(
         self,
         mock_check_existing,
@@ -1534,7 +2252,7 @@ class TestDeploy(TestNovaModelCustomizer):
         mock_bedrock.create_custom_model_deployment.return_value = {
             "customModelDeploymentArn": "test:new-deployment:arn"
         }
-        mock_boto_client.return_value = mock_bedrock
+        mock_boto_client.side_effect = self._make_boto_client_dispatcher(bedrock=mock_bedrock)
 
         # Mock role creation
         mock_bedrock_role_creation.return_value = {"Role": {"Arn": "bedrock:role:arn"}}
@@ -1545,10 +2263,9 @@ class TestDeploy(TestNovaModelCustomizer):
             endpoint_name="new-endpoint",
         )
 
-        # Verify we checked for existing deployment
-        mock_check_existing.assert_called_once_with(
-            "new-endpoint", DeployPlatform.BEDROCK_OD
-        )
+        # Verify we checked for existing deployment (pre-flight + deploy)
+        self.assertEqual(mock_check_existing.call_count, 2)
+        mock_check_existing.assert_called_with("new-endpoint", DeployPlatform.BEDROCK_OD)
 
         # Verify deployment proceeded successfully
         mock_bedrock_role_creation.assert_called_once()
@@ -1557,8 +2274,8 @@ class TestDeploy(TestNovaModelCustomizer):
         self.assertEqual(result.endpoint.uri, "test:new-deployment:arn")
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge.model.nova_model_customizer.create_bedrock_execution_role")
-    @patch("amzn_nova_forge.model.nova_model_customizer.monitor_model_create")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_bedrock_execution_role")
+    @patch("amzn_nova_forge.deployer.forge_deployer.monitor_model_create")
     @patch(
         "amzn_nova_forge.model.nova_model_customizer_util.extract_checkpoint_path_from_job_output"
     )
@@ -1571,7 +2288,7 @@ class TestDeploy(TestNovaModelCustomizer):
         mock_bedrock.create_custom_model_deployment.return_value = {
             "customModelDeploymentArn": "test:deployment:arn"
         }
-        mock_boto_client.return_value = mock_bedrock
+        mock_boto_client.side_effect = self._make_boto_client_dispatcher(bedrock=mock_bedrock)
         mock_bedrock_role_creation.return_value = {"Role": {"Arn": "bedrock:role:arn"}}
         mock_monitor.return_value = None
         mock_extract.return_value = "s3://extracted/checkpoint/path"
@@ -1591,8 +2308,8 @@ class TestDeploy(TestNovaModelCustomizer):
         self.assertEqual(result.endpoint.platform, DeployPlatform.BEDROCK_OD)
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge.model.nova_model_customizer.create_bedrock_execution_role")
-    @patch("amzn_nova_forge.model.nova_model_customizer.monitor_model_create")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_bedrock_execution_role")
+    @patch("amzn_nova_forge.deployer.forge_deployer.monitor_model_create")
     @patch(
         "amzn_nova_forge.model.nova_model_customizer_util.extract_checkpoint_path_from_job_output"
     )
@@ -1605,7 +2322,7 @@ class TestDeploy(TestNovaModelCustomizer):
         mock_bedrock.create_custom_model_deployment.return_value = {
             "customModelDeploymentArn": "test:deployment:arn"
         }
-        mock_boto_client.return_value = mock_bedrock
+        mock_boto_client.side_effect = self._make_boto_client_dispatcher(bedrock=mock_bedrock)
         mock_bedrock_role_creation.return_value = {"Role": {"Arn": "bedrock:role:arn"}}
         mock_monitor.return_value = None
         mock_extract.return_value = "s3://extracted/checkpoint/path"
@@ -1645,8 +2362,101 @@ class TestDeploy(TestNovaModelCustomizer):
 
         self.assertIn("Extraction failed", str(context.exception))
 
+    @patch("boto3.client")
+    @patch("amzn_nova_forge.deployer.forge_deployer.monitor_model_create")
+    def test_user_role_does_not_attach_policies_by_default(self, mock_monitor, mock_boto_client):
+        """When user passes execution_role_name, the role is looked up as-is — no create/attach."""
+        mock_iam = MagicMock()
+        mock_bedrock = MagicMock()
+        mock_bedrock.create_custom_model.return_value = {"modelArn": "test:model:arn"}
+        mock_bedrock.create_custom_model_deployment.return_value = {
+            "customModelDeploymentArn": "test:deployment:arn"
+        }
+        mock_iam.get_role.return_value = {"Role": {"Arn": "user:role:arn"}}
+        mock_boto_client.side_effect = self._make_boto_client_dispatcher(
+            iam=mock_iam, bedrock=mock_bedrock
+        )
+        mock_monitor.return_value = None
 
-class TestBatchInference(TestNovaModelCustomizer):
+        self.customizer.deploy(
+            model_artifact_path="s3://test-bucket/model",
+            deploy_platform=DeployPlatform.BEDROCK_OD,
+            execution_role_name="my-existing-role",
+        )
+
+        mock_iam.get_role.assert_called_once_with(RoleName="my-existing-role")
+        mock_iam.create_policy.assert_not_called()
+        mock_iam.attach_role_policy.assert_not_called()
+
+    @patch("boto3.client")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_bedrock_execution_role")
+    @patch("amzn_nova_forge.deployer.forge_deployer.monitor_model_create")
+    def test_default_role_always_manages_policies(
+        self, mock_monitor, mock_bedrock_role_creation, mock_boto_client
+    ):
+        """When no execution_role_name is given, the SDK-managed default role is created/managed."""
+        mock_bedrock = MagicMock()
+        mock_bedrock.create_custom_model.return_value = {"modelArn": "test:model:arn"}
+        mock_bedrock.create_custom_model_deployment.return_value = {
+            "customModelDeploymentArn": "test:deployment:arn"
+        }
+        mock_iam = MagicMock()
+        mock_boto_client.side_effect = self._make_boto_client_dispatcher(
+            bedrock=mock_bedrock, iam=mock_iam
+        )
+        mock_bedrock_role_creation.return_value = {"Role": {"Arn": "default:role:arn"}}
+        mock_monitor.return_value = None
+
+        self.customizer.deploy(
+            model_artifact_path="s3://test-bucket/model",
+            deploy_platform=DeployPlatform.BEDROCK_OD,
+        )
+
+        mock_bedrock_role_creation.assert_called_once_with(
+            iam_client=mock_iam,
+            role_name=BEDROCK_EXECUTION_ROLE_NAME,
+        )
+
+    @patch("boto3.client")
+    def test_user_role_not_found_raises_clear_error(self, mock_boto_client):
+        """When user-specified role doesn't exist, raise a clear error."""
+        mock_iam = MagicMock()
+        mock_iam.get_role.side_effect = Exception("IAM role 'nonexistent-role' does not exist.")
+        mock_boto_client.side_effect = self._make_boto_client_dispatcher(iam=mock_iam)
+
+        with self.assertRaises(Exception) as context:
+            self.customizer.deploy(
+                model_artifact_path="s3://test-bucket/model",
+                deploy_platform=DeployPlatform.BEDROCK_OD,
+                execution_role_name="nonexistent-role",
+            )
+
+        self.assertIn("does not exist", str(context.exception))
+
+    @patch("boto3.client")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_endpoint")
+    @patch("amzn_nova_forge.deployer.forge_deployer.create_sagemaker_model")
+    def test_sagemaker_user_role_does_not_attach_policies_by_default(
+        self, mock_create_model, mock_create_endpoint, mock_boto_client
+    ):
+        """For SageMaker, user-specified role is looked up as-is — no create/attach."""
+        mock_iam = MagicMock()
+        mock_iam.get_role.return_value = {"Role": {"Arn": "sagemaker:user:role:arn"}}
+        mock_create_model.return_value = "arn:aws:sagemaker:us-east-1:123:model/test"
+        mock_create_endpoint.return_value = "sagemaker:endpoint:arn"
+        mock_boto_client.side_effect = self._make_boto_client_dispatcher(iam=mock_iam)
+
+        self.customizer.deploy(
+            model_artifact_path="s3://test-bucket/model",
+            deploy_platform=DeployPlatform.SAGEMAKER,
+            execution_role_name="my-sagemaker-role",
+            sagemaker_instance_type="ml.p5.48xlarge",
+        )
+
+        mock_iam.get_role.assert_called_once_with(RoleName="my-sagemaker-role")
+        mock_iam.create_policy.assert_not_called()
+        mock_iam.attach_role_policy.assert_not_called()
+
     @patch("boto3.client")
     @patch("amzn_nova_forge.recipe.recipe_builder.RecipeBuilder.build_and_validate")
     @patch("uuid.uuid4")
@@ -1698,9 +2508,7 @@ class TestBatchInference(TestNovaModelCustomizer):
             "image",
         )
         mock_boto_client.return_value = MagicMock()
-        self.mock_runtime_manager.execute.side_effect = Exception(
-            "Inference runtime failure"
-        )
+        self.mock_runtime_manager.execute.side_effect = Exception("Inference runtime failure")
 
         with self.assertRaises(Exception) as context:
             self.customizer.batch_inference(
@@ -1713,9 +2521,7 @@ class TestBatchInference(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch("amzn_nova_forge.recipe.recipe_builder.RecipeBuilder.build_and_validate")
-    def test_batch_inference_dry_run_returns_none(
-        self, mock_build_and_validate, mock_boto_client
-    ):
+    def test_batch_inference_dry_run_returns_none(self, mock_build_and_validate, mock_boto_client):
         mock_build_and_validate.return_value = (
             "mock_inference_recipe.yaml",
             self.output_s3_path,
@@ -1772,9 +2578,7 @@ class TestPlatformValidation(TestNovaModelCustomizer):
         mock_resolve.return_value = "s3://customer-escrow-123-hp-abc/checkpoint"
 
         with self.assertRaises(ValueError) as context:
-            self.customizer.evaluate(
-                job_name="test-eval", eval_task=EvaluationTask.MMLU
-            )
+            self.customizer.evaluate(job_name="test-eval", eval_task=EvaluationTask.MMLU)
 
         error_msg = str(context.exception)
         self.assertIn("Platform mismatch", error_msg)
@@ -1792,15 +2596,14 @@ class TestPlatformValidation(TestNovaModelCustomizer):
 
         # Create SMHP customizer
         mock_smhp_infra = create_autospec(SMHPRuntimeManager)
+        mock_smhp_infra.platform = Platform.SMHP
         mock_smhp_infra.cluster_name = "test-cluster"
         mock_smhp_infra.namespace = "test-ns"
         self.customizer.infra = mock_smhp_infra
         self.customizer.platform = Platform.SMHP
 
         with self.assertRaises(ValueError) as context:
-            self.customizer.evaluate(
-                job_name="test-eval", eval_task=EvaluationTask.MMLU
-            )
+            self.customizer.evaluate(job_name="test-eval", eval_task=EvaluationTask.MMLU)
 
         error_msg = str(context.exception)
         self.assertIn("Platform mismatch", error_msg)
@@ -1827,9 +2630,7 @@ class TestPlatformValidation(TestNovaModelCustomizer):
         )
         self.mock_runtime_manager.execute.return_value = "job-123"
 
-        result = self.customizer.evaluate(
-            job_name="test-eval", eval_task=EvaluationTask.MMLU
-        )
+        result = self.customizer.evaluate(job_name="test-eval", eval_task=EvaluationTask.MMLU)
 
         self.assertIsNotNone(result)
         self.mock_runtime_manager.execute.assert_called_once()
@@ -1855,15 +2656,14 @@ class TestPlatformValidation(TestNovaModelCustomizer):
 
         # Configure as SMHP
         mock_smhp_infra = create_autospec(SMHPRuntimeManager)
+        mock_smhp_infra.platform = Platform.SMHP
         mock_smhp_infra.cluster_name = "test-cluster"
         mock_smhp_infra.namespace = "test-ns"
         mock_smhp_infra.execute.return_value = "job-456"
         self.customizer.infra = mock_smhp_infra
         self.customizer.platform = Platform.SMHP
 
-        result = self.customizer.evaluate(
-            job_name="test-eval", eval_task=EvaluationTask.MMLU
-        )
+        result = self.customizer.evaluate(job_name="test-eval", eval_task=EvaluationTask.MMLU)
 
         self.assertIsNotNone(result)
         mock_smhp_infra.execute.assert_called_once()
@@ -1889,9 +2689,7 @@ class TestPlatformValidation(TestNovaModelCustomizer):
         )
         self.mock_runtime_manager.execute.return_value = "job-789"
 
-        result = self.customizer.evaluate(
-            job_name="test-eval", eval_task=EvaluationTask.MMLU
-        )
+        result = self.customizer.evaluate(job_name="test-eval", eval_task=EvaluationTask.MMLU)
 
         mock_logger.warning.assert_called_once()
         warning_msg = mock_logger.warning.call_args[0][0]
@@ -1901,9 +2699,7 @@ class TestPlatformValidation(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch("amzn_nova_forge.model.nova_model_customizer.resolve_model_checkpoint_path")
-    def test_batch_inference_platform_mismatch_smhp_to_smtj(
-        self, mock_resolve, mock_boto_client
-    ):
+    def test_batch_inference_platform_mismatch_smhp_to_smtj(self, mock_resolve, mock_boto_client):
         """Test that SMHP checkpoint on SMTJ batch_inference raises ValueError"""
         mock_boto_client.return_value = MagicMock()
         mock_resolve.return_value = "s3://customer-escrow-123-hp-abc/checkpoint"
@@ -1922,15 +2718,14 @@ class TestPlatformValidation(TestNovaModelCustomizer):
 
     @patch("boto3.client")
     @patch("amzn_nova_forge.model.nova_model_customizer.resolve_model_checkpoint_path")
-    def test_batch_inference_platform_mismatch_smtj_to_smhp(
-        self, mock_resolve, mock_boto_client
-    ):
+    def test_batch_inference_platform_mismatch_smtj_to_smhp(self, mock_resolve, mock_boto_client):
         """Test that SMTJ checkpoint on SMHP batch_inference raises ValueError"""
         mock_boto_client.return_value = MagicMock()
         mock_resolve.return_value = "s3://customer-escrow-123-smtj-abc/checkpoint"
 
         # Configure as SMHP
         mock_smhp_infra = create_autospec(SMHPRuntimeManager)
+        mock_smhp_infra.platform = Platform.SMHP
         mock_smhp_infra.cluster_name = "test-cluster"
         mock_smhp_infra.namespace = "test-ns"
         self.customizer.infra = mock_smhp_infra
@@ -1998,6 +2793,7 @@ class TestPlatformValidation(TestNovaModelCustomizer):
 
         # Configure as SMHP
         mock_smhp_infra = create_autospec(SMHPRuntimeManager)
+        mock_smhp_infra.platform = Platform.SMHP
         mock_smhp_infra.cluster_name = "test-cluster"
         mock_smhp_infra.namespace = "test-ns"
         mock_smhp_infra.execute.return_value = "job-456"
@@ -2052,10 +2848,8 @@ class TestPlatformValidation(TestNovaModelCustomizer):
             self.customizer.invoke_inference({"messages": []})
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge.model.nova_model_customizer.invoke_sagemaker_inference")
-    def test_invoke_inference_sagemaker_endpoint(
-        self, mock_invoke_sagemaker, mock_boto3_client
-    ):
+    @patch("amzn_nova_forge.inference.forge_inference.invoke_sagemaker_inference")
+    def test_invoke_inference_sagemaker_endpoint(self, mock_invoke_sagemaker, mock_boto3_client):
         # Setup
         endpoint_arn = "arn:aws:sagemaker:us-east-1:123456789012:endpoint/test-endpoint"
         request_body = {
@@ -2071,22 +2865,16 @@ class TestPlatformValidation(TestNovaModelCustomizer):
         result = self.customizer.invoke_inference(request_body, endpoint_arn)
 
         # Assert
-        mock_boto3_client.assert_called_once_with(
-            "sagemaker-runtime", region_name="us-east-1"
-        )
+        mock_boto3_client.assert_called_once_with("sagemaker-runtime", region_name="us-east-1")
         mock_invoke_sagemaker.assert_called_once_with(
             request_body, "test-endpoint", mock_runtime_client
         )
         assert result == "Inference Result"
 
     @patch("boto3.client")
-    @patch("amzn_nova_forge.model.nova_model_customizer.invoke_model")
-    def test_invoke_inference_bedrock_endpoint(
-        self, mock_invoke_model, mock_boto3_client
-    ):
-        endpoint_arn = (
-            "arn:aws:bedrock:us-east-1:123456789012:custom-model-deployment/test-model"
-        )
+    @patch("amzn_nova_forge.inference.forge_inference.invoke_model")
+    def test_invoke_inference_bedrock_endpoint(self, mock_invoke_model, mock_boto3_client):
+        endpoint_arn = "arn:aws:bedrock:us-east-1:123456789012:custom-model-deployment/test-model"
         request_body = {
             "system": [{"text": "You are an assistant"}],
             "messages": [{"role": "user", "content": [{"text": "Hello"}]}],
@@ -2099,9 +2887,7 @@ class TestPlatformValidation(TestNovaModelCustomizer):
         result = self.customizer.invoke_inference(request_body, endpoint_arn)
 
         # Assert
-        mock_boto3_client.assert_called_once_with(
-            "bedrock-runtime", region_name="us-east-1"
-        )
+        mock_boto3_client.assert_called_once_with("bedrock-runtime", region_name="us-east-1")
         mock_invoke_model.assert_called_once_with(
             model_id=endpoint_arn,
             request_body=request_body,
@@ -2110,93 +2896,37 @@ class TestPlatformValidation(TestNovaModelCustomizer):
         assert result == "Bedrock Inference Result"
 
 
-class TestLambdaVerification(unittest.TestCase):
+class TestLambdaVerification(TestNovaModelCustomizer):
     """Test suite for RFT lambda verification functionality"""
 
     def setUp(self):
-        self.model = Model.NOVA_MICRO
+        super().setUp()
         self.method = TrainingMethod.RFT_LORA
         self.data_s3_path = "s3://test-bucket/data.jsonl"
-        self.output_s3_path = "s3://test-bucket/output"
+        self.customizer = NovaModelCustomizer(
+            model=self.model,
+            method=self.method,
+            infra=self.mock_runtime_manager,
+            data_s3_path=self.data_s3_path,
+            output_s3_path=self.output_s3_path,
+        )
 
-        self.mock_runtime_manager = create_autospec(SMTJRuntimeManager)
-        self.mock_runtime_manager.instance_count = 2
-
-        with (
-            patch("boto3.client") as mock_client,
-            patch(
-                "sagemaker.core.helper.session_helper.get_execution_role"
-            ) as mock_get_execution_role,
-            patch(
-                "amzn_nova_forge.util.recipe.get_hub_recipe_metadata"
-            ) as mock_get_hub_metadata,
-            patch(
-                "amzn_nova_forge.util.recipe.download_templates_from_s3"
-            ) as mock_download_s3,
-        ):
-            mock_get_execution_role.return_value = (
-                "arn:aws:iam::123456789012:role/SageMakerExecutionRole"
-            )
-
-            mock_get_hub_metadata.return_value = {
-                "SmtjRecipeTemplateS3Uri": "s3://test-bucket/recipe.yaml",
-                "SmtjOverrideParamsS3Uri": "s3://test-bucket/overrides.json",
-            }
-            mock_download_s3.return_value = ({}, {})
-
-            mock_sts = MagicMock()
-            mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
-            mock_s3 = MagicMock()
-            mock_s3.head_bucket.return_value = {}
-
-            mock_iam = MagicMock()
-            mock_iam.get_role.return_value = {
-                "Role": {
-                    "AssumeRolePolicyDocument": {
-                        "Statement": [
-                            {
-                                "Effect": "Allow",
-                                "Principal": {"Service": "sagemaker.amazonaws.com"},
-                                "Action": "sts:AssumeRole",
-                            }
-                        ]
-                    }
-                }
-            }
-            mock_sagemaker = MagicMock()
-
-            def client_side_effect(service, **kwargs):
-                if service == "sts":
-                    return mock_sts
-                elif service == "s3":
-                    return mock_s3
-                elif service == "iam":
-                    return mock_iam
-                elif service == "sagemaker":
-                    return mock_sagemaker
-                return MagicMock()
-
-            mock_client.side_effect = client_side_effect
-
-            self.customizer = NovaModelCustomizer(
-                model=self.model,
-                method=self.method,
-                infra=self.mock_runtime_manager,
-                data_s3_path=self.data_s3_path,
-                output_s3_path=self.output_s3_path,
-            )
+    def test_customizer_attributes(self):
+        """Override parent test to check RFT_LORA method."""
+        self.assertEqual(self.customizer.model, Model.NOVA_MICRO)
+        self.assertEqual(self.customizer.method, TrainingMethod.RFT_LORA)
+        self.assertEqual(self.customizer.data_s3_path, self.data_s3_path)
+        self.assertEqual(self.customizer.output_s3_path, self.output_s3_path)
+        self.assertEqual(self.customizer.region, "us-east-1")
 
     # ------------------------------------------------------------------
     # train() rft_lambda_arn resolution
     # ------------------------------------------------------------------
 
-    @patch("amzn_nova_forge.model.nova_model_customizer.SMTJTrainingResult")
-    @patch("amzn_nova_forge.model.nova_model_customizer.get_model_artifacts")
-    @patch("amzn_nova_forge.model.nova_model_customizer.RecipeBuilder")
-    @patch("amzn_nova_forge.model.nova_model_customizer.Validator")
-    def test_train_reads_rft_lambda_arn_from_infra(
-        self, mock_validator, mock_rb, mock_gma, mock_training_result
-    ):
+    @patch("amzn_nova_forge.trainer.forge_trainer.SMTJTrainingResult")
+    @patch("amzn_nova_forge.trainer.forge_trainer.get_model_artifacts")
+    @patch("amzn_nova_forge.trainer.forge_trainer.RecipeBuilder")
+    def test_train_reads_rft_lambda_arn_from_infra(self, mock_rb, mock_gma, mock_training_result):
         """train() uses infra.rft_lambda_arn when no arg is passed."""
         arn = "arn:aws:lambda:us-east-1:123456789012:function:my-SageMaker-fn"
         self.mock_runtime_manager.rft_lambda_arn = arn
@@ -2213,20 +2943,17 @@ class TestLambdaVerification(unittest.TestCase):
         self.mock_runtime_manager.execute.return_value = "job-123"
 
         with patch(
-            "amzn_nova_forge.model.nova_model_customizer.validate_rft_lambda_name"
+            "amzn_nova_forge.trainer.forge_trainer.validate_rft_lambda_name"
         ) as mock_validate_name:
             self.customizer.method = TrainingMethod.RFT_LORA
             self.customizer.train(job_name="test-rft-job")
-            mock_validate_name.assert_called_once_with(
-                arn.split(":")[-1], self.customizer.platform
-            )
+            mock_validate_name.assert_called_once_with(arn.split(":")[-1], self.customizer.platform)
 
-    @patch("amzn_nova_forge.model.nova_model_customizer.SMTJTrainingResult")
-    @patch("amzn_nova_forge.model.nova_model_customizer.get_model_artifacts")
-    @patch("amzn_nova_forge.model.nova_model_customizer.RecipeBuilder")
-    @patch("amzn_nova_forge.model.nova_model_customizer.Validator")
+    @patch("amzn_nova_forge.trainer.forge_trainer.SMTJTrainingResult")
+    @patch("amzn_nova_forge.trainer.forge_trainer.get_model_artifacts")
+    @patch("amzn_nova_forge.trainer.forge_trainer.RecipeBuilder")
     def test_train_prefers_direct_arg_over_infra_rft_lambda_arn(
-        self, mock_validator, mock_rb, mock_gma, mock_training_result
+        self, mock_rb, mock_gma, mock_training_result
     ):
         """train() prefers the directly-passed rft_lambda_arn over infra.rft_lambda_arn."""
         infra_arn = "arn:aws:lambda:us-east-1:123456789012:function:infra-fn"
@@ -2245,7 +2972,7 @@ class TestLambdaVerification(unittest.TestCase):
         self.mock_runtime_manager.execute.return_value = "job-123"
 
         with patch(
-            "amzn_nova_forge.model.nova_model_customizer.validate_rft_lambda_name"
+            "amzn_nova_forge.trainer.forge_trainer.validate_rft_lambda_name"
         ) as mock_validate_name:
             self.customizer.method = TrainingMethod.RFT_LORA
             self.customizer.train(job_name="test-rft-job", rft_lambda_arn=direct_arn)
@@ -2254,12 +2981,11 @@ class TestLambdaVerification(unittest.TestCase):
                 direct_arn.split(":")[-1], self.customizer.platform
             )
 
-    @patch("amzn_nova_forge.model.nova_model_customizer.SMTJTrainingResult")
-    @patch("amzn_nova_forge.model.nova_model_customizer.get_model_artifacts")
-    @patch("amzn_nova_forge.model.nova_model_customizer.RecipeBuilder")
-    @patch("amzn_nova_forge.model.nova_model_customizer.Validator")
+    @patch("amzn_nova_forge.trainer.forge_trainer.SMTJTrainingResult")
+    @patch("amzn_nova_forge.trainer.forge_trainer.get_model_artifacts")
+    @patch("amzn_nova_forge.trainer.forge_trainer.RecipeBuilder")
     def test_train_uses_rft_lambda_arn_when_infra_has_none(
-        self, mock_validator, mock_rb, mock_gma, mock_training_result
+        self, mock_rb, mock_gma, mock_training_result
     ):
         """train() uses the directly-passed rft_lambda_arn when infra has none."""
         arn = "arn:aws:lambda:us-east-1:123456789012:function:my-SageMaker-fn"
@@ -2277,24 +3003,19 @@ class TestLambdaVerification(unittest.TestCase):
         self.mock_runtime_manager.execute.return_value = "job-123"
 
         with patch(
-            "amzn_nova_forge.model.nova_model_customizer.validate_rft_lambda_name"
+            "amzn_nova_forge.trainer.forge_trainer.validate_rft_lambda_name"
         ) as mock_validate_name:
             self.customizer.method = TrainingMethod.RFT_LORA
             self.customizer.train(job_name="test-rft-job", rft_lambda_arn=arn)
-            mock_validate_name.assert_called_once_with(
-                arn.split(":")[-1], self.customizer.platform
-            )
+            mock_validate_name.assert_called_once_with(arn.split(":")[-1], self.customizer.platform)
 
     # ------------------------------------------------------------------
     # evaluate() rl_env / processor lambda_arn resolution
     # ------------------------------------------------------------------
 
-    @patch("amzn_nova_forge.model.nova_model_customizer.SMTJEvaluationResult")
-    @patch("amzn_nova_forge.model.nova_model_customizer.RecipeBuilder")
-    @patch("amzn_nova_forge.model.nova_model_customizer.Validator")
-    def test_evaluate_auto_populates_rl_env_from_infra_lambda_arn(
-        self, mock_validator, mock_rb, mock_eval_result
-    ):
+    @patch("amzn_nova_forge.evaluator.forge_evaluator.SMTJEvaluationResult")
+    @patch("amzn_nova_forge.evaluator.forge_evaluator.RecipeBuilder")
+    def test_evaluate_auto_populates_rl_env_from_infra_lambda_arn(self, mock_rb, mock_eval_result):
         """evaluate() sets rl_env.reward_lambda_arn from infra.rft_lambda_arn when not provided."""
         arn = "arn:aws:lambda:us-east-1:123456789012:function:my-SageMaker-fn"
         self.mock_runtime_manager.rft_lambda_arn = arn
@@ -2320,12 +3041,9 @@ class TestLambdaVerification(unittest.TestCase):
         self.assertEqual(call_kwargs["rl_env_config"], {"reward_lambda_arn": arn})
         self.assertIsNone(call_kwargs["processor_config"])
 
-    @patch("amzn_nova_forge.model.nova_model_customizer.SMTJEvaluationResult")
-    @patch("amzn_nova_forge.model.nova_model_customizer.RecipeBuilder")
-    @patch("amzn_nova_forge.model.nova_model_customizer.Validator")
-    def test_evaluate_migrates_processor_lambda_arn_to_rl_env(
-        self, mock_validator, mock_rb, mock_eval_result
-    ):
+    @patch("amzn_nova_forge.evaluator.forge_evaluator.SMTJEvaluationResult")
+    @patch("amzn_nova_forge.evaluator.forge_evaluator.RecipeBuilder")
+    def test_evaluate_migrates_processor_lambda_arn_to_rl_env(self, mock_rb, mock_eval_result):
         """evaluate() migrates processor.lambda_arn to rl_env.reward_lambda_arn for RFT_EVAL."""
         arn = "arn:aws:lambda:us-east-1:123456789012:function:my-SageMaker-fn"
         self.mock_runtime_manager.rft_lambda_arn = None
@@ -2352,12 +3070,9 @@ class TestLambdaVerification(unittest.TestCase):
         self.assertEqual(call_kwargs["rl_env_config"], {"reward_lambda_arn": arn})
         self.assertIsNone(call_kwargs["processor_config"])
 
-    @patch("amzn_nova_forge.model.nova_model_customizer.SMTJEvaluationResult")
-    @patch("amzn_nova_forge.model.nova_model_customizer.RecipeBuilder")
-    @patch("amzn_nova_forge.model.nova_model_customizer.Validator")
-    def test_evaluate_does_not_overwrite_existing_rl_env(
-        self, mock_validator, mock_rb, mock_eval_result
-    ):
+    @patch("amzn_nova_forge.evaluator.forge_evaluator.SMTJEvaluationResult")
+    @patch("amzn_nova_forge.evaluator.forge_evaluator.RecipeBuilder")
+    def test_evaluate_does_not_overwrite_existing_rl_env(self, mock_rb, mock_eval_result):
         """evaluate() does not overwrite rl_env when it is already provided."""
         infra_arn = "arn:aws:lambda:us-east-1:123456789012:function:infra-fn"
         explicit_arn = "arn:aws:lambda:us-east-1:123456789012:function:explicit-fn"
@@ -2383,9 +3098,7 @@ class TestLambdaVerification(unittest.TestCase):
 
         call_kwargs = mock_rb.call_args.kwargs
         # Explicit rl_env must not be overwritten by infra_arn
-        self.assertEqual(
-            call_kwargs["rl_env_config"], {"reward_lambda_arn": explicit_arn}
-        )
+        self.assertEqual(call_kwargs["rl_env_config"], {"reward_lambda_arn": explicit_arn})
 
     def test_verify_rft_lambda_no_data_s3_path(self):
         """Test verify_rft_lambda raises error when data_s3_path is not set"""
@@ -2478,9 +3191,7 @@ class TestLambdaVerification(unittest.TestCase):
             )
 
         self.assertIn("No samples found", str(context.exception))
-        self.assertIn(
-            "ensure the data file contains valid JSONL data", str(context.exception)
-        )
+        self.assertIn("ensure the data file contains valid JSONL data", str(context.exception))
 
     @patch("boto3.client")
     def test_verify_rft_lambda_lambda_invocation_failure(self, mock_boto_client):
@@ -2597,9 +3308,7 @@ class TestLambdaVerification(unittest.TestCase):
 
         mock_lambda = MagicMock()
         mock_payload = MagicMock()
-        mock_payload.read.return_value = (
-            b'[{"id": "sample_1", "aggregate_reward_score": 5}]'
-        )
+        mock_payload.read.return_value = b'[{"id": "sample_1", "aggregate_reward_score": 5}]'
         mock_lambda.invoke.return_value = {"StatusCode": 200, "Payload": mock_payload}
 
         def client_side_effect(service, **kwargs):
@@ -2632,9 +3341,7 @@ class TestLambdaVerification(unittest.TestCase):
 
         mock_lambda = MagicMock()
         mock_payload = MagicMock()
-        mock_payload.read.return_value = (
-            b'[{"id": "sample_1", "aggregate_reward_score": 3.14}]'
-        )
+        mock_payload.read.return_value = b'[{"id": "sample_1", "aggregate_reward_score": 3.14}]'
         mock_lambda.invoke.return_value = {"StatusCode": 200, "Payload": mock_payload}
 
         def client_side_effect(service, **kwargs):
@@ -2776,6 +3483,7 @@ class TestJobCachingAndPersistence(unittest.TestCase):
         self.temp_dir = tempfile.mkdtemp()
 
         self.mock_runtime_manager = create_autospec(SMTJRuntimeManager)
+        self.mock_runtime_manager.platform = Platform.SMTJ
         self.mock_runtime_manager.instance_count = 2
 
         with (
@@ -2881,9 +3589,7 @@ class TestJobCachingAndPersistence(unittest.TestCase):
 
         # Filter out 'self' parameter and validate
         valid_runtime_params = {
-            k: v
-            for k, v in runtime_params.items()
-            if k in runtime_sig.parameters and k != "self"
+            k: v for k, v in runtime_params.items() if k in runtime_sig.parameters and k != "self"
         }
         valid_customizer_params = {
             k: v
@@ -2932,9 +3638,7 @@ class TestJobCachingAndPersistence(unittest.TestCase):
         # Create runtime manager and customizer with validated parameters
         runtime = create_autospec(SMTJRuntimeManager)
         runtime.instance_count = valid_runtime_params.get("instance_count", 1)
-        runtime.instance_type = valid_runtime_params.get(
-            "instance_type", "ml.g5.12xlarge"
-        )
+        runtime.instance_type = valid_runtime_params.get("instance_type", "ml.g5.12xlarge")
         valid_customizer_params["infra"] = runtime
         customizer = NovaModelCustomizer(**valid_customizer_params)
         if temp_dir:
@@ -2970,13 +3674,11 @@ class TestJobCachingAndPersistence(unittest.TestCase):
                 "arn:aws:iam::123456789012:role/SageMakerExecutionRole"
             )
 
-            customizer, mock_sagemaker, client_side_effect = (
-                self._create_aws_mocked_customizer(
-                    temp_dir=self.temp_dir,
-                    customizer_params={
-                        "enable_job_caching": False,
-                    },
-                )
+            customizer, mock_sagemaker, client_side_effect = self._create_aws_mocked_customizer(
+                temp_dir=self.temp_dir,
+                customizer_params={
+                    "enable_job_caching": False,
+                },
             )
             mock_client.side_effect = client_side_effect
 
@@ -3000,10 +3702,8 @@ class TestJobCachingAndPersistence(unittest.TestCase):
             )
 
             file_path = "/path/to/recipe.yaml"
-            customizer, mock_sagemaker, client_side_effect = (
-                self._create_aws_mocked_customizer(
-                    temp_dir=None, customizer_params={"generated_recipe_dir": file_path}
-                )
+            customizer, mock_sagemaker, client_side_effect = self._create_aws_mocked_customizer(
+                temp_dir=None, customizer_params={"generated_recipe_dir": file_path}
             )
             mock_client.side_effect = client_side_effect
 
@@ -3021,10 +3721,8 @@ class TestJobCachingAndPersistence(unittest.TestCase):
                 "arn:aws:iam::123456789012:role/SageMakerExecutionRole"
             )
 
-            customizer, mock_sagemaker, client_side_effect = (
-                self._create_aws_mocked_customizer(
-                    temp_dir=None, customizer_params={"generated_recipe_dir": None}
-                )
+            customizer, mock_sagemaker, client_side_effect = self._create_aws_mocked_customizer(
+                temp_dir=None, customizer_params={"generated_recipe_dir": None}
             )
             mock_client.side_effect = client_side_effect
 
@@ -3113,9 +3811,7 @@ class TestJobCachingAndPersistence(unittest.TestCase):
         # Extract timestamp from last part of filename (before .json)
         filename_parts = filename.replace(".json", "").split("_")
         timestamp_part = filename_parts[-1]  # Last part is the timestamp
-        self.assertEqual(
-            len(timestamp_part), 17
-        )  # YYYYMMDDHHMMSSMMM should be 17 chars
+        self.assertEqual(len(timestamp_part), 17)  # YYYYMMDDHHMMSSMMM should be 17 chars
         # Verify it's all digits (valid timestamp format)
         self.assertTrue(timestamp_part.isdigit())
 
@@ -3131,11 +3827,9 @@ class TestJobCachingAndPersistence(unittest.TestCase):
                 "arn:aws:iam::123456789012:role/SageMakerExecutionRole"
             )
 
-            customizer, mock_sagemaker, client_side_effect = (
-                self._create_aws_mocked_customizer(
-                    temp_dir=self.temp_dir,
-                    customizer_params={"enable_job_caching": False},
-                )
+            customizer, mock_sagemaker, client_side_effect = self._create_aws_mocked_customizer(
+                temp_dir=self.temp_dir,
+                customizer_params={"enable_job_caching": False},
             )
             mock_client.side_effect = client_side_effect
 
@@ -3162,9 +3856,7 @@ class TestJobCachingAndPersistence(unittest.TestCase):
             print(f"Returning response: {response}")
             return response
 
-        mock_boto_client.return_value.describe_training_job.side_effect = (
-            mock_describe_training_job
-        )
+        mock_boto_client.return_value.describe_training_job.side_effect = mock_describe_training_job
 
         mock_artifacts = ModelArtifacts(
             checkpoint_s3_path="s3://test/checkpoint", output_s3_path="s3://test/output"
@@ -3230,9 +3922,7 @@ class TestJobCachingAndPersistence(unittest.TestCase):
             sagemaker_client=MagicMock(),
         )
 
-        persist_result(
-            self.customizer, result, "test-job", "training", overrides={"max_epochs": 3}
-        )
+        persist_result(self.customizer, result, "test-job", "training", overrides={"max_epochs": 3})
 
         # Verify file was created
         files = list(Path(self.temp_dir).glob("*.json"))
@@ -3246,9 +3936,7 @@ class TestJobCachingAndPersistence(unittest.TestCase):
     @patch("amzn_nova_forge.recipe.recipe_builder.RecipeBuilder.build_and_validate")
     @patch("uuid.uuid4")
     @patch("boto3.client")
-    def test_train_with_job_caching_existing_result(
-        self, mock_boto_client, mock_uuid, mock_build
-    ):
+    def test_train_with_job_caching_existing_result(self, mock_boto_client, mock_uuid, mock_build):
         """Test train method returns existing result when job cache finds match"""
         mock_uuid.return_value = MagicMock()
         mock_uuid.return_value.__str__ = lambda x: "test-uuid-1234"
@@ -3481,14 +4169,12 @@ class TestJobCachingAndPersistence(unittest.TestCase):
                 self.assertFalse(should_persist_results(customizer))
 
                 # Test with enable_job_caching=True - uses temp_dir for job_cache_dir
-                customizer_enabled, _, client_side_effect2 = (
-                    self._create_aws_mocked_customizer(
-                        temp_dir=temp_dir,
-                        customizer_params={
-                            "generated_recipe_dir": None,
-                            "enable_job_caching": True,
-                        },
-                    )
+                customizer_enabled, _, client_side_effect2 = self._create_aws_mocked_customizer(
+                    temp_dir=temp_dir,
+                    customizer_params={
+                        "generated_recipe_dir": None,
+                        "enable_job_caching": True,
+                    },
                 )
                 mock_boto.side_effect = client_side_effect2
 
@@ -3510,12 +4196,10 @@ class TestJobCachingAndPersistence(unittest.TestCase):
                     "arn:aws:iam::123456789012:role/SageMakerExecutionRole"
                 )
 
-                customizer, mock_sagemaker, client_side_effect = (
-                    self._create_aws_mocked_customizer(
-                        temp_dir,
-                        training_job_status="Failed",
-                        customizer_params={"enable_job_caching": True},
-                    )
+                customizer, mock_sagemaker, client_side_effect = self._create_aws_mocked_customizer(
+                    temp_dir,
+                    training_job_status="Failed",
+                    customizer_params={"enable_job_caching": True},
                 )
                 mock_boto.side_effect = client_side_effect
 
@@ -3542,9 +4226,7 @@ class TestJobCachingAndPersistence(unittest.TestCase):
                 }
 
                 # Persist the failed result
-                persist_result(
-                    customizer, failed_result, "failed-job", "training", **job_params
-                )
+                persist_result(customizer, failed_result, "failed-job", "training", **job_params)
 
                 # Try to load it - should return None because job failed
                 loaded_failed = load_existing_result(
@@ -3565,17 +4247,15 @@ class TestJobCachingAndPersistence(unittest.TestCase):
                     "arn:aws:iam::123456789012:role/SageMakerExecutionRole"
                 )
 
-                customizer, mock_sagemaker, client_side_effect = (
-                    self._create_aws_mocked_customizer(
-                        temp_dir,
-                        customizer_params={
-                            "model": Model.NOVA_LITE_2,
-                            "method": TrainingMethod.SFT_LORA,
-                            "data_s3_path": "s3://test-bucket/data.jsonl",
-                            "generated_recipe_dir": temp_dir,
-                            "enable_job_caching": True,
-                        },
-                    )
+                customizer, mock_sagemaker, client_side_effect = self._create_aws_mocked_customizer(
+                    temp_dir,
+                    customizer_params={
+                        "model": Model.NOVA_LITE_2,
+                        "method": TrainingMethod.SFT_LORA,
+                        "data_s3_path": "s3://test-bucket/data.jsonl",
+                        "generated_recipe_dir": temp_dir,
+                        "enable_job_caching": True,
+                    },
                 )
                 mock_boto.side_effect = client_side_effect
 
@@ -3609,9 +4289,7 @@ class TestJobCachingAndPersistence(unittest.TestCase):
                     ),
                     sagemaker_client=mock_sagemaker,
                 )
-                persist_result(
-                    customizer, result1, "same-job", "training", **job_params1
-                )
+                persist_result(customizer, result1, "same-job", "training", **job_params1)
 
                 # Small delay to ensure different timestamps
                 import time
@@ -3630,9 +4308,7 @@ class TestJobCachingAndPersistence(unittest.TestCase):
                     ),
                     sagemaker_client=mock_sagemaker,
                 )
-                persist_result(
-                    customizer, result2, "same-job", "training", **job_params2
-                )
+                persist_result(customizer, result2, "same-job", "training", **job_params2)
 
                 # Should have 2 files with same job name but different timestamps
                 files = list(Path(temp_dir).glob("*.json"))
@@ -3646,18 +4322,14 @@ class TestJobCachingAndPersistence(unittest.TestCase):
                 loaded_result1 = load_existing_result(
                     customizer, "same-job", "training", **job_params1
                 )
-                self.assertIsNotNone(
-                    loaded_result1, "Should find matching result for job_params1"
-                )
+                self.assertIsNotNone(loaded_result1, "Should find matching result for job_params1")
                 self.assertEqual(loaded_result1.job_id, "job-1")
 
                 # Loading with job_params2 should return result2
                 loaded_result2 = load_existing_result(
                     customizer, "same-job", "training", **job_params2
                 )
-                self.assertIsNotNone(
-                    loaded_result2, "Should find matching result for job_params2"
-                )
+                self.assertIsNotNone(loaded_result2, "Should find matching result for job_params2")
                 self.assertEqual(loaded_result2.job_id, "job-2")
 
     def test_complete_job_caching_workflow(self):
@@ -3674,10 +4346,8 @@ class TestJobCachingAndPersistence(unittest.TestCase):
                     "arn:aws:iam::123456789012:role/SageMakerExecutionRole"
                 )
 
-                customizer, mock_sagemaker, client_side_effect = (
-                    self._create_aws_mocked_customizer(
-                        temp_dir, customizer_params={"enable_job_caching": True}
-                    )
+                customizer, mock_sagemaker, client_side_effect = self._create_aws_mocked_customizer(
+                    temp_dir, customizer_params={"enable_job_caching": True}
                 )
                 mock_boto.side_effect = client_side_effect
 
@@ -3704,9 +4374,7 @@ class TestJobCachingAndPersistence(unittest.TestCase):
                     "overrides": {"max_epochs": 3},
                 }
 
-                persist_result(
-                    customizer, original_result, "test-job", "training", **job_params
-                )
+                persist_result(customizer, original_result, "test-job", "training", **job_params)
 
                 # Verify file was created
                 files = list(Path(temp_dir).glob("*.json"))
@@ -3764,9 +4432,7 @@ class TestJobCachingAndPersistence(unittest.TestCase):
 
         # Should not match because custom_param is different
         self.assertFalse(
-            matches_job_cache_criteria(
-                self.customizer._job_caching_config, hash1, hash2
-            )
+            matches_job_cache_criteria(self.customizer._job_caching_config, hash1, hash2)
         )
 
         # Create hashes with same custom parameter
@@ -3785,9 +4451,7 @@ class TestJobCachingAndPersistence(unittest.TestCase):
 
         # Should match because all parameters are the same
         self.assertTrue(
-            matches_job_cache_criteria(
-                self.customizer._job_caching_config, hash3, hash4
-            )
+            matches_job_cache_criteria(self.customizer._job_caching_config, hash3, hash4)
         )
 
     def test_matches_criteria_include_infra(self):
@@ -3850,3 +4514,88 @@ class TestJobCachingAndPersistence(unittest.TestCase):
         # Cleanup
         del self.customizer.infra._private
         del self.customizer.infra.some_method
+
+
+class TestResolveDeployPlatform(unittest.TestCase):
+    """Tests for the _resolve_deploy_platform standalone helper."""
+
+    def test_sagemaker_arn_returns_sagemaker(self):
+        arn = "arn:aws:sagemaker:us-east-1:123456789012:endpoint/my-endpoint"
+        assert _resolve_deploy_platform(arn, None) == DeployPlatform.SAGEMAKER
+
+    def test_bedrock_arn_returns_bedrock_pt(self):
+        arn = "arn:aws:bedrock:us-east-1:123456789012:custom-model-deployment/my-model"
+        assert _resolve_deploy_platform(arn, None) == DeployPlatform.BEDROCK_PT
+
+    def test_endpoint_info_returns_its_platform(self):
+        info = EndpointInfo(
+            platform=DeployPlatform.SAGEMAKER,
+            endpoint_name="ep",
+            uri="arn:aws:sagemaker:us-east-1:123456789012:endpoint/ep",
+            model_artifact_path="s3://bucket/path",
+        )
+        assert _resolve_deploy_platform(None, info) == DeployPlatform.SAGEMAKER
+
+    def test_neither_provided_returns_none(self):
+        assert _resolve_deploy_platform(None, None) is None
+
+    def test_arn_takes_precedence_over_endpoint_info(self):
+        info = EndpointInfo(
+            platform=DeployPlatform.BEDROCK_PT,
+            endpoint_name="ep",
+            uri="arn:aws:bedrock:us-east-1:123456789012:custom-model-deployment/m",
+            model_artifact_path="s3://bucket/path",
+        )
+        sm_arn = "arn:aws:sagemaker:us-east-1:123456789012:endpoint/my-endpoint"
+        assert _resolve_deploy_platform(sm_arn, info) == DeployPlatform.SAGEMAKER
+
+
+class TestInvokeInferenceExtraInfo(unittest.TestCase):
+    """Tests for the _invoke_inference_extra_info telemetry helper."""
+
+    def test_sagemaker_arn_in_kwargs(self):
+        obj = MagicMock()
+        obj.endpoint_info = None
+        obj.model = Model.NOVA_MICRO
+        result = _invoke_inference_extra_info(
+            obj, endpoint_arn="arn:aws:sagemaker:us-east-1:123456789012:endpoint/ep"
+        )
+        assert result == {
+            "model": Model.NOVA_MICRO.value,
+            "platform": DeployPlatform.SAGEMAKER,
+        }
+
+    def test_bedrock_arn_in_kwargs(self):
+        obj = MagicMock()
+        obj.endpoint_info = None
+        obj.model = Model.NOVA_MICRO
+        result = _invoke_inference_extra_info(
+            obj,
+            endpoint_arn="arn:aws:bedrock:us-east-1:123456789012:custom-model-deployment/m",
+        )
+        assert result == {
+            "model": Model.NOVA_MICRO.value,
+            "platform": DeployPlatform.BEDROCK_PT,
+        }
+
+    def test_no_arn_with_endpoint_info(self):
+        obj = MagicMock()
+        obj.endpoint_info = EndpointInfo(
+            platform=DeployPlatform.SAGEMAKER,
+            endpoint_name="ep",
+            uri="arn:aws:sagemaker:us-east-1:123456789012:endpoint/ep",
+            model_artifact_path="s3://bucket/path",
+        )
+        obj.model = Model.NOVA_MICRO
+        result = _invoke_inference_extra_info(obj)
+        assert result == {
+            "model": Model.NOVA_MICRO.value,
+            "platform": DeployPlatform.SAGEMAKER,
+        }
+
+    def test_no_arn_no_endpoint_info_returns_unknown(self):
+        obj = MagicMock()
+        obj.endpoint_info = None
+        obj.model = Model.NOVA_MICRO
+        result = _invoke_inference_extra_info(obj)
+        assert result == {"model": Model.NOVA_MICRO.value, "platform": "UNKNOWN"}

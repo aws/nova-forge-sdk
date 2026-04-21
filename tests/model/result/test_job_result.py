@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
-from amzn_nova_forge.model.result.job_result import (
+from amzn_nova_forge.core.result.job_result import (
     JobStatus,
     SMHPStatusManager,
     SMTJStatusManager,
@@ -18,12 +18,12 @@ class TestBaseJobResultSerialization(unittest.TestCase):
 
     def test_baseresult_load_preserves_job_cache_hash(self):
         """Test that BaseJobResult.load() preserves job cache hash"""
-        from amzn_nova_forge.model.model_config import ModelArtifacts
-        from amzn_nova_forge.model.model_enums import Model, TrainingMethod
-        from amzn_nova_forge.model.result import BaseJobResult
-        from amzn_nova_forge.model.result.training_result import (
+        from amzn_nova_forge.core.enums import Model, TrainingMethod
+        from amzn_nova_forge.core.result import BaseJobResult
+        from amzn_nova_forge.core.result.training_result import (
             SMTJTrainingResult,
         )
+        from amzn_nova_forge.core.types import ModelArtifacts
 
         with tempfile.TemporaryDirectory() as temp_dir:
             # Mock boto3.client for the entire test
@@ -202,7 +202,7 @@ class TestSMHPStatusManager(unittest.TestCase):
         self.assertEqual(self.manager._job_status, JobStatus.IN_PROGRESS)
 
     @patch("subprocess.run")
-    @patch("amzn_nova_forge.model.result.job_result.logger")
+    @patch("amzn_nova_forge.core.result.job_result.logger")
     def test_connect_cluster_success(self, mock_logger, mock_run):
         mock_result = Mock()
         mock_result.stderr = ""
@@ -228,7 +228,7 @@ class TestSMHPStatusManager(unittest.TestCase):
         )
 
     @patch("subprocess.run")
-    @patch("amzn_nova_forge.model.result.job_result.logger")
+    @patch("amzn_nova_forge.core.result.job_result.logger")
     def test_connect_cluster_error(self, mock_logger, mock_run):
         mock_result = Mock()
         mock_result.stderr = "Connection failed"
@@ -249,9 +249,7 @@ class TestSMHPStatusManager(unittest.TestCase):
 
         # Mock get-job call
         get_job_result = Mock()
-        get_job_result.stdout = json.dumps(
-            {"Status": {"conditions": [{"type": "Succeeded"}]}}
-        )
+        get_job_result.stdout = json.dumps({"Status": {"conditions": [{"type": "Succeeded"}]}})
 
         mock_run.side_effect = [connect_result, get_job_result]
 
@@ -286,9 +284,7 @@ class TestSMHPStatusManager(unittest.TestCase):
         connect_result.stderr = ""
 
         get_job_result = Mock()
-        get_job_result.stdout = json.dumps(
-            {"Status": {"conditions": [{"type": "Failed"}]}}
-        )
+        get_job_result.stdout = json.dumps({"Status": {"conditions": [{"type": "Failed"}]}})
 
         mock_run.side_effect = [connect_result, get_job_result]
 
@@ -328,18 +324,23 @@ class TestSMHPStatusManager(unittest.TestCase):
         self.assertEqual(raw_status, "Pending")
 
     @patch("subprocess.run")
-    @patch("amzn_nova_forge.model.result.job_result.logger")
+    @patch("amzn_nova_forge.core.result.job_result.logger")
     def test_get_job_status_connect_cluster_error(self, mock_logger, mock_run):
         mock_run.side_effect = subprocess.CalledProcessError(1, "hyperpod")
 
-        status, raw_status = self.manager.get_job_status("test-job")
+        with self.assertRaises(RuntimeError) as context:
+            self.manager.get_job_status("test-job")
 
-        self.assertEqual(status, JobStatus.COMPLETED)
-        self.assertEqual(raw_status, "Unknown")
-        mock_logger.warning.assert_called_once()
+        # Verify error message includes helpful context
+        error_msg = str(context.exception)
+        self.assertIn("Failed to get job status for test-job", error_msg)
+        self.assertIn("insufficient permissions", error_msg.lower())
+        self.assertIn("EKS access entry", error_msg)
+        mock_logger.error.assert_called_once()
+        self.assertIsNotNone(context.exception.__cause__)
 
     @patch("subprocess.run")
-    @patch("amzn_nova_forge.model.result.job_result.logger")
+    @patch("amzn_nova_forge.core.result.job_result.logger")
     def test_get_job_status_json_decode_error(self, mock_logger, mock_run):
         connect_result = Mock()
         connect_result.stderr = ""
@@ -349,11 +350,60 @@ class TestSMHPStatusManager(unittest.TestCase):
 
         mock_run.side_effect = [connect_result, get_job_result]
 
-        status, raw_status = self.manager.get_job_status("test-job")
+        with self.assertRaises(RuntimeError) as context:
+            self.manager.get_job_status("test-job")
 
-        self.assertEqual(status, JobStatus.COMPLETED)
-        self.assertEqual(raw_status, "Unknown")
-        mock_logger.warning.assert_called_once()
+        # Verify error message includes helpful context
+        error_msg = str(context.exception)
+        self.assertIn("Failed to get job status for test-job", error_msg)
+        self.assertIn("not in the expected format", error_msg)
+        mock_logger.error.assert_called_once()
+        self.assertIsNotNone(context.exception.__cause__)
+
+    @patch("subprocess.run")
+    @patch("amzn_nova_forge.core.result.job_result.logger")
+    def test_get_job_status_permission_denied_error(self, mock_logger, mock_run):
+        # Simulate permission denied error from HPCLI
+        error = subprocess.CalledProcessError(
+            1,
+            "hyperpod",
+            stderr="Error: User is not authorized to perform: eks:DescribeCluster",
+        )
+        mock_run.side_effect = error
+
+        with self.assertRaises(RuntimeError) as context:
+            self.manager.get_job_status("test-job")
+
+        error_msg = str(context.exception)
+
+        self.assertIn("Failed to get job status for test-job", error_msg)
+        self.assertIn("insufficient permissions", error_msg.lower())
+        self.assertIn("EKS access entry", error_msg)
+        self.assertIn("Details:", error_msg)
+        self.assertIn("User is not authorized to perform: eks:DescribeCluster", error_msg)
+
+        mock_logger.error.assert_called_once()
+        self.assertIsNotNone(context.exception.__cause__)
+
+    @patch("subprocess.run")
+    @patch("amzn_nova_forge.core.result.job_result.logger")
+    def test_get_job_status_json_decode_error_message(self, mock_logger, mock_run):
+        """Test that JSON decode errors have appropriate error message (not permission hint)"""
+        connect_result = Mock()
+        connect_result.stderr = ""
+
+        get_job_result = Mock()
+        get_job_result.stdout = "invalid json"
+
+        mock_run.side_effect = [connect_result, get_job_result]
+
+        with self.assertRaises(RuntimeError) as context:
+            self.manager.get_job_status("test-job")
+
+        error_msg = str(context.exception)
+        self.assertIn("not in the expected format", error_msg)
+        self.assertNotIn("permission", error_msg.lower())
+        self.assertNotIn("EKS access entry", error_msg)
 
     @patch("subprocess.run")
     def test_get_job_status_caching(self, mock_run):
@@ -361,9 +411,7 @@ class TestSMHPStatusManager(unittest.TestCase):
         connect_result.stderr = ""
 
         get_job_result = Mock()
-        get_job_result.stdout = json.dumps(
-            {"Status": {"conditions": [{"type": "Succeeded"}]}}
-        )
+        get_job_result.stdout = json.dumps({"Status": {"conditions": [{"type": "Succeeded"}]}})
 
         mock_run.side_effect = [connect_result, get_job_result]
 
@@ -467,9 +515,7 @@ class TestResolveStartTime(unittest.TestCase):
 
         self.assertEqual(
             result,
-            datetime(
-                2026, 3, 13, 11, 59, 0, tzinfo=__import__("datetime").timezone.utc
-            ),
+            datetime(2026, 3, 13, 11, 59, 0, tzinfo=__import__("datetime").timezone.utc),
         )
 
     @patch("subprocess.run")
@@ -483,9 +529,9 @@ class TestResolveStartTime(unittest.TestCase):
 
     def test_smtj_result_without_started_time(self):
         """SMTJTrainingResult resolves start_time when constructed with only job_id."""
-        from amzn_nova_forge.model.model_config import ModelArtifacts
-        from amzn_nova_forge.model.model_enums import Model, TrainingMethod
-        from amzn_nova_forge.model.result.training_result import SMTJTrainingResult
+        from amzn_nova_forge.core.enums import Model, TrainingMethod
+        from amzn_nova_forge.core.result.training_result import SMTJTrainingResult
+        from amzn_nova_forge.core.types import ModelArtifacts
 
         mock_client = Mock()
         training_start = datetime(2026, 3, 13, 12, 0, 0)

@@ -6,13 +6,12 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
-from amzn_nova_forge.model.model_enums import Platform
-from amzn_nova_forge.model.result import BaseJobResult
-from amzn_nova_forge.model.result.eval_result import (
+from amzn_nova_forge.core.enums import EvaluationTask, Platform
+from amzn_nova_forge.core.result import BaseJobResult
+from amzn_nova_forge.core.result.eval_result import (
     SMTJEvaluationResult,
 )
-from amzn_nova_forge.model.result.job_result import JobStatus
-from amzn_nova_forge.recipe.recipe_config import EvaluationTask
+from amzn_nova_forge.core.result.job_result import JobStatus
 
 
 class TestSMTJEvaluationResult(unittest.TestCase):
@@ -178,9 +177,7 @@ class TestSMTJEvaluationResult(unittest.TestCase):
         with self.assertRaises(Exception):
             self.result.show()
 
-        mock_print.assert_any_call(
-            "Error retrieving evaluation results: S3 access denied"
-        )
+        mock_print.assert_any_call("Error retrieving evaluation results: S3 access denied")
         mock_print.assert_any_call(f"Results available at: {self.eval_output_path}")
 
     def test_caching_mechanism(self):
@@ -256,9 +253,7 @@ class TestSMTJEvaluationResult(unittest.TestCase):
         status2, raw_status2 = self.result.get_job_status()
         self.assertEqual(status2, JobStatus.COMPLETED)
         self.assertEqual(raw_status2, "Completed")
-        self.assertEqual(
-            self.mock_sagemaker_client.describe_training_job.call_count, 1
-        )  # Still 1
+        self.assertEqual(self.mock_sagemaker_client.describe_training_job.call_count, 1)  # Still 1
 
     def test_job_status_caching_in_progress_then_completed(self):
         """Test job status change from IN_PROGRESS to COMPLETED"""
@@ -290,9 +285,7 @@ class TestSMTJEvaluationResult(unittest.TestCase):
         status3, raw_status3 = self.result.get_job_status()
         self.assertEqual(status3, JobStatus.COMPLETED)
         self.assertEqual(raw_status3, "Completed")
-        self.assertEqual(
-            self.mock_sagemaker_client.describe_training_job.call_count, 2
-        )  # Still 2
+        self.assertEqual(self.mock_sagemaker_client.describe_training_job.call_count, 2)  # Still 2
 
     def test_job_status_caching_failed_no_cache(self):
         """Test FAILED status should be cached"""
@@ -310,9 +303,7 @@ class TestSMTJEvaluationResult(unittest.TestCase):
         status2, raw_status2 = self.result.get_job_status()
         self.assertEqual(status2, JobStatus.FAILED)
         self.assertEqual(raw_status2, "Failed")
-        self.assertEqual(
-            self.mock_sagemaker_client.describe_training_job.call_count, 1
-        )  # Still 1
+        self.assertEqual(self.mock_sagemaker_client.describe_training_job.call_count, 1)  # Still 1
 
     def test_upload_tensorboard_results_with_custom_path(self):
         """Test upload tensorboard results with custom S3 path"""
@@ -354,9 +345,7 @@ class TestSMTJEvaluationResult(unittest.TestCase):
         with tempfile.TemporaryDirectory() as cache_dir:
             self.result._cached_results_dir = cache_dir
 
-            with patch(
-                "amzn_nova_forge.model.result.eval_result.logger"
-            ) as mock_logger:
+            with patch("amzn_nova_forge.core.result.eval_result.logger") as mock_logger:
                 self.result.upload_tensorboard_results()
                 mock_logger.warning.assert_called_once()
 
@@ -434,7 +423,7 @@ class TestSMTJEvaluationResult(unittest.TestCase):
             self.assertEqual(data["eval_output_path"], self.eval_output_path)
             self.assertEqual(data, expected_data)
 
-    @patch("amzn_nova_forge.model.result.job_result.json.load")
+    @patch("amzn_nova_forge.core.result.job_result.json.load")
     @patch("builtins.open")
     def test_load_with_class_name(self, mock_open, mock_json_load):
         test_data = {
@@ -450,9 +439,7 @@ class TestSMTJEvaluationResult(unittest.TestCase):
         mock_open.return_value.__enter__.return_value = mock_file
 
         # Mock the constructor to avoid actual initialization
-        with patch.object(
-            SMTJEvaluationResult, "__init__", return_value=None
-        ) as mock_init:
+        with patch.object(SMTJEvaluationResult, "__init__", return_value=None) as mock_init:
             result = BaseJobResult.load("test.json")
 
             self.assertIsInstance(result, SMTJEvaluationResult)
@@ -464,7 +451,7 @@ class TestSMTJEvaluationResult(unittest.TestCase):
                 eval_output_path=self.eval_output_path,
             )
 
-    @patch("amzn_nova_forge.model.result.job_result.json.load")
+    @patch("amzn_nova_forge.core.result.job_result.json.load")
     @patch("builtins.open")
     def test_load_without_class_name(self, mock_open, mock_json_load):
         test_data = {
@@ -483,7 +470,7 @@ class TestSMTJEvaluationResult(unittest.TestCase):
 
         self.assertIn("no class name found", str(context.exception))
 
-    @patch("amzn_nova_forge.model.result.job_result.json.load")
+    @patch("amzn_nova_forge.core.result.job_result.json.load")
     @patch("builtins.open")
     def test_load_with_bad_class_name(self, mock_open, mock_json_load):
         test_data = {
@@ -501,11 +488,9 @@ class TestSMTJEvaluationResult(unittest.TestCase):
         with self.assertRaises(ValueError) as context:
             BaseJobResult.load("test.json")
 
-        self.assertIn(
-            "not found or not a subclass of BaseJobResult", str(context.exception)
-        )
+        self.assertIn("not found or not a subclass of BaseJobResult", str(context.exception))
 
-    @patch("amzn_nova_forge.model.result.job_result.json.load")
+    @patch("amzn_nova_forge.core.result.job_result.json.load")
     @patch("builtins.open")
     def test_load_with_unknown_fields_succeed(self, mock_open, mock_json_load):
         test_data = {
@@ -522,9 +507,7 @@ class TestSMTJEvaluationResult(unittest.TestCase):
         mock_open.return_value.__enter__.return_value = mock_file
 
         # Mock the constructor to avoid actual initialization
-        with patch.object(
-            SMTJEvaluationResult, "__init__", return_value=None
-        ) as mock_init:
+        with patch.object(SMTJEvaluationResult, "__init__", return_value=None) as mock_init:
             result = BaseJobResult.load("test.json")
 
             self.assertIsInstance(result, SMTJEvaluationResult)
@@ -611,9 +594,7 @@ class TestSMTJEvaluationResult(unittest.TestCase):
                 result_dict = self.result.get()
 
                 # Verify S3 operations
-                self.mock_s3_client.get_paginator.assert_called_once_with(
-                    "list_objects_v2"
-                )
+                self.mock_s3_client.get_paginator.assert_called_once_with("list_objects_v2")
                 mock_paginator.paginate.assert_called_once_with(
                     Bucket="test-bucket", Prefix="output/test-job/eval-result/"
                 )

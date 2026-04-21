@@ -18,6 +18,15 @@ from amzn_nova_forge.dataset.dataset_loader import (
 class TestLazyLoading(unittest.TestCase):
     """Test that loaders actually stream data lazily."""
 
+    def setUp(self):
+        self._check_exists_patcher = patch(
+            "amzn_nova_forge.dataset.dataset_loader.check_path_exists"
+        )
+        self._check_exists_patcher.start()
+
+    def tearDown(self):
+        self._check_exists_patcher.stop()
+
     def test_jsonl_loader_streams_lazily(self):
         """Verify JSONL loader doesn't load entire file into memory."""
         # Create a mock that tracks when lines are accessed
@@ -37,17 +46,13 @@ class TestLazyLoading(unittest.TestCase):
             loader.load("test.jsonl")
 
             # At this point, no lines should have been accessed yet
-            self.assertEqual(
-                len(lines_accessed), 0, "Lines accessed before iteration started"
-            )
+            self.assertEqual(len(lines_accessed), 0, "Lines accessed before iteration started")
 
             # Get the generator
             dataset_iter = loader.dataset()
 
             # Still no lines accessed
-            self.assertEqual(
-                len(lines_accessed), 0, "Lines accessed when getting iterator"
-            )
+            self.assertEqual(len(lines_accessed), 0, "Lines accessed when getting iterator")
 
             # Access first item
             first_item = next(dataset_iter)
@@ -57,14 +62,10 @@ class TestLazyLoading(unittest.TestCase):
             # Access second item
             second_item = next(dataset_iter)
             self.assertEqual(second_item, {"id": 1, "value": "line_1"})
-            self.assertEqual(
-                len(lines_accessed), 2, "Should only access first two lines"
-            )
+            self.assertEqual(len(lines_accessed), 2, "Should only access first two lines")
 
             # Verify we haven't accessed all lines yet
-            self.assertLess(
-                len(lines_accessed), 5, "Should not have accessed all lines yet"
-            )
+            self.assertLess(len(lines_accessed), 5, "Should not have accessed all lines yet")
 
     def test_csv_loader_streams_lazily(self):
         """Verify CSV loader doesn't load entire file into memory (except header)."""
@@ -101,16 +102,12 @@ class TestLazyLoading(unittest.TestCase):
             # Should have accessed header + first row only
             self.assertIn("header", lines_accessed)
             self.assertIn(0, lines_accessed)
-            self.assertEqual(
-                len(lines_accessed), 2, "Should only access header and first row"
-            )
+            self.assertEqual(len(lines_accessed), 2, "Should only access header and first row")
 
             # Access second row
             second_item = next(dataset_iter)
             self.assertEqual(second_item["id"], "1")
-            self.assertEqual(
-                len(lines_accessed), 3, "Should only access header and first two rows"
-            )
+            self.assertEqual(len(lines_accessed), 3, "Should only access header and first two rows")
 
     def test_jsonl_loader_with_transform_streams_lazily(self):
         """Verify that transformation also happens lazily after initial validation."""
@@ -129,7 +126,7 @@ class TestLazyLoading(unittest.TestCase):
             loader = JSONLDatasetLoader()
             loader.load("test.jsonl")
 
-            from amzn_nova_forge.model.model_enums import (
+            from amzn_nova_forge.core.enums import (
                 Model,
                 TrainingMethod,
             )
@@ -143,9 +140,16 @@ class TestLazyLoading(unittest.TestCase):
                 column_mappings={"text": "my_text"},
             )
 
-            # Transform will validate the schema which reads all records once
-            # This is expected - we need to check if transformation is needed
-            # But the important part is that the dataset is still lazy
+            # transform() is now fully lazy — nothing should be accessed yet
+            self.assertEqual(
+                len(lines_accessed),
+                0,
+                "No lines should be accessed after transform() (lazy)",
+            )
+
+            # execute() wires up the transform generator (schema validation
+            # reads all records once to check if transformation is needed)
+            loader.execute()
 
             # Reset counters to test lazy iteration of transformed data
             lines_accessed.clear()
@@ -164,9 +168,7 @@ class TestLazyLoading(unittest.TestCase):
             first_item = next(transformed_iter)
 
             # Now we should have accessed exactly one item
-            self.assertEqual(
-                len(lines_accessed), 1, "Should only access one line for first item"
-            )
+            self.assertEqual(len(lines_accessed), 1, "Should only access one line for first item")
             self.assertIn("text", first_item)
             self.assertEqual(first_item["text"], "line_0")
 
@@ -174,9 +176,7 @@ class TestLazyLoading(unittest.TestCase):
             second_item = next(transformed_iter)
 
             # Should have accessed exactly two items
-            self.assertEqual(
-                len(lines_accessed), 2, "Should only access two lines for two items"
-            )
+            self.assertEqual(len(lines_accessed), 2, "Should only access two lines for two items")
             self.assertEqual(second_item["text"], "line_1")
 
     def test_s3_streaming_uses_iter_lines(self):

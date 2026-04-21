@@ -11,8 +11,28 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .recipe_config import EvaluationTask
+from amzn_nova_forge.core.constants import (  # noqa: F401
+    BYOD_AVAILABLE_EVAL_TASKS,
+    EVAL_AVAILABLE_SUBTASKS,
+    EVAL_TASK_METRIC_MAP,
+    EVAL_TASK_STRATEGY_MAP,
+    HYPERPOD_RECIPE_PATH,
+    get_available_subtasks,
+)
+from amzn_nova_forge.core.enums import (  # noqa: F401
+    EvaluationMetric,
+    EvaluationStrategy,
+    EvaluationTask,
+)
 
 __all__ = [
     "EvaluationTask",
+    "EvaluationStrategy",
+    "EvaluationMetric",
+    "HYPERPOD_RECIPE_PATH",
+    "EVAL_TASK_STRATEGY_MAP",
+    "EVAL_TASK_METRIC_MAP",
+    "EVAL_AVAILABLE_SUBTASKS",
+    "BYOD_AVAILABLE_EVAL_TASKS",
+    "get_available_subtasks",
 ]

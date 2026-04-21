@@ -11,13 +11,38 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from .core.enums import (
+    DeploymentMode,
+    DeployPlatform,
+    EvaluationTask,
+    Model,
+    Platform,
+    TrainingMethod,
+)
+from .core.result import (
+    EvaluationResult,
+    SMTJBatchInferenceResult,
+    TrainingResult,
+)
+from .core.result.inference_result import InferenceResult
+from .core.result.job_result import (
+    BaseJobResult,
+    JobStatus,
+)
+from .core.types import DeploymentResult, EndpointInfo, ForgeConfig, ModelArtifacts
 from .dataset import (
+    ArrowDatasetLoader,
     CSVDatasetLoader,
     JSONDatasetLoader,
     JSONLDatasetLoader,
+    ParquetDatasetLoader,
 )
+from .dataset.operations.filter_operation import FilterMethod
 from .dataset.operations.transform_operation import TransformMethod
 from .dataset.operations.validate_operation import ValidateMethod
+from .deployer import ForgeDeployer
+from .evaluator import EvalTaskConfig, ForgeEvaluator
+from .inference import ForgeInference
 from .manager import (
     BedrockRuntimeManager,
     SMHPRuntimeManager,
@@ -25,13 +50,7 @@ from .manager import (
     SMTJServerlessRuntimeManager,
 )
 from .model import (
-    BaseJobResult,
-    DeployPlatform,
-    JobStatus,
-    Model,
     NovaModelCustomizer,
-    Platform,
-    TrainingMethod,
 )
 from .monitor import (
     CloudWatchLogMonitor,
@@ -43,9 +62,6 @@ from .notifications import (
     SMHPNotificationManager,
     SMTJNotificationManager,
 )
-from .recipe import (
-    EvaluationTask,
-)
 from .rft_multiturn import (
     CustomEnvironment,
     EnvType,
@@ -54,16 +70,41 @@ from .rft_multiturn import (
     create_rft_execution_role,
     list_rft_stacks,
 )
-from .util import (
+from .trainer import ForgeTrainer
+from .util.reward_verifier import (
     verify_reward_function,
 )
 
+_LAZY_IMPORTS = {
+    "DefaultTextFilterOperation": ".dataset.operations.default_text_filter_operation",
+    "ExactDedupFilterOperation": ".dataset.operations.exact_dedup_filter_operation",
+    "FuzzyDedupFilterOperation": ".dataset.operations.fuzzy_dedup_filter_operation",
+    "InvalidRecordsFilterOperation": ".dataset.operations.invalid_records_filter_operation",
+}
+
+
+def __getattr__(name: str):
+    if name in _LAZY_IMPORTS:
+        import importlib
+
+        module = importlib.import_module(_LAZY_IMPORTS[name], __name__)
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
+    "ArrowDatasetLoader",
     "CSVDatasetLoader",
     "JSONDatasetLoader",
     "JSONLDatasetLoader",
+    "ParquetDatasetLoader",
+    "FilterMethod",
     "TransformMethod",
     "ValidateMethod",
+    "DefaultTextFilterOperation",
+    "ExactDedupFilterOperation",
     "BedrockRuntimeManager",
     "SMHPRuntimeManager",
     "SMTJRuntimeManager",
@@ -71,11 +112,25 @@ __all__ = [
     
     "Model",
     "TrainingMethod",
+    "DeploymentMode",
     "DeployPlatform",
     "Platform",
     "NovaModelCustomizer",
+    "ForgeConfig",
+    "ForgeTrainer",
+    "ForgeEvaluator",
+    "EvalTaskConfig",
+    "ForgeDeployer",
+    "ForgeInference",
     "BaseJobResult",
     "JobStatus",
+    "TrainingResult",
+    "EvaluationResult",
+    "DeploymentResult",
+    "EndpointInfo",
+    "InferenceResult",
+    "SMTJBatchInferenceResult",
+    "ModelArtifacts",
     "MLflowMonitor",
     "CloudWatchLogMonitor",
     "NotificationManager",

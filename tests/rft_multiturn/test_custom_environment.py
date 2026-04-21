@@ -75,9 +75,7 @@ class TestCustomEnvironmentClass:
     @patch("os.makedirs")
     @patch("os.path.exists")
     @patch("builtins.open", create=True)
-    def test_create_single_turn_environment(
-        self, mock_open, mock_exists, mock_makedirs
-    ):
+    def test_create_single_turn_environment(self, mock_open, mock_exists, mock_makedirs):
         """Test creating a single turn environment."""
         mock_exists.return_value = False
         mock_file = MagicMock()
@@ -90,9 +88,7 @@ class TestCustomEnvironmentClass:
 
         assert result == env
         assert mock_makedirs.called
-        assert (
-            mock_open.call_count >= 3
-        )  # __init__.py, env file, pyproject.toml, README
+        assert mock_open.call_count >= 3  # __init__.py, env file, pyproject.toml, README
 
     @patch("os.makedirs")
     @patch("os.path.exists")
@@ -123,9 +119,7 @@ class TestCustomEnvironmentClass:
     @patch("os.makedirs")
     @patch("os.path.exists")
     @patch("builtins.open", create=True)
-    def test_create_overwrites_if_requested(
-        self, mock_open, mock_exists, mock_makedirs
-    ):
+    def test_create_overwrites_if_requested(self, mock_open, mock_exists, mock_makedirs):
         """Test create overwrites existing directory if overwrite=True."""
         mock_exists.return_value = True
         mock_file = MagicMock()
@@ -139,9 +133,7 @@ class TestCustomEnvironmentClass:
 
     def test_create_fails_with_invalid_env_type(self):
         """Test create fails with invalid env_type."""
-        env = CustomEnvironment(
-            env_id="test_env", env_type="invalid", output_dir="~/custom_envs"
-        )
+        env = CustomEnvironment(env_id="test_env", env_type="invalid", output_dir="~/custom_envs")
         with pytest.raises(ValueError, match="env_type must be"):
             env.create()
 
@@ -213,9 +205,7 @@ class TestCustomEnvironmentClass:
     @patch("os.path.exists")
     @patch("os.path.isdir")
     @patch("os.listdir")
-    def test_validate_fails_without_pyproject(
-        self, mock_listdir, mock_isdir, mock_exists
-    ):
+    def test_validate_fails_without_pyproject(self, mock_listdir, mock_isdir, mock_exists):
         """Test validate fails without pyproject.toml."""
 
         # First two calls for path validation, third for pyproject check
@@ -285,9 +275,7 @@ class TestCustomEnvironmentClass:
         mock_validate.return_value = True
 
         mock_sagemaker_session = MagicMock()
-        mock_sagemaker_session.default_bucket.return_value = (
-            "sagemaker-us-east-1-123456789012"
-        )
+        mock_sagemaker_session.default_bucket.return_value = "sagemaker-us-east-1-123456789012"
 
         mock_s3 = MagicMock()
         mock_client.return_value = mock_s3
@@ -295,10 +283,12 @@ class TestCustomEnvironmentClass:
         mock_tar = MagicMock()
         mock_tarfile.return_value.__enter__.return_value = mock_tar
 
-        with patch(
-            "sagemaker.core.helper.session_helper.Session",
-            return_value=mock_sagemaker_session,
-        ):
+        import sagemaker
+
+        mock_session_helper = MagicMock()
+        mock_session_helper.Session.return_value = mock_sagemaker_session
+        with patch.object(sagemaker, "core", create=True) as mock_core:
+            mock_core.helper.session_helper = mock_session_helper
             env = CustomEnvironment(env_id="test_env", local_path="/path")
             s3_uri = env.package_and_upload(region="us-east-1")
 
@@ -323,9 +313,7 @@ class TestCustomEnvironmentClass:
         mock_tarfile.return_value.__enter__.return_value = mock_tar
 
         env = CustomEnvironment(env_id="test_env", local_path="/path")
-        s3_uri = env.package_and_upload(
-            s3_bucket="my-bucket", s3_prefix="envs", region="us-west-2"
-        )
+        s3_uri = env.package_and_upload(s3_bucket="my-bucket", s3_prefix="envs", region="us-west-2")
 
         assert s3_uri == "s3://my-bucket/envs/test_env.tar.gz"
         assert env.s3_uri == s3_uri

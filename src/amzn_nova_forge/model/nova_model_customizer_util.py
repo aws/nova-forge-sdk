@@ -22,8 +22,8 @@ import boto3
 from botocore.client import BaseClient
 from botocore.exceptions import ClientError
 
-from amzn_nova_forge.model.result import TrainingResult
-from amzn_nova_forge.recipe.recipe_config import BYOD_AVAILABLE_EVAL_TASKS
+from amzn_nova_forge.core.constants import BYOD_AVAILABLE_EVAL_TASKS
+from amzn_nova_forge.core.result import TrainingResult
 from amzn_nova_forge.util.checkpoint_util import (
     extract_checkpoint_path_from_job_output,
 )
@@ -43,6 +43,10 @@ def set_output_s3_path(
     sts_client = boto3.client("sts")
     account_id = sts_client.get_caller_identity()["Account"]
 
+    # Strip trailing slash to avoid double-slash when path segments are concatenated later
+    if output_s3_path is not None:
+        output_s3_path = output_s3_path.rstrip("/")
+
     # If no output S3 path is provided, use a default S3 bucket
     if output_s3_path is None:
         output_bucket = f"sagemaker-nova-{account_id}-{region}"
@@ -50,11 +54,7 @@ def set_output_s3_path(
         try:
             s3_client.head_bucket(Bucket=output_bucket)
         except Exception:
-            kms_arn = (
-                f"arn:aws:kms:{region}:{account_id}:key/{kms_key_id}"
-                if kms_key_id
-                else None
-            )
+            kms_arn = f"arn:aws:kms:{region}:{account_id}:key/{kms_key_id}" if kms_key_id else None
             create_s3_bucket(s3_client, output_bucket, kms_arn)
         logger.info(
             f"No output S3 bucket was provided. Using default output S3 bucket '{output_bucket}'."
@@ -70,9 +70,7 @@ def set_output_s3_path(
             error_code = e.response["Error"]["Code"]
             if error_code in ("404", "NoSuchBucket"):
                 kms_arn = (
-                    f"arn:aws:kms:{region}:{account_id}:key/{kms_key_id}"
-                    if kms_key_id
-                    else None
+                    f"arn:aws:kms:{region}:{account_id}:key/{kms_key_id}" if kms_key_id else None
                 )
                 create_s3_bucket(s3_client, output_bucket, kms_arn)
                 return output_s3_path
@@ -199,16 +197,36 @@ def requires_custom_eval_data(eval_task) -> bool:
 
 
 # ==================== Job Caching Utilities ====================
+# Thin wrappers that build a JobCacheContext from the legacy
+# NovaModelCustomizer instance and delegate to core/job_cache.py.
 
-import hashlib
-import json
 import os
-from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any
 
-from amzn_nova_forge.model.result import BaseJobResult
-from amzn_nova_forge.model.result.job_result import JobStatus
+from amzn_nova_forge.core.job_cache import (
+    JobCacheContext,
+    matches_job_cache_criteria,  # noqa: F401 — re-export unchanged
+)
+from amzn_nova_forge.core.job_cache import (
+    collect_all_parameters as _collect_all_parameters,
+)
+from amzn_nova_forge.core.job_cache import (
+    generate_job_hash as _generate_job_hash,
+)
+from amzn_nova_forge.core.job_cache import (
+    get_result_file_path as _get_result_file_path,
+)
+from amzn_nova_forge.core.job_cache import (
+    load_existing_result as _load_existing_result,
+)
+from amzn_nova_forge.core.job_cache import (
+    persist_result as _persist_result,
+)
+from amzn_nova_forge.core.job_cache import (
+    should_persist_results as _should_persist_results,
+)
+from amzn_nova_forge.core.result import BaseJobResult  # noqa: F401 — re-export
 
 
 def get_recipe_directory(generated_recipe_dir: Optional[str]) -> Optional[str]:
@@ -222,218 +240,58 @@ def get_recipe_directory(generated_recipe_dir: Optional[str]) -> Optional[str]:
     return generated_recipe_dir
 
 
-def generate_job_hash(customizer, job_name: str, job_type: str, **job_params) -> str:
-    """
-    Generate segmented hash where each parameter gets its own labeled hash segment.
-    This allows flexible job cache matching by matching only relevant segments.
-    """
-    segments = {}
-
-    segments["model"] = hashlib.sha256(
-        str(customizer.model.value).encode()
-    ).hexdigest()[:8]
-    segments["method"] = hashlib.sha256(
-        str(customizer.method.value).encode()
-    ).hexdigest()[:8]
-    segments["data_s3_path"] = hashlib.sha256(
-        (customizer.data_s3_path or "").encode()
-    ).hexdigest()[:8]
-    segments["job_type"] = hashlib.sha256(job_type.encode()).hexdigest()[:8]
-    segments["model_path"] = hashlib.sha256(
-        str(customizer.model_path).encode()
-    ).hexdigest()[:8]
-
-    if "recipe_path" in job_params:
-        segments["recipe_path"] = hashlib.sha256(
-            str(job_params["recipe_path"]).encode()
-        ).hexdigest()[:8]
-
-    overrides = job_params.get("overrides", {})
-    for param, value in overrides.items():
-        segments[f"override_{param}"] = hashlib.sha256(str(value).encode()).hexdigest()[
-            :8
-        ]
-
-    if hasattr(customizer.infra, "instance_type"):
-        segments["instance_type"] = hashlib.sha256(
-            str(customizer.infra.instance_type).encode()
-        ).hexdigest()[:8]
-    if hasattr(customizer.infra, "instance_count"):
-        segments["instance_count"] = hashlib.sha256(
-            str(customizer.infra.instance_count).encode()
-        ).hexdigest()[:8]
-
-    for key, value in job_params.items():
-        if key not in ["recipe_path", "overrides"]:
-            segments[key] = hashlib.sha256(str(value).encode()).hexdigest()[:8]
-
-    segment_pairs = [f"{k}:{v}" for k, v in sorted(segments.items())]
-    return ",".join(segment_pairs)
+def _customizer_to_cache_context(customizer: Any) -> JobCacheContext:
+    """Build a ``JobCacheContext`` from a ``NovaModelCustomizer`` instance."""
+    return JobCacheContext(
+        enable_job_caching=customizer.enable_job_caching,
+        job_cache_dir=customizer.job_cache_dir,
+        job_caching_config=customizer._job_caching_config,
+        model=customizer.model,
+        method=customizer.method,
+        data_s3_path=customizer.data_s3_path,
+        model_path=customizer.model_path,
+        output_s3_path=customizer.output_s3_path,
+        instance_type=customizer.infra.instance_type,
+        instance_count=customizer.infra.instance_count,
+    )
 
 
-def should_persist_results(customizer) -> bool:
-    """
-    Check if results should be persisted based on configuration.
-    """
-    if not customizer.enable_job_caching:
-        return False
-    if not customizer.job_cache_dir:
-        logger.warning("Job caching enabled but job_cache_dir is not set")
-        return False
-    cache_path = Path(customizer.job_cache_dir)
-    if not cache_path.exists():
-        try:
-            cache_path.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            logger.warning(
-                f"Failed to create job cache directory '{customizer.job_cache_dir}': {e}"
-            )
-            return False
-    return True
+def generate_job_hash(customizer: Any, job_name: str, job_type: str, **job_params: Any) -> str:
+    """Generate segmented hash — delegates to ``core.job_cache``."""
+    return _generate_job_hash(
+        _customizer_to_cache_context(customizer), job_name, job_type, **job_params
+    )
 
 
-def matches_job_cache_criteria(
-    job_caching_config: dict, stored_hash: str, current_hash: str
-) -> bool:
-    """
-    Check if stored segmented hash matches current hash based on job caching config.
-    """
-
-    def parse_segments(hash_str: str) -> Dict[str, str]:
-        segments = {}
-        for pair in hash_str.split(","):
-            if ":" in pair:
-                key, value = pair.split(":", 1)
-                segments[key] = value
-        return segments
-
-    stored_segments = parse_segments(stored_hash)
-    current_segments = parse_segments(current_hash)
-
-    config = job_caching_config
-
-    exclude_params = config.get("exclude_params", [])
-    if isinstance(exclude_params, list):
-        for param in exclude_params:
-            stored_segments.pop(param, None)
-            current_segments.pop(param, None)
-
-    include_params = config.get("include_params", [])
-    if isinstance(include_params, list):
-        for param in include_params:
-            if stored_segments.get(param) != current_segments.get(param):
-                return False
-
-    exclude_params = config.get("exclude_params", [])
-    if isinstance(exclude_params, list) and "*" in exclude_params:
-        return True
-
-    if config.get("include_core", True):
-        core_fields = ["model", "method", "data_s3_path", "job_type", "model_path"]
-        for field in core_fields:
-            if stored_segments.get(field) != current_segments.get(field):
-                return False
-
-    if config.get("include_recipe", True):
-        if stored_segments.get("recipe_path") != current_segments.get("recipe_path"):
-            return False
-        all_override_keys: set[str] = set()
-        for segments in [stored_segments, current_segments]:
-            all_override_keys.update(
-                k for k in segments.keys() if k.startswith("override_")
-            )
-        for override_key in all_override_keys:
-            if stored_segments.get(override_key) != current_segments.get(override_key):
-                return False
-
-    if config.get("include_infra", False):
-        infra_fields = ["instance_type", "instance_count"]
-        for field in infra_fields:
-            if stored_segments.get(field) != current_segments.get(field):
-                return False
-
-    return True
+def should_persist_results(customizer: Any) -> bool:
+    """Check if results should be persisted — delegates to ``core.job_cache``."""
+    return _should_persist_results(_customizer_to_cache_context(customizer))
 
 
-def get_result_file_path(
-    customizer, job_name: str, job_type: str, **job_params
-) -> Path:
-    """
-    Get path for persisted result file (job caching only).
-    """
-    if not should_persist_results(customizer):
-        raise ValueError("Cannot get result file path when persistence is disabled")
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")[:17]
-    filename = f"{job_name}_{job_type}_{timestamp}.json"
-    return Path(customizer.job_cache_dir) / filename
+def get_result_file_path(customizer: Any, job_name: str, job_type: str, **job_params: Any) -> Path:
+    """Get path for persisted result file — delegates to ``core.job_cache``."""
+    return _get_result_file_path(
+        _customizer_to_cache_context(customizer), job_name, job_type, **job_params
+    )
 
 
 def load_existing_result(
-    customizer, job_name: str, job_type: str, **job_params
+    customizer: Any, job_name: str, job_type: str, **job_params: Any
 ) -> Optional[BaseJobResult]:
-    """
-    Load existing result if available and matches job cache criteria.
-    """
-    if not should_persist_results(customizer):
-        return None
-
-    try:
-        allowed_statuses = customizer._job_caching_config.get("allowed_statuses", None)
-        assert isinstance(allowed_statuses, list)
-    except (AssertionError, TypeError):
-        logger.error(
-            f"Invalid allowed_statuses configuration: expected list, got {type(allowed_statuses).__name__} with value {allowed_statuses}. Skipping job cache lookup."
-        )
-        return None
-
-    try:
-        current_hash = generate_job_hash(customizer, job_name, job_type, **job_params)
-        results_dir = Path(customizer.job_cache_dir)
-
-        if not results_dir.exists():
-            return None
-
-        pattern = f"{job_name}_{job_type}_*.json"
-        for result_file in results_dir.glob(pattern):
-            try:
-                with open(result_file, "r") as f:
-                    data = json.load(f)
-
-                stored_hash = data.get("_job_cache_hash")
-                if stored_hash and matches_job_cache_criteria(
-                    customizer._job_caching_config, stored_hash, current_hash
-                ):
-                    result = BaseJobResult.load(str(result_file))
-                    if hasattr(result, "_job_cache_hash"):
-                        result._job_cache_hash = stored_hash
-
-                    job_status, raw_status = result.get_job_status()
-                    if job_status in allowed_statuses:
-                        logger.info(
-                            f"Reusing existing {job_type} result for {job_name} with status {job_status} from {result_file.absolute()}"
-                        )
-                        return result
-                    else:
-                        logger.info(
-                            f"Found matching {job_type} result for {job_name} but job status {job_status} not in allowed statuses {[s.value for s in allowed_statuses]}"
-                        )
-            except Exception as e:
-                logger.debug(f"Skipping corrupted result file {result_file}: {e}")
-                continue
-    except Exception as e:
-        logger.warning(f"Failed to search for existing results: {e}")
-
-    return None
+    """Load existing result if available — delegates to ``core.job_cache``."""
+    return _load_existing_result(
+        _customizer_to_cache_context(customizer), job_name, job_type, **job_params
+    )
 
 
 def collect_all_parameters(
-    customizer, job_name: str, job_type: str, **job_params
+    customizer: Any, job_name: str, job_type: str, **job_params: Any
 ) -> dict:
-    """
-    Collect all relevant parameters from customizer, infra manager, and job params.
-    """
-    all_params = {}
+    """Collect all relevant parameters — includes full infra dump for backward compat."""
+    ctx = _customizer_to_cache_context(customizer)
+    all_params = _collect_all_parameters(ctx, job_name, job_type, **job_params)
 
+    # Full infra dump for backward compat of _all_parameters metadata
     if hasattr(customizer.infra, "__dict__"):
         infra_params = {
             f"infra_{k}": v
@@ -442,54 +300,29 @@ def collect_all_parameters(
         }
         all_params.update(infra_params)
 
-    customizer_params = {
-        "model": customizer.model.value
-        if hasattr(customizer.model, "value")
-        else str(customizer.model),
-        "method": customizer.method.value
-        if hasattr(customizer.method, "value")
-        else str(customizer.method),
-        "data_s3_path": customizer.data_s3_path,
-        "output_s3_path": customizer.output_s3_path,
-        "model_path": customizer.model_path,
-        "deployment_mode": customizer.deployment_mode.value
-        if hasattr(customizer.deployment_mode, "value")
-        else str(customizer.deployment_mode),
-    }
-    all_params.update(customizer_params)
-    all_params.update(job_params)
+    # Include deployment_mode from customizer (not on JobCacheContext)
+    if hasattr(customizer, "deployment_mode"):
+        all_params["deployment_mode"] = (
+            customizer.deployment_mode.value
+            if hasattr(customizer.deployment_mode, "value")
+            else str(customizer.deployment_mode)
+        )
 
     return all_params
 
 
 def persist_result(
-    customizer, result: BaseJobResult, job_name: str, job_type: str, **job_params
+    customizer: Any,
+    result: BaseJobResult,
+    job_name: str,
+    job_type: str,
+    **job_params: Any,
 ) -> None:
-    """
-    Persist job result to file if persistence is enabled.
-    """
-    if not should_persist_results(customizer):
-        return
-
-    try:
-        result_file = get_result_file_path(customizer, job_name, job_type, **job_params)
-        result_file.parent.mkdir(parents=True, exist_ok=True)
-
-        data = result._to_dict()
-        data["__class_name__"] = result.__class__.__name__
-
-        if customizer.enable_job_caching:
-            all_params = collect_all_parameters(
-                customizer, job_name, job_type, **job_params
-            )
-            segmented_hash = generate_job_hash(
-                customizer, job_name, job_type, **all_params
-            )
-            data["_job_cache_hash"] = segmented_hash
-            data["_all_parameters"] = all_params
-
-        with open(result_file, "w") as f:
-            json.dump(data, f, default=str)
-        logger.info(f"Job result saved to {result_file}")
-    except Exception as e:
-        logger.warning(f"Failed to persist {job_type} result for {job_name}: {e}")
+    """Persist job result to file — delegates to ``core.job_cache``."""
+    _persist_result(
+        _customizer_to_cache_context(customizer),
+        result,
+        job_name,
+        job_type,
+        **job_params,
+    )

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, Mock, mock_open, patch
 
 from botocore.exceptions import ClientError
 
-from amzn_nova_forge.model.model_enums import Platform
+from amzn_nova_forge.core.enums import Platform
 from amzn_nova_forge.notifications.notification_manager import (
     NotificationManagerInfraError,
 )
@@ -130,9 +130,7 @@ class TestSMTJNotificationManager(unittest.TestCase):
         outputs = self.manager._ensure_infrastructure_exists()
 
         self.assertEqual(outputs["DynamoDBTableName"], "test-table")
-        self.assertEqual(
-            outputs["SNSTopicArn"], "arn:aws:sns:us-east-1:123456789012:topic"
-        )
+        self.assertEqual(outputs["SNSTopicArn"], "arn:aws:sns:us-east-1:123456789012:topic")
         mock_logger.info.assert_called()
 
     @patch("amzn_nova_forge.notifications.notification_manager.logger")
@@ -216,9 +214,7 @@ class TestSMTJNotificationManager(unittest.TestCase):
         }
 
         # Mock SNS list subscriptions (no existing subscriptions)
-        self.manager.sns.list_subscriptions_by_topic.return_value = {
-            "Subscriptions": []
-        }
+        self.manager.sns.list_subscriptions_by_topic.return_value = {"Subscriptions": []}
 
         job_name = "test-job-123"
         emails = ["user@example.com"]
@@ -262,9 +258,7 @@ class TestSMTJNotificationManager(unittest.TestCase):
             ]
         }
 
-        self.manager.sns.list_subscriptions_by_topic.return_value = {
-            "Subscriptions": []
-        }
+        self.manager.sns.list_subscriptions_by_topic.return_value = {"Subscriptions": []}
 
         kms_key_id = "arn:aws:kms:us-east-1:123456789012:key/abc-123"
         self.manager.enable_notifications(
@@ -280,9 +274,7 @@ class TestSMTJNotificationManager(unittest.TestCase):
     def test_enable_notifications_invalid_job_name(self):
         """Test enable_notifications raises error for empty job name."""
         with self.assertRaises(ValueError) as context:
-            self.manager.enable_notifications(
-                "", ["user@example.com"], "s3://bucket/path"
-            )
+            self.manager.enable_notifications("", ["user@example.com"], "s3://bucket/path")
         self.assertIn("job_name cannot be empty", str(context.exception))
 
     def test_enable_notifications_invalid_emails(self):
@@ -321,9 +313,7 @@ class TestSMTJNotificationManager(unittest.TestCase):
             "Subscriptions": [{"Protocol": "email", "Endpoint": "user@example.com"}]
         }
 
-        self.manager.enable_notifications(
-            "job-123", ["user@example.com"], "s3://bucket/path"
-        )
+        self.manager.enable_notifications("job-123", ["user@example.com"], "s3://bucket/path")
 
         # Verify SNS subscribe was NOT called (already subscribed)
         self.manager.sns.subscribe.assert_not_called()
@@ -539,9 +529,7 @@ class TestSMHPNotificationManager(unittest.TestCase):
 
     @patch("amzn_nova_forge.notifications.smhp_notification_manager.logger")
     @patch("amzn_nova_forge.notifications.notification_manager.time")
-    def test_enable_notifications_stores_namespace_in_dynamodb(
-        self, mock_time, mock_logger
-    ):
+    def test_enable_notifications_stores_namespace_in_dynamodb(self, mock_time, mock_logger):
         """Test enable_notifications stores namespace in DynamoDB."""
         mock_time.time.return_value = 1000000000
 
@@ -579,13 +567,9 @@ class TestSMHPNotificationManager(unittest.TestCase):
         self.manager._ec2_client.describe_route_tables.return_value = {
             "RouteTables": [{"RouteTableId": "rtb-12345"}]
         }
-        self.manager._ec2_client.describe_vpc_endpoints.return_value = {
-            "VpcEndpoints": []
-        }
+        self.manager._ec2_client.describe_vpc_endpoints.return_value = {"VpcEndpoints": []}
 
-        self.manager.sns.list_subscriptions_by_topic.return_value = {
-            "Subscriptions": []
-        }
+        self.manager.sns.list_subscriptions_by_topic.return_value = {"Subscriptions": []}
 
         self.manager.enable_notifications(
             job_name="test-job",
@@ -625,9 +609,7 @@ class TestSMHPNotificationManager(unittest.TestCase):
         vpc_id = self.manager._get_vpc_id_from_subnet("subnet-1")
 
         self.assertEqual(vpc_id, "vpc-12345")
-        self.manager._ec2_client.describe_subnets.assert_called_once_with(
-            SubnetIds=["subnet-1"]
-        )
+        self.manager._ec2_client.describe_subnets.assert_called_once_with(SubnetIds=["subnet-1"])
 
     @patch("amzn_nova_forge.notifications.smhp_notification_manager.logger")
     def test_check_existing_vpc_endpoints(self, mock_logger):
@@ -662,9 +644,7 @@ class TestSMHPNotificationManager(unittest.TestCase):
             ]
         }
 
-        route_table_ids = self.manager._get_route_table_ids_from_subnets(
-            ["subnet-1", "subnet-2"]
-        )
+        route_table_ids = self.manager._get_route_table_ids_from_subnets(["subnet-1", "subnet-2"])
 
         self.assertEqual(set(route_table_ids), {"rtb-1", "rtb-2"})
 
@@ -684,18 +664,14 @@ class TestSMHPNotificationManager(unittest.TestCase):
         )
 
         logged_messages = [call[0][0] for call in mock_logger.info.call_args_list]
-        console_url_logged = any(
-            "cloudformation/home" in msg for msg in logged_messages
-        )
+        console_url_logged = any("cloudformation/home" in msg for msg in logged_messages)
         self.assertTrue(
             console_url_logged,
             "Expected CloudFormation console URL in log messages to guide users",
         )
 
     @patch("amzn_nova_forge.notifications.smhp_notification_manager.logger")
-    def test_enable_notifications_missing_eks_cluster_arn_after_auto_detection(
-        self, mock_logger
-    ):
+    def test_enable_notifications_missing_eks_cluster_arn_after_auto_detection(self, mock_logger):
         """Test enable_notifications raises ValueError when eks_cluster_arn is missing after auto-detection."""
         # Mock auto-detection that returns partial cluster info (missing EKS ARN)
         self.manager._sagemaker_client = MagicMock()
@@ -724,9 +700,7 @@ class TestSMHPNotificationManager(unittest.TestCase):
         self.assertIn("eks_cluster_arn is required", str(context.exception))
 
     @patch("amzn_nova_forge.notifications.smhp_notification_manager.logger")
-    def test_enable_notifications_missing_vpc_id_after_auto_detection(
-        self, mock_logger
-    ):
+    def test_enable_notifications_missing_vpc_id_after_auto_detection(self, mock_logger):
         """Test enable_notifications raises ValueError when vpc_id is missing after auto-detection."""
         # Mock auto-detection that returns partial cluster info (missing VPC ID)
         self.manager._sagemaker_client = MagicMock()
@@ -754,9 +728,7 @@ class TestSMHPNotificationManager(unittest.TestCase):
         self.assertIn("vpc_id is required", str(context.exception))
 
     @patch("amzn_nova_forge.notifications.smhp_notification_manager.logger")
-    def test_enable_notifications_missing_subnet_ids_after_auto_detection(
-        self, mock_logger
-    ):
+    def test_enable_notifications_missing_subnet_ids_after_auto_detection(self, mock_logger):
         """Test enable_notifications raises ValueError when subnet_ids is missing after auto-detection."""
         # Mock auto-detection that returns partial cluster info (missing subnets)
         # We need to provide vpc_id explicitly since it can't be derived from empty subnets
@@ -784,9 +756,7 @@ class TestSMHPNotificationManager(unittest.TestCase):
         self.assertIn("subnet_ids must be a non-empty list", str(context.exception))
 
     @patch("amzn_nova_forge.notifications.smhp_notification_manager.logger")
-    def test_enable_notifications_invalid_subnet_ids_type_after_auto_detection(
-        self, mock_logger
-    ):
+    def test_enable_notifications_invalid_subnet_ids_type_after_auto_detection(self, mock_logger):
         """Test enable_notifications raises ValueError when subnet_ids is not a list after auto-detection."""
         # Mock auto-detection that returns partial cluster info (subnet_ids wrong type)
         self.manager._sagemaker_client = MagicMock()
@@ -817,9 +787,7 @@ class TestSMHPNotificationManager(unittest.TestCase):
         self.assertIn("subnet_ids must be a non-empty list", str(context.exception))
 
     @patch("amzn_nova_forge.notifications.smhp_notification_manager.logger")
-    def test_enable_notifications_missing_security_group_id_after_auto_detection(
-        self, mock_logger
-    ):
+    def test_enable_notifications_missing_security_group_id_after_auto_detection(self, mock_logger):
         """Test enable_notifications raises ValueError when security_group_id is missing after auto-detection."""
         # Mock auto-detection that returns partial cluster info (missing security group)
         self.manager._sagemaker_client = MagicMock()
@@ -859,9 +827,7 @@ class TestSMHPNotificationManager(unittest.TestCase):
         cluster_name = "a" * 30
         with patch("amzn_nova_forge.notifications.notification_manager.boto3"):
             # Should not raise
-            manager = SMHPNotificationManager(
-                cluster_name=cluster_name, region="us-west-2"
-            )
+            manager = SMHPNotificationManager(cluster_name=cluster_name, region="us-west-2")
             self.assertEqual(manager.cluster_name, cluster_name)
 
     def test_cluster_name_length_exceeds_limit_by_one(self):

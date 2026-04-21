@@ -29,7 +29,7 @@ RFT Multiturn enables you to fine-tune Nova models using reinforcement learning 
 
 ### General Requirements
 
-- Python 3.12 or higher
+- Python 3.12
 - AWS credentials configured
 - The SDK requires specific IAM permissions. See the [IAM Roles/Policies section in the main README](../README.md#iam-rolespolicies) for the complete list of required permissions.
 dditional SSM and ECS permissions are required - see the "If performing RFT Multiturn training" section in the README
@@ -39,7 +39,7 @@ dditional SSM and ECS permissions are required - see the "If performing RFT Mult
 
 #### For LOCAL Platform or SageMaker Notebook
 
-- Python 3.12 or higher installed locally
+- Python 3.12 installed locally
 - Sufficient local compute resources
 
 #### For EC2 Platform
@@ -76,7 +76,7 @@ rft_infra.setup()
 rft_infra.start_environment(env_type=EnvType.TRAIN)
 
 # 2. Train model
-customizer = NovaModelCustomizer(
+trainer = ForgeTrainer(
     model=Model.NOVA_LITE_2,
     method=TrainingMethod.RFT_MULTITURN_LORA,
     infra=SMHPRuntimeManager(
@@ -85,10 +85,10 @@ customizer = NovaModelCustomizer(
         instance_type="ml.p5.48xlarge",
         instance_count=2
     ),
-    data_s3_path="s3://bucket/data.jsonl"
+    training_data_s3_path="s3://bucket/data.jsonl",
 )
 
-training_result = customizer.train(
+training_result = trainer.train(
     job_name="rft-training",
     rft_multiturn_infra=rft_infra
 )
@@ -445,27 +445,27 @@ overrides = rft_infra.get_recipe_overrides()
 print(f"Lambda ARN: {overrides['rollout_request_arn']}")
 ```
 
-### Train with NovaModelCustomizer
+### Train with ForgeTrainer
 
-Use the `train()` method of `NovaModelCustomizer` with the `rft_multiturn_infra` parameter.
+Use the `train()` method of `ForgeTrainer` with the `rft_multiturn_infra` parameter.
 
 **Parameters (RFT-specific):**
 
 - `rft_multiturn_infra` (`RFTMultiturnInfrastructure`, required): RFT infrastructure instance with training environment started.
 - `job_name` (`str`, required): Unique name for the training job.
-- `model_path` (`str`, optional, default: `None`): S3 path to checkpoint for iterative training.
 
 **Example:**
 
 ```python
 from amzn_nova_forge import (
-    NovaModelCustomizer,
+    ForgeTrainer,
+    ForgeConfig,
     Model,
     TrainingMethod,
     SMHPRuntimeManager
 )
 
-customizer = NovaModelCustomizer(
+trainer = ForgeTrainer(
     model=Model.NOVA_LITE_2,
     method=TrainingMethod.RFT_MULTITURN_LORA,
     infra=SMHPRuntimeManager(
@@ -474,10 +474,10 @@ customizer = NovaModelCustomizer(
         instance_type="ml.p5.48xlarge",
         instance_count=2
     ),
-    data_s3_path="s3://bucket/data.jsonl"
+    training_data_s3_path="s3://bucket/data.jsonl",
 )
 
-training_result = customizer.train(
+training_result = trainer.train(
     job_name="rft-training",
     rft_multiturn_infra=rft_infra
 )
@@ -528,9 +528,9 @@ rft_infra.start_environment(
 
 **DEPRECATED**: Use `start_environment(env_type=EnvType.EVAL, ...)` instead. See the [start_environment() documentation](#start_environment-method) for details.
 
-### Evaluate with NovaModelCustomizer
+### Evaluate with ForgeEvaluator
 
-Use the `evaluate()` method of `NovaModelCustomizer` with the `rft_multiturn_infra` parameter.
+Use the `evaluate()` method of `ForgeEvaluator` with the `rft_multiturn_infra` parameter.
 
 **Parameters (RFT-specific):**
 
@@ -542,9 +542,20 @@ Use the `evaluate()` method of `NovaModelCustomizer` with the `rft_multiturn_inf
 **Example:**
 
 ```python
-from amzn_nova_forge import EvaluationTask
+from amzn_nova_forge import ForgeEvaluator, EvaluationTask
 
-eval_result = customizer.evaluate(
+evaluator = ForgeEvaluator(
+    model=Model.NOVA_LITE_2,
+    infra=SMHPRuntimeManager(
+        cluster_name="my-cluster",
+        namespace="kubeflow",
+        instance_type="ml.p5.48xlarge",
+        instance_count=2
+    ),
+    config=ForgeConfig(output_s3_path="s3://bucket/eval-output"),
+)
+
+eval_result = evaluator.evaluate(
     job_name="rft-eval",
     eval_task=EvaluationTask.RFT_MULTITURN_EVAL,
     model_path=checkpoint_path,
@@ -1175,7 +1186,9 @@ rft_infra.cleanup(delete_stack=True)  # cleanup_environment defaults to False
 ```python
 from amzn_nova_forge import (
     RFTMultiturnInfrastructure,
-    NovaModelCustomizer,
+    ForgeTrainer,
+    ForgeEvaluator,
+    ForgeConfig,
     Model,
     TrainingMethod,
     SMHPRuntimeManager,
@@ -1202,7 +1215,7 @@ state_file = rft_infra.dump()
 print(f"State saved to: {state_file}")
 
 # 2. Train
-customizer = NovaModelCustomizer(
+trainer = ForgeTrainer(
     model=Model.NOVA_LITE_2,
     method=TrainingMethod.RFT_MULTITURN_LORA,
     infra=SMHPRuntimeManager(
@@ -1211,10 +1224,10 @@ customizer = NovaModelCustomizer(
         instance_type="ml.p5.48xlarge",
         instance_count=2
     ),
-    data_s3_path="s3://bucket/data.jsonl"
+    training_data_s3_path="s3://bucket/data.jsonl",
 )
 
-training_result = customizer.train(
+training_result = trainer.train(
     job_name="rft-training",
     rft_multiturn_infra=rft_infra
 )
@@ -1226,7 +1239,13 @@ checkpoint_path = training_result.model_artifacts.checkpoint_s3_path
 rft_infra.kill_task(env_type=EnvType.TRAIN)
 rft_infra.start_environment(env_type=EnvType.EVAL)
 
-eval_result = customizer.evaluate(
+evaluator = ForgeEvaluator(
+    model=Model.NOVA_LITE_2,
+    infra=trainer.infra,
+    config=ForgeConfig(output_s3_path="s3://bucket/eval-output"),
+)
+
+eval_result = evaluator.evaluate(
     job_name="rft-eval",
     eval_task=EvaluationTask.RFT_MULTITURN_EVAL,
     model_path=checkpoint_path,

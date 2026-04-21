@@ -15,15 +15,25 @@ from unittest.mock import patch
 
 import pytest
 
+from amzn_nova_forge.core.enums import Model, TrainingMethod
 from amzn_nova_forge.dataset.dataset_loader import (
     CSVDatasetLoader,
     JSONLDatasetLoader,
 )
-from amzn_nova_forge.model.model_enums import Model, TrainingMethod
 
 
 class TestMemoryEfficiency(unittest.TestCase):
     """Test that dataset loaders maintain bounded memory usage with large datasets."""
+
+    def setUp(self):
+        # Patch check_path_exists for all tests since they use fake paths
+        self._check_exists_patcher = patch(
+            "amzn_nova_forge.dataset.dataset_loader.check_path_exists"
+        )
+        self._check_exists_patcher.start()
+
+    def tearDown(self):
+        self._check_exists_patcher.stop()
 
     def _generate_jsonl_lines(self, size: int) -> Iterator[str]:
         """Generate JSONL lines for testing without storing in memory."""
@@ -31,8 +41,7 @@ class TestMemoryEfficiency(unittest.TestCase):
             yield json.dumps(
                 {
                     "id": i,
-                    "text": f"This is sample text number {i} "
-                    * 10,  # ~300 bytes per record
+                    "text": f"This is sample text number {i} " * 10,  # ~300 bytes per record
                     "metadata": {"index": i, "category": f"cat_{i % 10}"},
                 }
             )
@@ -117,9 +126,7 @@ class TestMemoryEfficiency(unittest.TestCase):
             f"\nMemory usage: Small={small_memory:.2f}MB, "
             f"Medium={medium_memory:.2f}MB, Large={large_memory:.2f}MB"
         )
-        print(
-            f"Growth factors: 10x data={medium_growth:.2f}x, 100x data={large_growth:.2f}x"
-        )
+        print(f"Growth factors: 10x data={medium_growth:.2f}x, 100x data={large_growth:.2f}x")
 
     @pytest.mark.memory
     def test_csv_memory_scales_with_batch_not_dataset(self):
@@ -162,9 +169,7 @@ class TestMemoryEfficiency(unittest.TestCase):
             f"Small: {small_memory:.2f}MB, Large: {large_memory:.2f}MB",
         )
 
-        print(
-            f"\nCSV Memory usage: Small={small_memory:.2f}MB, Large={large_memory:.2f}MB"
-        )
+        print(f"\nCSV Memory usage: Small={small_memory:.2f}MB, Large={large_memory:.2f}MB")
         print(f"Growth factor: {growth_factor:.2f}x")
 
     @pytest.mark.memory
@@ -188,9 +193,7 @@ class TestMemoryEfficiency(unittest.TestCase):
             ):
                 loader = JSONLDatasetLoader()
                 loader.load("test.jsonl")
-                loader.transform(
-                    training_method=TrainingMethod.CPT, model=Model.NOVA_MICRO
-                )
+                loader.transform(training_method=TrainingMethod.CPT, model=Model.NOVA_MICRO)
 
                 # Process transformed data
                 count = 0
@@ -212,9 +215,7 @@ class TestMemoryEfficiency(unittest.TestCase):
             f"Small: {small_memory:.2f}MB, Large: {large_memory:.2f}MB",
         )
 
-        print(
-            f"\nTransformation Memory: Small={small_memory:.2f}MB, Large={large_memory:.2f}MB"
-        )
+        print(f"\nTransformation Memory: Small={small_memory:.2f}MB, Large={large_memory:.2f}MB")
 
     @pytest.mark.memory
     def test_iteration_does_not_accumulate_memory(self):

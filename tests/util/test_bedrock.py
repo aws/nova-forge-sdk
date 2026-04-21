@@ -2,7 +2,8 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-from amzn_nova_forge.util.bedrock import invoke_model
+from amzn_nova_forge.core.enums import ModelStatus
+from amzn_nova_forge.util.bedrock import invoke_model, wait_for_model_ready
 
 
 class TestBedrock(unittest.TestCase):
@@ -38,6 +39,44 @@ class TestBedrock(unittest.TestCase):
             invoke_model(model_id, request_body, mock_bedrock_runtime)
 
         self.assertTrue("Failed invoke Bedrock model" in str(context.exception))
+
+
+class TestWaitForModelReady(unittest.TestCase):
+    MODEL_ARN = "arn:aws:bedrock:us-east-1:123456789012:custom-model/test"
+
+    def test_already_active(self):
+        client = MagicMock()
+        client.get_custom_model.return_value = {"modelStatus": "Active"}
+        result = wait_for_model_ready(client, self.MODEL_ARN)
+        self.assertEqual(result, ModelStatus.ACTIVE)
+        client.get_custom_model.assert_called_once()
+
+    @patch("amzn_nova_forge.util.bedrock.time.sleep")
+    def test_creating_then_active(self, mock_sleep):
+        client = MagicMock()
+        client.get_custom_model.side_effect = [
+            {"modelStatus": "Creating"},
+            {"modelStatus": "Active"},
+        ]
+        result = wait_for_model_ready(client, self.MODEL_ARN, poll_interval=1)
+        self.assertEqual(result, ModelStatus.ACTIVE)
+        self.assertEqual(client.get_custom_model.call_count, 2)
+
+    def test_failed_raises(self):
+        client = MagicMock()
+        client.get_custom_model.return_value = {"modelStatus": "Failed"}
+        with self.assertRaises(ValueError) as ctx:
+            wait_for_model_ready(client, self.MODEL_ARN)
+        self.assertIn("FAILED", str(ctx.exception))
+
+    @patch("amzn_nova_forge.util.bedrock.time.sleep")
+    @patch("amzn_nova_forge.util.bedrock.time.time")
+    def test_timeout(self, mock_time, mock_sleep):
+        mock_time.side_effect = [0, 0, 0, 1000]
+        client = MagicMock()
+        client.get_custom_model.return_value = {"modelStatus": "Creating"}
+        with self.assertRaises(TimeoutError):
+            wait_for_model_ready(client, self.MODEL_ARN, timeout=10)
 
 
 if __name__ == "__main__":

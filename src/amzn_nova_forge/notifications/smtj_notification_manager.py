@@ -14,7 +14,7 @@
 from pathlib import Path
 from typing import List, Optional
 
-from amzn_nova_forge.model.model_enums import Platform
+from amzn_nova_forge.core.enums import Platform
 from amzn_nova_forge.notifications.notification_manager import NotificationManager
 
 
@@ -41,9 +41,7 @@ class SMTJNotificationManager(NotificationManager):
         """Get the path to the SMTJ CloudFormation template."""
         return Path(__file__).parent / "templates" / "smtj_notification_cf_stack.yaml"
 
-    def _get_stack_parameters(
-        self, kms_key_id: Optional[str] = None, **kwargs
-    ) -> List[dict]:
+    def _get_stack_parameters(self, kms_key_id: Optional[str] = None, **kwargs) -> List[dict]:
         """
         Get SMTJ-specific CloudFormation parameters.
 
@@ -56,9 +54,7 @@ class SMTJNotificationManager(NotificationManager):
         parameters = []
 
         if kms_key_id:
-            parameters.append(
-                {"ParameterKey": "KmsKeyId", "ParameterValue": kms_key_id}
-            )
+            parameters.append({"ParameterKey": "KmsKeyId", "ParameterValue": kms_key_id})
 
         return parameters
 

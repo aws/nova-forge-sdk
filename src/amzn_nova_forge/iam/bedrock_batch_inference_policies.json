@@ -1,0 +1,41 @@
+{
+    "trust_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Principal": {
+                    "Service": "bedrock.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+            }
+        ]
+    },
+    "bedrock_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "bedrock:CreateModelInvocationJob",
+                    "bedrock:GetModelInvocationJob"
+                ],
+                "Resource": "RESOURCE_PLACEHOLDER"
+            }
+        ]
+    },
+    "s3_read_write_policy": {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "s3:GetObject",
+                    "s3:ListBucket",
+                    "s3:PutObject"
+                ],
+                "Resource": "S3_BUCKET_PLACEHOLDER"
+            }
+        ]
+    }
+}

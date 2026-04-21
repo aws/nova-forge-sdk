@@ -3,11 +3,11 @@ import shutil
 import tempfile
 import unittest
 
+from amzn_nova_forge.core.enums import Model, TrainingMethod
 from amzn_nova_forge.dataset.dataset_loader import (
     JSONLDatasetLoader,
 )
 from amzn_nova_forge.dataset.dataset_validator import CPTDatasetValidator
-from amzn_nova_forge.model.model_enums import Model, TrainingMethod
 
 
 class TestCPTDatasetValidator(unittest.TestCase):
@@ -23,9 +23,7 @@ class TestCPTDatasetValidator(unittest.TestCase):
         return temp_file_name
 
     def test_cpt_simple_success(self):
-        cpt_simple_success = [
-            {"text": "This is a valid text sample for continued pre-training."}
-        ]
+        cpt_simple_success = [{"text": "This is a valid text sample for continued pre-training."}]
 
         test_file = self.create_temp_file("cpt_simple_success", cpt_simple_success)
         JSONLDatasetLoader().load(test_file).validate(
@@ -36,9 +34,7 @@ class TestCPTDatasetValidator(unittest.TestCase):
         cpt_multiple_samples = [
             {"text": "First sample text for continued pre-training."},
             {"text": "Second sample with different content."},
-            {
-                "text": "Third sample to ensure validation works across multiple entries."
-            },
+            {"text": "Third sample to ensure validation works across multiple entries."},
         ]
 
         test_file = self.create_temp_file("cpt_multiple_samples", cpt_multiple_samples)
@@ -141,9 +137,7 @@ class TestCPTDatasetValidator(unittest.TestCase):
 
     def test_cpt_with_special_characters_success(self):
         cpt_special_chars = [
-            {
-                "text": "Text with special characters: @#$%^&*() and unicode: 你好, Привет, مرحبا"
-            }
+            {"text": "Text with special characters: @#$%^&*() and unicode: 你好, Привет, مرحبا"}
         ]
 
         test_file = self.create_temp_file("cpt_special_chars", cpt_special_chars)
