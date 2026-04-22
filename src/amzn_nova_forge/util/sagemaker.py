@@ -38,6 +38,19 @@ from amzn_nova_forge.core.result.inference_result import (
 from amzn_nova_forge.core.runtime import RuntimeManager
 from amzn_nova_forge.core.types import ModelArtifacts
 from amzn_nova_forge.validation.endpoint_validator import (
+    ENV_CONTEXT_LENGTH,
+    ENV_DEFAULT_LOGPROBS,
+    ENV_DEFAULT_MAX_NEW_TOKENS,
+    ENV_DEFAULT_TEMPERATURE,
+    ENV_DEFAULT_TOP_K,
+    ENV_DEFAULT_TOP_P,
+    ENV_DISABLE_SPECULATIVE_DECODING,
+    ENV_MAX_CONCURRENCY,
+    ENV_SPECULATIVE_DECODING_METHOD,
+    ENV_SUFFIX_DECODING_MAX_CACHED_REQUESTS,
+    ENV_SUFFIX_DECODING_MAX_SPEC_FACTOR,
+    ENV_SUFFIX_DECODING_MAX_TREE_DEPTH,
+    ENV_SUFFIX_DECODING_MIN_TOKEN_PROB,
     validate_s3_uri_prefix,
 )
 
@@ -340,7 +353,6 @@ def get_cluster_instance_info(
         raise RuntimeError(f"Failed to get cluster instance info for {cluster_name}: {str(e)}")
 
 
-# TODO: Update environment variables when variables finalized
 def setup_environment_variables(
     context_length: str = DEFAULT_CONTEXT_LENGTH,
     max_concurrency: str = DEFAULT_MAX_CONCURRENCY,
@@ -349,6 +361,12 @@ def setup_environment_variables(
     top_k: Optional[str] = None,
     max_new_tokens: Optional[str] = None,
     logprobs: Optional[str] = None,
+    speculative_decoding_method: Optional[str] = None,
+    disable_speculative_decoding: Optional[str] = None,
+    suffix_decoding_max_tree_depth: Optional[str] = None,
+    suffix_decoding_max_cached_requests: Optional[str] = None,
+    suffix_decoding_max_spec_factor: Optional[str] = None,
+    suffix_decoding_min_token_prob: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Set up environment variables for model configuration.
@@ -361,23 +379,40 @@ def setup_environment_variables(
         top_k (str, optional): Top-k sampling parameter. Defaults to None.
         max_new_tokens (str, optional): Maximum number of new tokens to generate. Defaults to None.
         logprobs (str, optional): Number of log probabilities to return. Defaults to None.
+        speculative_decoding_method (str, optional): Speculative decoding method ("eagle3" or "suffix"). Defaults to None.
+        disable_speculative_decoding (str, optional): Set to "true" to disable all speculative decoding. Defaults to None.
+        suffix_decoding_max_tree_depth (str, optional): Maximum depth of the suffix tree. Defaults to None.
+        suffix_decoding_max_cached_requests (str, optional): Maximum number of completed requests cached in the global suffix tree. Defaults to None.
+        suffix_decoding_max_spec_factor (str, optional): Scales speculative tokens proportionally to matched pattern length. Defaults to None.
+        suffix_decoding_min_token_prob (str, optional): Minimum token probability threshold. Defaults to None.
 
     Returns:
         Dict[str, Any]: A dictionary of environment variables for model configuration.
     """
-    environment = {"CONTEXT_LENGTH": context_length, "MAX_CONCURRENCY": max_concurrency}
+    environment = {ENV_CONTEXT_LENGTH: context_length, ENV_MAX_CONCURRENCY: max_concurrency}
 
-    # Add optional parameters if provided
     if temperature is not None:
-        environment["DEFAULT_TEMPERATURE"] = temperature
+        environment[ENV_DEFAULT_TEMPERATURE] = temperature
     if top_p is not None:
-        environment["DEFAULT_TOP_P"] = top_p
+        environment[ENV_DEFAULT_TOP_P] = top_p
     if top_k is not None:
-        environment["DEFAULT_TOP_K"] = top_k
+        environment[ENV_DEFAULT_TOP_K] = top_k
     if max_new_tokens is not None:
-        environment["DEFAULT_MAX_NEW_TOKENS"] = max_new_tokens
+        environment[ENV_DEFAULT_MAX_NEW_TOKENS] = max_new_tokens
     if logprobs is not None:
-        environment["DEFAULT_LOGPROBS"] = logprobs
+        environment[ENV_DEFAULT_LOGPROBS] = logprobs
+    if speculative_decoding_method is not None:
+        environment[ENV_SPECULATIVE_DECODING_METHOD] = speculative_decoding_method
+    if disable_speculative_decoding is not None:
+        environment[ENV_DISABLE_SPECULATIVE_DECODING] = disable_speculative_decoding
+    if suffix_decoding_max_tree_depth is not None:
+        environment[ENV_SUFFIX_DECODING_MAX_TREE_DEPTH] = suffix_decoding_max_tree_depth
+    if suffix_decoding_max_cached_requests is not None:
+        environment[ENV_SUFFIX_DECODING_MAX_CACHED_REQUESTS] = suffix_decoding_max_cached_requests
+    if suffix_decoding_max_spec_factor is not None:
+        environment[ENV_SUFFIX_DECODING_MAX_SPEC_FACTOR] = suffix_decoding_max_spec_factor
+    if suffix_decoding_min_token_prob is not None:
+        environment[ENV_SUFFIX_DECODING_MIN_TOKEN_PROB] = suffix_decoding_min_token_prob
 
     return environment
 
