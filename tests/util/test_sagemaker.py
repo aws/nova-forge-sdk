@@ -25,6 +25,21 @@ from amzn_nova_forge.util.sagemaker import (
     invoke_sagemaker_inference,
     setup_environment_variables,
 )
+from amzn_nova_forge.validation.endpoint_validator import (
+    ENV_CONTEXT_LENGTH,
+    ENV_DEFAULT_LOGPROBS,
+    ENV_DEFAULT_MAX_NEW_TOKENS,
+    ENV_DEFAULT_TEMPERATURE,
+    ENV_DEFAULT_TOP_K,
+    ENV_DEFAULT_TOP_P,
+    ENV_DISABLE_SPECULATIVE_DECODING,
+    ENV_MAX_CONCURRENCY,
+    ENV_SPECULATIVE_DECODING_METHOD,
+    ENV_SUFFIX_DECODING_MAX_CACHED_REQUESTS,
+    ENV_SUFFIX_DECODING_MAX_SPEC_FACTOR,
+    ENV_SUFFIX_DECODING_MAX_TREE_DEPTH,
+    ENV_SUFFIX_DECODING_MIN_TOKEN_PROB,
+)
 
 
 class TestSagemaker(unittest.TestCase):
@@ -378,13 +393,49 @@ class TestSagemaker(unittest.TestCase):
             logprobs="5",
         )
 
-        self.assertIn("CONTEXT_LENGTH", env_vars)
-        self.assertIn("MAX_CONCURRENCY", env_vars)
-        self.assertIn("DEFAULT_TEMPERATURE", env_vars)
-        self.assertIn("DEFAULT_TOP_P", env_vars)
-        self.assertIn("DEFAULT_TOP_K", env_vars)
-        self.assertIn("DEFAULT_MAX_NEW_TOKENS", env_vars)
-        self.assertIn("DEFAULT_LOGPROBS", env_vars)
+        self.assertIn(ENV_CONTEXT_LENGTH, env_vars)
+        self.assertIn(ENV_MAX_CONCURRENCY, env_vars)
+        self.assertIn(ENV_DEFAULT_TEMPERATURE, env_vars)
+        self.assertIn(ENV_DEFAULT_TOP_P, env_vars)
+        self.assertIn(ENV_DEFAULT_TOP_K, env_vars)
+        self.assertIn(ENV_DEFAULT_MAX_NEW_TOKENS, env_vars)
+        self.assertIn(ENV_DEFAULT_LOGPROBS, env_vars)
+
+    def test_setup_environment_variables_with_speculative_decoding(self):
+        """Test setup_environment_variables with speculative decoding parameters"""
+        env_vars = setup_environment_variables(
+            speculative_decoding_method="suffix",
+            disable_speculative_decoding="false",
+            suffix_decoding_max_tree_depth="24",
+            suffix_decoding_max_cached_requests="10000",
+            suffix_decoding_max_spec_factor="1.0",
+            suffix_decoding_min_token_prob="0.1",
+        )
+
+        self.assertIn(ENV_CONTEXT_LENGTH, env_vars)
+        self.assertIn(ENV_MAX_CONCURRENCY, env_vars)
+        self.assertEqual(env_vars[ENV_SPECULATIVE_DECODING_METHOD], "suffix")
+        self.assertEqual(env_vars[ENV_DISABLE_SPECULATIVE_DECODING], "false")
+        self.assertEqual(env_vars[ENV_SUFFIX_DECODING_MAX_TREE_DEPTH], "24")
+        self.assertEqual(env_vars[ENV_SUFFIX_DECODING_MAX_CACHED_REQUESTS], "10000")
+        self.assertEqual(env_vars[ENV_SUFFIX_DECODING_MAX_SPEC_FACTOR], "1.0")
+        self.assertEqual(env_vars[ENV_SUFFIX_DECODING_MIN_TOKEN_PROB], "0.1")
+
+    def test_setup_environment_variables_with_no_optional_params(self):
+        """Test that speculative decoding keys are omitted when not provided"""
+        env_vars = setup_environment_variables()
+
+        self.assertNotIn(ENV_SPECULATIVE_DECODING_METHOD, env_vars)
+        self.assertNotIn(ENV_DISABLE_SPECULATIVE_DECODING, env_vars)
+        self.assertNotIn(ENV_SUFFIX_DECODING_MAX_TREE_DEPTH, env_vars)
+        self.assertNotIn(ENV_SUFFIX_DECODING_MAX_CACHED_REQUESTS, env_vars)
+        self.assertNotIn(ENV_SUFFIX_DECODING_MAX_SPEC_FACTOR, env_vars)
+        self.assertNotIn(ENV_SUFFIX_DECODING_MIN_TOKEN_PROB, env_vars)
+        self.assertNotIn(ENV_DEFAULT_TEMPERATURE, env_vars)
+        self.assertNotIn(ENV_DEFAULT_TOP_P, env_vars)
+        self.assertNotIn(ENV_DEFAULT_TOP_K, env_vars)
+        self.assertNotIn(ENV_DEFAULT_MAX_NEW_TOKENS, env_vars)
+        self.assertNotIn(ENV_DEFAULT_LOGPROBS, env_vars)
 
     def test_non_streaming_inference(self):
         """Test non-streaming inference invocation"""
