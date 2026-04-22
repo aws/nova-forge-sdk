@@ -399,7 +399,10 @@ def deploy(
 - `unit_count` (int): Number of PT units (Bedrock PT) or instances (SageMaker). Default: 1
 - `execution_role_name` (Optional[str]): IAM role name. If omitted, the SDK creates a default role
 - `sagemaker_instance_type` (str): Instance type for SageMaker deployment. Default: `"ml.p5.48xlarge"`
-- `sagemaker_environment_variables` (Optional[Dict[str, Any]]): Environment variables for SageMaker model configuration
+- `sagemaker_environment_variables` (Optional[Dict[str, Any]]): Environment variables for SageMaker model configuration. Accepted keys:
+  - Required: `CONTEXT_LENGTH`, `MAX_CONCURRENCY`
+  - Optional generation defaults: `DEFAULT_TEMPERATURE`, `DEFAULT_TOP_P`, `DEFAULT_TOP_K`, `DEFAULT_MAX_NEW_TOKENS`, `DEFAULT_LOGPROBS`
+  - Optional speculative decoding: `SPECULATIVE_DECODING_METHOD` (`"eagle3"` or `"suffix"`), `DISABLE_SPECULATIVE_DECODING` (`"true"` or `"false"`), `SUFFIX_DECODING_MAX_TREE_DEPTH`, `SUFFIX_DECODING_MAX_CACHED_REQUESTS`, `SUFFIX_DECODING_MAX_SPEC_FACTOR`, `SUFFIX_DECODING_MIN_TOKEN_PROB`
 - `skip_model_reuse` (bool): If True, always create a new model. Default: False
 
 **Returns:**
@@ -1163,7 +1166,10 @@ def deploy(
 - `job_result` (Optional[TrainingResult]): Training job result object to use for extracting checkpoint path and validating job completion. Also used to retrieve job_id if it's not provided.
 - `execution_role_name` (Optional[str]): IAM role for Bedrock or SageMaker. If provided, used as-is — no policies created or attached. If omitted, the SDK creates and manages a default role with required policies.
 - `sagemaker_instance_type`: Optional EC2 instance type for SageMaker deployment, defaults to ml.p5.48xlarge
-- `sagemaker_environment_variables`: Optional environment variables for model configuration
+- `sagemaker_environment_variables`: Optional environment variables for model configuration. Accepted keys:
+  - Required: `CONTEXT_LENGTH`, `MAX_CONCURRENCY`
+  - Optional generation defaults: `DEFAULT_TEMPERATURE`, `DEFAULT_TOP_P`, `DEFAULT_TOP_K`, `DEFAULT_MAX_NEW_TOKENS`, `DEFAULT_LOGPROBS`
+  - Optional speculative decoding: `SPECULATIVE_DECODING_METHOD` (`"eagle3"` or `"suffix"`), `DISABLE_SPECULATIVE_DECODING` (`"true"` or `"false"`), `SUFFIX_DECODING_MAX_TREE_DEPTH`, `SUFFIX_DECODING_MAX_CACHED_REQUESTS`, `SUFFIX_DECODING_MAX_SPEC_FACTOR`, `SUFFIX_DECODING_MIN_TOKEN_PROB`
 **Returns:**
 - `DeploymentResult`: Contains:
  - `endpoint` (EndpointInfo): Endpoint information
@@ -1369,7 +1375,10 @@ def deploy_to_sagemaker(
 - `model_artifact_path` (Optional[str]): S3 path to model artifacts. Creates a new SM model.
 - `unit_count` (int): Number of instances. Default: 1.
 - `endpoint_name` (Optional[str]): Endpoint name (auto-generated if not provided).
-- `environment_variables` (Optional[Dict]): Model configuration (CONTEXT_LENGTH, MAX_CONCURRENCY, etc.).
+- `environment_variables` (Optional[Dict]): Model configuration. Accepted keys:
+  - Required: `CONTEXT_LENGTH`, `MAX_CONCURRENCY`
+  - Optional generation defaults: `DEFAULT_TEMPERATURE`, `DEFAULT_TOP_P`, `DEFAULT_TOP_K`, `DEFAULT_MAX_NEW_TOKENS`, `DEFAULT_LOGPROBS`
+  - Optional speculative decoding: `SPECULATIVE_DECODING_METHOD` (`"eagle3"` or `"suffix"`), `DISABLE_SPECULATIVE_DECODING` (`"true"` or `"false"`), `SUFFIX_DECODING_MAX_TREE_DEPTH`, `SUFFIX_DECODING_MAX_CACHED_REQUESTS`, `SUFFIX_DECODING_MAX_SPEC_FACTOR`, `SUFFIX_DECODING_MIN_TOKEN_PROB`
 - `execution_role_name` (str): IAM execution role name.
 - `skip_model_reuse` (bool): If True, always create a new model (skip tag-based discovery). Default: False.
 

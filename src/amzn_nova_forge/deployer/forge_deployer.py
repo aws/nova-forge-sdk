@@ -64,6 +64,8 @@ from amzn_nova_forge.util.sagemaker import (
     setup_environment_variables,
 )
 from amzn_nova_forge.validation.endpoint_validator import (
+    ENV_CONTEXT_LENGTH,
+    ENV_MAX_CONCURRENCY,
     SAGEMAKER_ENDPOINT_ARN_REGEX,
     validate_endpoint_arn,
     validate_sagemaker_environment_variables,
@@ -152,8 +154,8 @@ class ForgeDeployer:
             context_length = None
             max_concurrency = None
             if sagemaker_environment_variables:
-                context_length = sagemaker_environment_variables.get("CONTEXT_LENGTH")
-                max_concurrency = sagemaker_environment_variables.get("MAX_CONCURRENCY")
+                context_length = sagemaker_environment_variables.get(ENV_CONTEXT_LENGTH)
+                max_concurrency = sagemaker_environment_variables.get(ENV_MAX_CONCURRENCY)
 
             _validate_sagemaker_instance_type_for_model_deployment(
                 sagemaker_instance_type, self.model, context_length, max_concurrency

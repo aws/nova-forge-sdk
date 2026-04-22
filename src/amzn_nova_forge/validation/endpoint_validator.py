@@ -32,6 +32,28 @@ SAGEMAKER_ENDPOINT_ARN_REGEX = re.compile(
 # Matches SageMaker ARNs across all AWS partitions (standard, GovCloud, China, etc.)
 SAGEMAKER_ARN_RE = re.compile(r"^arn:aws[\w-]*:sagemaker:")
 
+# --- SageMaker inference environment variable keys ---
+# Required
+ENV_CONTEXT_LENGTH = "CONTEXT_LENGTH"
+ENV_MAX_CONCURRENCY = "MAX_CONCURRENCY"
+
+# Optional
+ENV_DEFAULT_TEMPERATURE = "DEFAULT_TEMPERATURE"
+ENV_DEFAULT_TOP_P = "DEFAULT_TOP_P"
+ENV_DEFAULT_TOP_K = "DEFAULT_TOP_K"
+ENV_DEFAULT_MAX_NEW_TOKENS = "DEFAULT_MAX_NEW_TOKENS"
+ENV_DEFAULT_LOGPROBS = "DEFAULT_LOGPROBS"
+
+ENV_SPECULATIVE_DECODING_METHOD = "SPECULATIVE_DECODING_METHOD"
+ENV_DISABLE_SPECULATIVE_DECODING = "DISABLE_SPECULATIVE_DECODING"
+ENV_SUFFIX_DECODING_MAX_TREE_DEPTH = "SUFFIX_DECODING_MAX_TREE_DEPTH"
+ENV_SUFFIX_DECODING_MAX_CACHED_REQUESTS = "SUFFIX_DECODING_MAX_CACHED_REQUESTS"
+ENV_SUFFIX_DECODING_MAX_SPEC_FACTOR = "SUFFIX_DECODING_MAX_SPEC_FACTOR"
+ENV_SUFFIX_DECODING_MIN_TOKEN_PROB = "SUFFIX_DECODING_MIN_TOKEN_PROB"
+
+VALID_SPECULATIVE_DECODING_METHODS = {"eagle3", "suffix"}
+VALID_DISABLE_SPECULATIVE_DECODING_VALUES = {"true", "false"}
+
 
 def is_sagemaker_arn(value: str) -> bool:
     """Return True if value looks like a SageMaker ARN (any partition)."""
@@ -72,6 +94,30 @@ def validate_endpoint_arn(endpoint_arn: str) -> None:
         )
 
 
+def _validate_speculative_decoding_params(env_vars: Dict[str, str]) -> None:
+    """Validate string-valued speculative decoding parameters.
+
+    Args:
+        env_vars: User provided environment variables.
+
+    Raises:
+        ValueError: If a speculative decoding parameter has an invalid value.
+    """
+    method = env_vars.get(ENV_SPECULATIVE_DECODING_METHOD)
+    if method is not None and method not in VALID_SPECULATIVE_DECODING_METHODS:
+        raise ValueError(
+            f"Invalid value for {ENV_SPECULATIVE_DECODING_METHOD}: '{method}'. "
+            f"Must be one of {sorted(VALID_SPECULATIVE_DECODING_METHODS)}"
+        )
+
+    disable = env_vars.get(ENV_DISABLE_SPECULATIVE_DECODING)
+    if disable is not None and disable.lower() not in VALID_DISABLE_SPECULATIVE_DECODING_VALUES:
+        raise ValueError(
+            f"Invalid value for {ENV_DISABLE_SPECULATIVE_DECODING}: '{disable}'. "
+            f"Must be 'true' or 'false'"
+        )
+
+
 def validate_sagemaker_environment_variables(
     env_vars: Dict[str, str],
     model: Optional[Model] = None,
@@ -90,14 +136,20 @@ def validate_sagemaker_environment_variables(
     """
     # Define the list of accepted keys
 
-    required_keys = {"CONTEXT_LENGTH", "MAX_CONCURRENCY"}
+    required_keys = {ENV_CONTEXT_LENGTH, ENV_MAX_CONCURRENCY}
 
     optional_keys = {
-        "DEFAULT_TEMPERATURE",
-        "DEFAULT_TOP_P",
-        "DEFAULT_TOP_K",
-        "DEFAULT_MAX_NEW_TOKENS",
-        "DEFAULT_LOGPROBS",
+        ENV_DEFAULT_TEMPERATURE,
+        ENV_DEFAULT_TOP_P,
+        ENV_DEFAULT_TOP_K,
+        ENV_DEFAULT_MAX_NEW_TOKENS,
+        ENV_DEFAULT_LOGPROBS,
+        ENV_SPECULATIVE_DECODING_METHOD,
+        ENV_DISABLE_SPECULATIVE_DECODING,
+        ENV_SUFFIX_DECODING_MAX_TREE_DEPTH,
+        ENV_SUFFIX_DECODING_MAX_CACHED_REQUESTS,
+        ENV_SUFFIX_DECODING_MAX_SPEC_FACTOR,
+        ENV_SUFFIX_DECODING_MIN_TOKEN_PROB,
     }
 
     accepted_keys = required_keys.union(optional_keys)
@@ -112,34 +164,64 @@ def validate_sagemaker_environment_variables(
     if missing_keys:
         raise ValueError(f"Missing required environment variables: {missing_keys}")
 
+    # Validate string-valued speculative decoding parameters first
+    _validate_speculative_decoding_params(env_vars)
+
+    # Validate numeric parameters
+    numeric_keys = {
+        ENV_CONTEXT_LENGTH,
+        ENV_MAX_CONCURRENCY,
+        ENV_DEFAULT_TEMPERATURE,
+        ENV_DEFAULT_TOP_P,
+        ENV_DEFAULT_TOP_K,
+        ENV_DEFAULT_MAX_NEW_TOKENS,
+        ENV_DEFAULT_LOGPROBS,
+        ENV_SUFFIX_DECODING_MAX_TREE_DEPTH,
+        ENV_SUFFIX_DECODING_MAX_CACHED_REQUESTS,
+        ENV_SUFFIX_DECODING_MAX_SPEC_FACTOR,
+        ENV_SUFFIX_DECODING_MIN_TOKEN_PROB,
+    }
+
     for key, value in env_vars.items():
+        if key not in numeric_keys:
+            continue
+
         try:
             # Convert value to float for validation
             float_value = float(value)
 
             if key in [
-                "CONTEXT_LENGTH",
-                "MAX_CONCURRENCY",
-                "DEFAULT_MAX_NEW_TOKENS",
+                ENV_CONTEXT_LENGTH,
+                ENV_MAX_CONCURRENCY,
+                ENV_DEFAULT_MAX_NEW_TOKENS,
+                ENV_SUFFIX_DECODING_MAX_TREE_DEPTH,
             ]:
                 if float_value <= 0 or not float_value.is_integer():
                     raise ValueError(f"{key} must be a positive integer")
 
-            elif key == "DEFAULT_TOP_K":
+            elif key == ENV_DEFAULT_TOP_K:
                 if float_value <= 0 or not float_value.is_integer():
                     raise ValueError(f"{key} must be an integer greater or equal to 1")
 
-            elif key == "DEFAULT_TEMPERATURE":
+            elif key == ENV_DEFAULT_TEMPERATURE:
                 if float_value < 0 or float_value > 2.0:
                     raise ValueError(f"{key} must be between 0 and 2.0")
 
-            elif key == "DEFAULT_TOP_P":
+            elif key == ENV_DEFAULT_TOP_P:
                 if float_value < 1e-10 or float_value > 1.0:
                     raise ValueError(f"{key} must be between 1e-10 and 1.0")
 
-            elif key == "DEFAULT_LOGPROBS":
+            elif key in [ENV_DEFAULT_LOGPROBS, ENV_SUFFIX_DECODING_MAX_SPEC_FACTOR]:
                 if float_value < 0:
                     raise ValueError(f"{key} must be a non-negative number")
+
+            elif key == ENV_SUFFIX_DECODING_MAX_CACHED_REQUESTS:
+                if float_value < 0 or not float_value.is_integer():
+                    raise ValueError(f"{key} must be a non-negative integer")
+
+            elif key == ENV_SUFFIX_DECODING_MIN_TOKEN_PROB:
+                if float_value < 0 or float_value > 1.0:
+                    raise ValueError(f"{key} must be between 0 and 1.0")
 
         except ValueError as e:
             raise ValueError(f"Invalid value for {key}: {e}")
@@ -162,14 +244,14 @@ def _validate_smi_config_bounds(env_vars: Dict[str, str], model: Model, instance
         return
 
     sorted_tiers = sorted(tiers, key=lambda t: t[0])
-    context_length = float(env_vars["CONTEXT_LENGTH"])
-    max_concurrency = float(env_vars["MAX_CONCURRENCY"])
+    context_length = float(env_vars[ENV_CONTEXT_LENGTH])
+    max_concurrency = float(env_vars[ENV_MAX_CONCURRENCY])
 
     # Find the applicable tier: smallest max_context_length >= user's context_length
     max_supported_context = sorted_tiers[-1][0]
     if context_length > max_supported_context:
         raise ValueError(
-            f"CONTEXT_LENGTH={env_vars['CONTEXT_LENGTH']} exceeds maximum supported value "
+            f"CONTEXT_LENGTH={env_vars[ENV_CONTEXT_LENGTH]} exceeds maximum supported value "
             f"of {max_supported_context} for {model.name} on {instance_type}."
         )
 
@@ -177,9 +259,9 @@ def _validate_smi_config_bounds(env_vars: Dict[str, str], model: Model, instance
         if context_length <= tier_context:
             if max_concurrency > tier_concurrency:
                 raise ValueError(
-                    f"MAX_CONCURRENCY={env_vars['MAX_CONCURRENCY']} exceeds maximum supported value "
+                    f"MAX_CONCURRENCY={env_vars[ENV_MAX_CONCURRENCY]} exceeds maximum supported value "
                     f"of {tier_concurrency} for {model.name} on {instance_type} "
-                    f"at CONTEXT_LENGTH={env_vars['CONTEXT_LENGTH']} (tier <={tier_context})."
+                    f"at CONTEXT_LENGTH={env_vars[ENV_CONTEXT_LENGTH]} (tier <={tier_context})."
                 )
             return
 
