@@ -123,7 +123,7 @@ class InferenceResult(BaseJobResult, ABC):
             with tarfile.open(local_file, "r:gz") as tar:
                 for member in tar.getmembers():
                     if member.name.endswith("inference_output.jsonl"):
-                        tar.extract(member, self._cached_results_dir)
+                        tar.extract(member, self._cached_results_dir, filter="data")
                         break
             return self._cached_results_dir
         except Exception as e:
