@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -45,6 +45,7 @@ from amzn_nova_forge.core.enums import (
 )
 from amzn_nova_forge.core.job_cache import (
     JobCacheContext,
+    JobCachingConfig,
     build_cache_context,
     load_existing_result,
     persist_result,
@@ -86,6 +87,7 @@ __all__ = [
     "Version",
     # job_cache
     "JobCacheContext",
+    "JobCachingConfig",
     "build_cache_context",
     "load_existing_result",
     "persist_result",

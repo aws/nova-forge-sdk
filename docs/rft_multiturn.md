@@ -707,15 +707,7 @@ This method takes no parameters.
 
 **Returns:**
 
-- `dict`: Dictionary mapping queue names to message counts:
-  ```python
-  {
-      "rollout_request": {"visible": 0, "in_flight": 5, "last_receive_timestamp": 1234567890},
-      "rollout_response": {"visible": 10, "in_flight": 0, "last_receive_timestamp": 1234567890},
-      "generate_request": {"visible": 0, "in_flight": 0, "last_receive_timestamp": 1234567890},
-      "generate_response": {"visible": 0, "in_flight": 0, "last_receive_timestamp": 1234567890}
-  }
-  ```
+- `Dict[str, QueueMessageCounts]`: Dictionary mapping queue names to `QueueMessageCounts` objects with attributes: `visible` (int), `in_flight` (int), `last_receive_timestamp` (int).
 
 **Example:**
 
@@ -724,9 +716,9 @@ This method takes no parameters.
 queue_status = rft_infra.check_all_queues()
 for queue_name, counts in queue_status.items():
     print(f"{queue_name}:")
-    print(f"  Visible: {counts['visible']}")
-    print(f"  In-flight: {counts['in_flight']}")
-    print(f"  Last modified: {counts['last_receive_timestamp']}")
+    print(f"  Visible: {counts.visible}")
+    print(f"  In-flight: {counts.in_flight}")
+    print(f"  Last modified: {counts.last_receive_timestamp}")
 ```
 
 ### flush_all_queues() Method

@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -26,6 +26,7 @@ from typing import Dict, List, Optional
 
 import boto3
 import sagemaker
+from pydantic import BaseModel
 
 from amzn_nova_forge.telemetry import Feature, _telemetry_emitter
 from amzn_nova_forge.util.logging import logger
@@ -320,6 +321,14 @@ class StackOutputs:
     dynamo_table_name: str
 
 
+class QueueMessageCounts(BaseModel):
+    """Message counts and metadata for an SQS queue."""
+
+    visible: int
+    in_flight: int
+    last_receive_timestamp: int
+
+
 class BaseRFTInfrastructure:
     """
     Base class for platform-specific RFT infrastructure
@@ -511,7 +520,7 @@ class BaseRFTInfrastructure:
         except Exception as e:
             raise RuntimeError(f"Unexpected error validating starter kit access: {str(e)}") from e
 
-    def check_queue_messages(self, queue_url: str) -> Dict[str, int]:
+    def check_queue_messages(self, queue_url: str) -> QueueMessageCounts:
         """
         Check message counts in SQS queue
         """
@@ -524,11 +533,11 @@ class BaseRFTInfrastructure:
             ],
         )
         attrs = response.get("Attributes", {})
-        return {
-            "visible": int(attrs.get("ApproximateNumberOfMessages", 0)),
-            "in_flight": int(attrs.get("ApproximateNumberOfMessagesNotVisible", 0)),
-            "last_receive_timestamp": int(float(attrs.get("LastModifiedTimestamp", 0))),
-        }
+        return QueueMessageCounts(
+            visible=int(attrs.get("ApproximateNumberOfMessages", 0)),
+            in_flight=int(attrs.get("ApproximateNumberOfMessagesNotVisible", 0)),
+            last_receive_timestamp=int(float(attrs.get("LastModifiedTimestamp", 0))),
+        )
 
     def flush_queue(self, queue_url: str):
         """

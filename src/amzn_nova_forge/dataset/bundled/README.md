@@ -4,7 +4,7 @@ This document describes the filter operations and dependencies included in the `
 
 ## Data Preparation Filters
 
-AGIDataCurator provides three filter operations for text data preparation: `default_text_filter`, `exact_dedup_filter`, and `fuzzy_dedup_filter`.
+AGIDataCurator provides four filter operations for text data preparation: `default_text_filter`, `exact_dedup_filter`, `fuzzy_dedup_filter`, and `language_detection`.
 
 ### Default Text Filter (`default_text_filter`)
 
@@ -32,6 +32,12 @@ The `default_text_filter` operation is a composite filter that runs **7 individu
 |---|--------|-------------|----------|
 | 1 | **Fuzzy Deduplication** | Removes near-duplicate documents using MinHash LSH. Catches paraphrases, minor edits, and boilerplate variants that exact dedup misses. | Similarity threshold `0.8`, `256` permutations, `24`-char n-grams, `4` bands per iteration, seed `42`, lowercase `True` |
 
+### Language Detection Filter (`language_detection`)
+
+| # | Filter | Description | Defaults |
+|---|--------|-------------|----------|
+| 1 | **Language Detection** | Removes documents whose detected language is outside an ISO 639-1 allowlist or below a confidence threshold. Uses FastText's `lid.176` model (~126 MB, MIT-licensed). The output schema matches the input — no extra columns are written. | Allowlist `languages` is required, `min_score` default `0.0`, `keep_undetected` default `False` |
+
 ## Dependency License Audit
 
 
@@ -54,8 +60,11 @@ unzip -p agi_data_curator-1.0.0-py3-none-any.whl '*.dist-info/METADATA' | grep "
 | 8 | loguru | latest | MIT | Permissive | Logging |
 | 9 | fsspec | latest | BSD-3-Clause | Permissive | Filesystem abstraction |
 | 10 | requests | latest | Apache-2.0 | Permissive | HTTP client |
-| 11 | pandas | >=1.3 (runtime extra) | BSD-3-Clause | Permissive | DataFrame library |
-| 12 | pyarrow | >=9.0.0 (runtime extra) | Apache-2.0 | Permissive | Arrow/Parquet I/O used by Ray Data for reading and writing Parquet files |
-| 13 | numpy | >=1.16.6 (runtime extra) | BSD-3-Clause | Permissive | Numerical computing |
+| 11 | Pillow | >=9.0.0 | HPND (MIT-like) | Permissive | Image I/O (used by some curator stages) |
+| 12 | scipy | >=1.10.0 | BSD-3-Clause | Permissive | Scientific computing support for dedup math |
+| 13 | fasttext-wheel | >=0.9.2 | MIT | Permissive | Language identification model runtime (lid.176) |
+| 14 | pandas | >=1.3 (runtime extra) | BSD-3-Clause | Permissive | DataFrame library |
+| 15 | pyarrow | >=9.0.0 (runtime extra) | Apache-2.0 | Permissive | Arrow/Parquet I/O used by Ray Data for reading and writing Parquet files |
+| 16 | numpy | >=1.16.6 (runtime extra) | BSD-3-Clause | Permissive | Numerical computing |
 
-**Summary:** 12 of 13 packages are fully permissive (Apache-2.0, MIT, or BSD-3-Clause). The one exception, tqdm, is dual-licensed MPL-2.0/MIT -- MPL-2.0 is weak copyleft that only requires modifications to MPL-licensed files themselves to be shared, with no obligations on the surrounding codebase.
+**Summary:** 15 of 16 packages are fully permissive (Apache-2.0, MIT, BSD-3-Clause, or HPND). The one exception, tqdm, is dual-licensed MPL-2.0/MIT -- MPL-2.0 is weak copyleft that only requires modifications to MPL-licensed files themselves to be shared, with no obligations on the surrounding codebase.

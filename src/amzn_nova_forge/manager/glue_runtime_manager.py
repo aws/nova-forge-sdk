@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -111,6 +111,23 @@ _GLUE_ENTRY_SCRIPT = textwrap.dedent("""\
             error_msg = metrics.get("error", "unknown error")
             logger.error("Pipeline failed: %s", error_msg)
             raise RuntimeError(f"Pipeline {pipeline_id!r} failed: {error_msg}")
+
+        result = metrics.get("result")
+        if isinstance(result, dict):
+            import boto3 as _boto3
+
+            summary_key = output_path.rstrip("/") + "/_summary.json"
+            _bucket, _key = summary_key[len("s3://"):].split("/", 1)
+            try:
+                _boto3.client("s3").put_object(
+                    Bucket=_bucket,
+                    Key=_key,
+                    Body=json.dumps(result).encode("utf-8"),
+                    ContentType="application/json",
+                )
+                logger.info("Wrote summary to %s", summary_key)
+            except Exception:
+                logger.warning("Failed to write summary to %s", summary_key, exc_info=True)
 
 
     if __name__ == "__main__":
@@ -341,6 +358,19 @@ class GlueRuntimeManager(RuntimeManager):
                 role_arn = role_response["Role"]["Arn"]
                 logger.info("Created IAM role: %s", role_arn)
 
+        # Build --pip-install list: baseline deps + any stage-specific deps
+        # declared by this job. Keep the order stable and deduplicated so
+        # job-config hashes don't flip on every run.
+        _BASELINE_PIP = ["s3fs", "loguru"]
+        extra_pip = list(job_config.extra_pip_packages or [])
+        seen: set[str] = set()
+        ordered_pip: List[str] = []
+        for pkg in _BASELINE_PIP + extra_pip:
+            if pkg not in seen:
+                seen.add(pkg)
+                ordered_pip.append(pkg)
+        pip_install_list = ",".join(ordered_pip)
+
         # Create or update Glue job
         job_params: Dict[str, Any] = {
             "Name": job_name,
@@ -356,7 +386,13 @@ class GlueRuntimeManager(RuntimeManager):
             "NumberOfWorkers": self.num_workers,
             "DefaultArguments": {
                 "--s3-py-modules": self.whl_s3_path,
-                "--pip-install": "s3fs,loguru",
+                # ``--pip-install`` installs PyPI packages on Ray workers
+                # at startup. The baseline deps are used by every curator
+                # pipeline. Stage-specific deps (e.g. ``fasttext-wheel``
+                # for language detection) come from
+                # ``job_config.extra_pip_packages`` and are appended per
+                # run below, so unrelated jobs don't pay the install cost.
+                "--pip-install": pip_install_list,
             },
         }
         try:

@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,7 +35,7 @@ class OperationResult:
     """Common result returned by all dataset operations."""
 
     status: str
-    output_state: Optional["DataState"] = None
+    output_state: Optional["DataState"]
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize to a plain dict (mirrors the legacy return format)."""
@@ -44,15 +44,24 @@ class OperationResult:
 
 @dataclass
 class FilterOperationResult(OperationResult):
-    """Result for local filter operations (e.g. invalid-records filter).
+    """Result for filter operations.
 
-    Inherits ``status`` from ``OperationResult``; callers must supply it
-    (e.g. ``"SUCCEEDED"`` or ``"SKIPPED"``).
+    Inherits ``status`` and ``output_state`` from ``OperationResult``.
+
+    All filter operations must populate ``filtered_count`` and
+    ``total_count``.
     """
 
-    filtered_count: int = 0
-    total_count: int = 0
+    filtered_count: int
+    total_count: int
     filters_applied: List[str] = field(default_factory=list)
+
+    def __str__(self) -> str:
+        """Human-readable one-line summary for logging."""
+        if self.total_count > 0:
+            kept = self.total_count - self.filtered_count
+            return f"{self.total_count} records → {kept} kept, {self.filtered_count} dropped"
+        return "counts unknown"
 
 
 class BaseOperation(ABC):

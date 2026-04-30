@@ -11,9 +11,10 @@ This guide walks through the data preparation workflow using the Nova Forge SDK'
 | Theme | Operator | Purpose | Supported Runtimes |
 |---|---|---|---|
 | Load | `loader.load(path)` | Ingest data from JSONL, JSON, CSV, Parquet, or Arrow (local or S3) | Local |
-| Filter | `loader.filter(method=FilterMethod.DEFAULT_TEXT_FILTER)` | Remove records with excessive URL content (web-scraped boilerplate) | AWS Glue |
-| Filter | `loader.filter(method=FilterMethod.EXACT_DEDUP)` | Remove exact duplicate records by content hash | AWS Glue |
-| Filter | `loader.filter(method=FilterMethod.FUZZY_DEDUP)` | Remove near-duplicates via MinHash LSH similarity | AWS Glue |
+| Filter | `loader.filter(method=FilterMethod.DEFAULT_TEXT_FILTER)` | Remove records with excessive URL content (web-scraped boilerplate) | SMTJ (default), AWS Glue (legacy) |
+| Filter | `loader.filter(method=FilterMethod.EXACT_DEDUP)` | Remove exact duplicate records by content hash | SMTJ (default), AWS Glue (legacy) |
+| Filter | `loader.filter(method=FilterMethod.FUZZY_DEDUP)` | Remove near-duplicates via MinHash LSH similarity | SMTJ (default), AWS Glue (legacy) |
+| Filter | `loader.filter(method=FilterMethod.LANGUAGE_DETECTION)` | Detect/filter records by language using FastText lid.176 | SMTJ (default), AWS Glue (legacy) |
 | Filter | `loader.filter(method=FilterMethod.INVALID_RECORDS)` | Remove records failing schema/format checks for the target training method | Local |
 | Transform | `loader.transform(method=TransformMethod.SCHEMA)` | Convert raw data into the schema required by a training method and model | Local |
 | Validate | `loader.validate(method=ValidateMethod.INVALID_RECORDS)` | Check dataset conforms to training requirements (raises on failure) | Local |
@@ -68,7 +69,53 @@ Each method returns the loader, so chaining (`loader.load(...).filter(...).trans
 
 ### Runtime Managers
 
-Filter operations that run on AWS Glue require a runtime manager. The SDK provides `GlueRuntimeManager` for this purpose — it handles job submission, polling, and artifact staging.
+Distributed filter operations (`DEFAULT_TEXT_FILTER`, `EXACT_DEDUP`, `FUZZY_DEDUP`, `LANGUAGE_DETECTION`) require a runtime manager that handles remote job submission, polling, and artifact staging. The SDK supports two runtimes:
+
+| Runtime | Status | When to use |
+|---|---|---|
+| **SMTJ** (`SMTJRuntimeManager`) | ✅ Default | New pipelines. Strategic runtime going forward, with GPU support. Used automatically when no `runtime_manager` is passed to `filter()`. |
+| **Glue** (`GlueRuntimeManager`) | ⚠️ Legacy — closed to new customers after **April 30, 2026** | Existing pipelines only. AWS Glue stops onboarding new Ray customers after **April 30, 2026** — new pipelines should use SMTJ. Existing Glue pipelines continue to work. |
+
+> **⚠️ Glue for Ray closed to new customers — April 30, 2026:** AWS Glue will stop onboarding **new** Ray customers after **April 30, 2026**. Existing Glue-on-Ray pipelines continue to work, but new pipelines should use `SMTJRuntimeManager` (the default).
+
+#### SMTJ (default)
+
+`SMTJRuntimeManager` runs data prep on a SageMaker Training Job with a Ray cluster. Construct the manager and pass it to `loader.filter(...)` — filter operations automatically call `set_mode(SMTJRuntimeMode.DATA_PREP)` on the manager, which delegates `execute()` and `cleanup()` to an internal data-prep runtime.
+
+```python
+from amzn_nova_forge.manager import SMTJRuntimeManager
+
+manager = SMTJRuntimeManager(
+    instance_type="ml.m5.2xlarge",
+    instance_count=1,
+    region="us-east-1",
+    execution_role="SmtjDataPrepExecutionRole",  # optional — SDK auto-creates if omitted
+)
+
+# filter() internally calls manager.set_mode(SMTJRuntimeMode.DATA_PREP); you
+# do not need to call it yourself. If you want to execute a data-prep job
+# outside of loader.filter(), call set_mode explicitly first.
+```
+
+| Parameter | Default | Description |
+|---|---|---|
+| `instance_type` | — | EC2 instance type (e.g. `ml.m5.2xlarge`). |
+| `instance_count` | — | Number of instances. |
+| `execution_role` | Auto-resolved | IAM role the training job assumes. Auto-created on first use if it doesn't exist. |
+| `max_job_runtime` | `3600` (data-prep), `86400` (training) | Maximum runtime in seconds. Default varies by mode — data-prep jobs get the 1-hour default unless overridden. |
+| `image_uri` | AWS-managed PyTorch DLC | Docker image for the data-prep container. |
+| `poll_interval` | `30` | Seconds between status polls. |
+| `max_wait_time` | `3600` | Maximum seconds to wait for job completion. |
+| `s3_artifact_bucket` | Auto-created | Bucket for job artifacts (auto-creates `sagemaker-forge-dataprep-{account_id}-{region}`). |
+| `s3_artifact_prefix` | `nova-forge/smtj-dataprep-artifacts` | S3 key prefix for artifacts. |
+| `volume_size_gb` | SDK default | EBS volume size for the training job. |
+| `keep_alive_seconds` | `0` | Warm-pool keep-alive period. |
+| `region` | Session region | AWS region. |
+| `kms_key_id` | `None` | Optional KMS key for encryption. |
+
+#### Glue (legacy — closed to new customers after April 30, 2026)
+
+`GlueRuntimeManager` runs filter operations on AWS Glue for Ray. AWS Glue stops onboarding **new** Ray customers after **April 30, 2026** — existing Glue-on-Ray pipelines continue to work, but new pipelines should use SMTJ.
 
 ```python
 from amzn_nova_forge.manager import GlueRuntimeManager
@@ -93,30 +140,36 @@ manager = GlueRuntimeManager(
 | `max_wait_time` | `3600` | Maximum seconds to wait for job completion |
 | `kms_key_id` | `None` | Optional KMS key for S3 encryption |
 
-If you don't pass a `runtime_manager` to `filter()`, the SDK creates one from any Glue-specific kwargs on that call (e.g. `num_workers=8`). You can also share a single manager across multiple filter steps.
+If you don't pass a `runtime_manager` to `filter()`, the SDK creates one from runtime-specific kwargs on that call. You can also share a single manager across multiple filter steps.
 
 ### IAM Permissions
 
 Two sets of permissions are involved:
 
 1. **Your local credentials** (the caller invoking the SDK) need permission to:
-   - Start and monitor Glue jobs (`glue:StartJobRun`, `glue:GetJobRun`, `glue:CreateJob`)
-   - Create the artifact S3 bucket if it doesn't exist (`s3:CreateBucket`)
-   - Upload scripts/wheels to the artifact bucket (`s3:PutObject`)
-   - Download filtered results back to local (`s3:GetObject`, `s3:ListBucket`)
+   - For SMTJ: start and monitor training jobs (`sagemaker:CreateTrainingJob`, `sagemaker:DescribeTrainingJob`, `sagemaker:StopTrainingJob`) and `iam:PassRole` on the execution role.
+   - For Glue: start and monitor Glue jobs (`glue:StartJobRun`, `glue:GetJobRun`, `glue:CreateJob`).
+   - Create the artifact S3 bucket if it doesn't exist (`s3:CreateBucket`).
+   - Upload scripts/wheels to the artifact bucket (`s3:PutObject`).
+   - Download filtered results back to local (`s3:GetObject`, `s3:ListBucket`).
 
-2. **The Glue execution role** (`glue_role_name`) needs the policies defined in [`src/amzn_nova_forge/iam/glue_policies.json`](../src/amzn_nova_forge/iam/glue_policies.json):
-   - `trust_policy` — allows `glue.amazonaws.com` to assume the role
-   - `glue_base_policy` — Glue job execution (`GetJob`, `GetJobRun`, `StartJobRun`, `BatchStopJobRun`)
-   - `glue_s3_policy` — read/write data (`s3:GetObject`, `s3:PutObject`, `s3:ListBucket`)
-   - `glue_logs_policy` — CloudWatch Logs for job output
+2. **The execution role** assumed by the remote job needs runtime-specific policies:
+
+   - **SMTJ** — trust `sagemaker.amazonaws.com`; S3 read/write on the data and artifact buckets; ECR pull for the PyTorch DLC image (`ecr:GetAuthorizationToken`, `ecr:BatchGetImage`, etc.); CloudWatch Logs on `/aws/sagemaker/TrainingJobs*`. See `samples/dataprep_quickstart.ipynb` Step 3a for an end-to-end role-creation example.
+   - **Glue** — policies defined in [`src/amzn_nova_forge/iam/glue_policies.json`](../src/amzn_nova_forge/iam/glue_policies.json):
+     - `trust_policy` — allows `glue.amazonaws.com` to assume the role
+     - `glue_base_policy` — Glue job execution (`GetJob`, `GetJobRun`, `StartJobRun`, `BatchStopJobRun`)
+     - `glue_s3_policy` — read/write data (`s3:GetObject`, `s3:PutObject`, `s3:ListBucket`)
+     - `glue_logs_policy` — CloudWatch Logs for job output
+
+If the SDK's calling principal has `iam:CreateRole` / `iam:PutRolePolicy`, the execution role is auto-created on first use — no upfront setup required. Manual role creation is only needed when those permissions aren't available or when you want to customize the role.
 
 ### S3 Buckets and Output Path Resolution
 
 When running filter operations, the SDK needs S3 paths for intermediate and final outputs:
 
 - **Artifact bucket** — If `s3_artifact_bucket` is not provided, the SDK auto-creates `sagemaker-forge-dataprep-{account_id}-{region}` to store Glue scripts and wheels. No KMS encryption is applied to this default bucket.
-- **Output paths** — If `output_path` is not provided on a filter step, the SDK auto-derives it from the load path using the pattern `<parent>/<input_stem>/<session_id>/<method>/`, where `session_id` is a UTC timestamp. This keeps outputs grouped in a predictable session tree and prevents overwrites across repeated runs. For example, loading from `s3://my-bucket/data/corpus.jsonl` and running `DEFAULT_TEXT_FILTER` produces output at `s3://my-bucket/data/corpus/2026-04-20_14-30-00/default_text_filter/`.
+- **Output paths** — If `output_path` is not provided on a filter step, the SDK auto-derives it from the load path using the pattern `<parent>/<input_stem>/<session_id>/<method>_output/`, where `session_id` is a UTC timestamp. This keeps outputs grouped in a predictable session tree and prevents overwrites across repeated runs. For example, loading from `s3://my-bucket/data/corpus.jsonl` and running `DEFAULT_TEXT_FILTER` produces output at `s3://my-bucket/data/corpus/2026-04-20_14-30-00/default_text_filter_output/`.
 - **Input detection** — When filters are chained, each step automatically uses the previous step's output as its input. Local files are uploaded to S3 automatically before the first Glue filter runs.
 
 ---
@@ -341,15 +394,18 @@ loader.validate(
 - Forbidden keywords in content
 - Image/video file size limits
 - Image/video count limits per message
+- image/video/document formats
+- Image dimension limits (requires `pymediainfo`)
 - Video duration limit (requires `pymediainfo`)
 
 > **Note:** Row-count checks (e.g. Bedrock min/max sample bounds, dataset size ≥ `global_batch_size`) are enforced only during `train()`, not on the `loader.validate()` path.
 
-**Video duration validation** requires the optional `pymediainfo` dependency as well as the `libmediainfo` package:
+**Image/Video validation** requires the optional `pymediainfo` dependency as well as the `libmediainfo` package:
 
-1. Install `pymediainfo` from PyPi
+1. Install `pymediainfo` from PyPi through either command
 
 ```bash
+pip install amzn-nova-forge[image]
 pip install amzn-nova-forge[video]
 ```
 
@@ -407,7 +463,7 @@ Removes records with excessive URL content. Useful for cleaning web-scraped data
 | 7 | **Average Line Length** | Removes documents with abnormal average line lengths (e.g., word-per-line dumps or minified code). | Min avg `10` chars/line, no max, requires `2` lines |
 
 - **Input:** Raw text data with a flat text field
-- **Runs on:** AWS Glue
+- **Runs on:** SMTJ (default) or AWS Glue (legacy — closed to new customers after April 30, 2026)
 
 ```python
 loader.filter(method=FilterMethod.DEFAULT_TEXT_FILTER, text_field="text")
@@ -420,7 +476,7 @@ loader.filter(method=FilterMethod.DEFAULT_TEXT_FILTER, text_field="text")
 Removes exact duplicate records by content hash, keeping only unique entries.
 
 - **Input:** Raw text data with a flat text field
-- **Runs on:** AWS Glue
+- **Runs on:** SMTJ (default) or AWS Glue (legacy — closed to new customers after April 30, 2026)
 
 ```python
 loader.filter(method=FilterMethod.EXACT_DEDUP, text_field="text")
@@ -433,7 +489,7 @@ loader.filter(method=FilterMethod.EXACT_DEDUP, text_field="text")
 Removes near-duplicate records using MinHash LSH similarity. Catches paraphrases, minor edits, and boilerplate variants that exact dedup misses.
 
 - **Input:** Raw text data with a flat text field
-- **Runs on:** AWS Glue
+- **Runs on:** SMTJ (default) or AWS Glue (legacy — closed to new customers after April 30, 2026)
 
 ```python
 loader.filter(method=FilterMethod.FUZZY_DEDUP, text_field="text", threshold=0.8)
@@ -451,6 +507,41 @@ loader.filter(method=FilterMethod.FUZZY_DEDUP, text_field="text", threshold=0.8)
 | `rows_per_band` | `int` | Auto | Rows per LSH band (auto-computed from `threshold`). |
 | `bands_per_iteration` | `int` | `4` | Bands per memory pass. Higher = faster but more memory. |
 | `lowercase` | `bool` | `True` | Lowercase text before comparison. |
+
+---
+
+### `FilterMethod.LANGUAGE_DETECTION`
+
+Filters records by detected language using FastText's `lid.176` model. Keeps only rows whose detected language is in the `languages` allowlist and (optionally) whose confidence is at or above `min_score`.
+
+- **Input:** Raw text data with a flat text field
+- **Runs on:** SMTJ (default) or AWS Glue (legacy — closed to new customers after April 30, 2026)
+- **Output:** Same schema as the input. Rows outside the allowlist or below the score threshold are dropped; no additional columns are written.
+
+**Example** — keep only English and French records with confidence ≥ 0.5 (SDK auto-stages the default model):
+
+```python
+loader.filter(
+    method=FilterMethod.LANGUAGE_DETECTION,
+    text_field="text",
+    languages=["en", "fr"],
+    min_score=0.5,
+    keep_undetected=False,
+)
+```
+
+**Language detection parameters (method-specific):**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `languages` | `list[str]` | required | Non-empty ISO 639-1 allowlist (e.g. `["en", "fr"]`). |
+| `model_path` | `str` | auto | Optional path to a FastText lid model (local path or `s3://` URI). When omitted, the SDK auto-stages `lid.176.bin` (~126 MB, MIT-licensed) from Meta's public copy into `s3://<dataprep-bucket>/nova-forge/models/language_detection/` on first use and reuses the cached copy on subsequent runs. Pass explicitly to pin a specific model (air-gapped accounts, custom training, etc.). |
+| `min_score` | `float` | `0.0` | Minimum confidence threshold in [0.0, 1.0]. `0.0` disables score filtering. |
+| `keep_undetected` | `bool` | `False` | Keep rows where detection failed (empty text, etc.). |
+
+Shared parameters (`text_field`, `input_format`, `output_format`, `runtime_manager`, `extra_args`) apply here too — see [Shared Parameters for Text Filters](#shared-parameters-for-text-filters) below.
+
+Runs on CPU, no GPU required.
 
 ---
 
@@ -483,7 +574,7 @@ loader.filter(
 
 | Check | Threshold |
 |---|---|
-| Reserved keywords (`System:`, `USER:`, `Bot:`, `[EOS]`, `<image>`, etc.) | SFT methods only |
+| Reserved keywords (`System:`, `USER:`, `Bot:`, `[EOS]`, `<image>`, etc.) — case-sensitive | SFT methods only |
 | Maximum images per message | 10 |
 | Maximum image file size | 10 MB |
 | Maximum videos per message | 1 |
@@ -503,23 +594,23 @@ These apply to `DEFAULT_TEXT_FILTER`, `EXACT_DEDUP`, and `FUZZY_DEDUP`:
 | `output_format` | `str` | `"parquet"` | `"parquet"` or `"jsonl"` |
 | `text_field` | `str` | `"text"` | Column name containing the text to process. |
 | `extra_args` | `dict` | `None` | Additional kwargs (e.g. `{"max_url_to_text_ratio": 0.3}`). |
-| `runtime_manager` | `RuntimeManager` | `None` | Runtime to execute on. Defaults to `GlueRuntimeManager`. |
+| `runtime_manager` | `RuntimeManager` | `None` | Runtime to execute on. Defaults to an `SMTJRuntimeManager` that is flipped into data-prep mode automatically. Pass a `GlueRuntimeManager` to use the legacy runtime. |
 
 ### Scaling Text Filters
 
-Each text filter can use a different runtime manager for independent scaling:
+Each text filter can use a different runtime manager for independent scaling. Mix and match if you're migrating incrementally:
 
 ```python
-from amzn_nova_forge.manager import GlueRuntimeManager
+from amzn_nova_forge.manager import SMTJRuntimeManager
 
-text_mgr = GlueRuntimeManager(num_workers=2)
-dedup_mgr = GlueRuntimeManager(num_workers=8)
+text_mgr = SMTJRuntimeManager(instance_type="ml.m5.2xlarge", instance_count=1)
+dedup_mgr = SMTJRuntimeManager(instance_type="ml.m5.4xlarge", instance_count=2)
 
 loader.filter(method=FilterMethod.DEFAULT_TEXT_FILTER, text_field="text", runtime_manager=text_mgr)
 loader.filter(method=FilterMethod.EXACT_DEDUP, text_field="text", runtime_manager=dedup_mgr)
 ```
 
-If no `runtime_manager` is passed, the SDK creates one from Glue-specific kwargs on that call (e.g. `num_workers=8`).
+If no `runtime_manager` is passed, the SDK creates a default `SMTJRuntimeManager` (flipped into data-prep mode automatically) using any runtime-specific kwargs on that call.
 
 > **Note:** `runtime_manager` is not auto-chained between filters — pass it explicitly to each step.
 

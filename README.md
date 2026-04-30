@@ -33,7 +33,7 @@ Nova Forge SDK is tested on:
 * Python 3.12
 
 ### IAM Roles/Policies
-* You will need an IAM role with sufficient permissions in order to use the Nova Forge SDK. You can find a list of these permissions in the `docs/iam_setup.md` file. 
+* You will need an IAM role with sufficient permissions in order to use the Nova Forge SDK. You can find a list of these permissions in the `docs/iam_setup.md` file.
 
 ### Instances
 
@@ -167,6 +167,69 @@ The Nova Forge SDK is organized into the following modules:
 * For RFT Multiturn documentation: See [`docs/rft_multiturn.md`](docs/rft_multiturn.md)
 * For RFT Multiturn examples: See [`samples/rft_multiturn_quickstart.ipynb`](samples/rft_multiturn_quickstart.ipynb)
 
+### Service Classes (Recommended)
+
+As of v1.4.0, the SDK provides modular service classes that replace `NovaModelCustomizer`. We recommend using these for all new work:
+
+| Class | Purpose |
+|-------|---------|
+| `ForgeTrainer` | Training jobs (SFT, CPT, DPO, RFT) |
+| `ForgeEvaluator` | Evaluation jobs (MMLU, GEN_QA, LLM_JUDGE, etc.) |
+| `ForgeDeployer` | Deploy to SageMaker or Bedrock |
+| `ForgeInference` | Real-time and batch inference |
+
+Each class takes its own configuration in the constructor. Shared settings like `output_s3_path` and `mlflow_monitor` are passed via a `ForgeConfig` object.
+
+**Example — Train and Deploy with Service Classes:**
+
+```python
+from amzn_nova_forge import (
+    ForgeTrainer, ForgeEvaluator, ForgeDeployer, ForgeInference,
+    ForgeConfig, Model, TrainingMethod, DeployPlatform,
+    SMTJRuntimeManager,
+)
+
+# Configure infrastructure
+runtime = SMTJRuntimeManager(
+    instance_type="ml.p5.48xlarge",
+    instance_count=4,
+)
+
+# Train
+trainer = ForgeTrainer(
+    model=Model.NOVA_LITE_2,
+    method=TrainingMethod.SFT_LORA,
+    infra=runtime,
+    training_data_s3_path="s3://bucket/train.jsonl",
+    config=ForgeConfig(output_s3_path="s3://bucket/output"),
+)
+training_result = trainer.train(job_name="my-sft-job")
+
+# Deploy
+deployer = ForgeDeployer(model=Model.NOVA_LITE_2)
+deployment_result = deployer.deploy(
+    model_artifact_path=training_result.model_artifacts.checkpoint_s3_path,
+    deploy_platform=DeployPlatform.SAGEMAKER,
+    unit_count=1,
+    endpoint_name="my-nova-endpoint",
+)
+
+# Invoke
+inference = ForgeInference()
+result = inference.invoke(
+    endpoint_arn=deployment_result.endpoint.endpoint_arn,
+    request_body={
+        "messages": [{"role": "user", "content": "Hello!"}],
+        "max_tokens": 100,
+    },
+)
+result.show()
+```
+
+For the equivalent workflow using the legacy `NovaModelCustomizer`, see the [Model Module](#model-module-deprecated) section below.
+
+For detailed API documentation on all service classes, see [`docs/spec.md`](docs/spec.md).
+
 ### Dataset Module
 Handles data loading, transformation, validation, filtering, and persistence for training datasets. Supports JSONL, JSON, CSV, Parquet, and Arrow formats from local files or S3.
 
@@ -213,7 +276,10 @@ result = manager.scale_cluster(
 ```
 For more cluster scaling documentation, see [`docs/spec.md`](docs/spec.md).
 
-### Model Module
+### Model Module (Deprecated)
+
+> ⚠️ `NovaModelCustomizer` is deprecated as of v1.4.0 and will be removed in a future version. It remains fully functional, but we recommend using the modular [Service Classes](#service-classes-recommended) (`ForgeTrainer`, `ForgeEvaluator`, `ForgeDeployer`, `ForgeInference`) for all new work.
+
 Provides the main SDK entrypoint for orchestrating model customization workflows.
 
 **Main Methods:**
@@ -278,29 +344,29 @@ This is done by progressively running fine-tuning jobs on the output checkpoint 
 
 ``` python
 # Stage 1: Initial training on base model
-stage1_customizer = NovaModelCustomizer(
+stage1_trainer = ForgeTrainer(
     model=Model.NOVA_LITE,
     method=TrainingMethod.SFT_LORA,
     infra=infra,
-    data_s3_path="s3://bucket/stage1-data.jsonl",
-    output_s3_path="s3://bucket/stage1-output"
+    training_data_s3_path="s3://bucket/stage1-data.jsonl",
+    config=ForgeConfig(output_s3_path="s3://bucket/stage1-output"),
 )
 
-stage1_result = stage1_customizer.train(job_name="stage1-training")
+stage1_result = stage1_trainer.train(job_name="stage1-training")
 # Wait for completion...
 stage1_checkpoint = stage1_result.model_artifacts.checkpoint_s3_path
 
 # Stage 2: Continue training from Stage 1 checkpoint
-stage2_customizer = NovaModelCustomizer(
+stage2_trainer = ForgeTrainer(
     model=Model.NOVA_LITE,
     method=TrainingMethod.SFT_LORA,
     infra=infra,
-    data_s3_path="s3://bucket/stage2-data.jsonl",
-    output_s3_path="s3://bucket/stage2-output",
-    model_path=stage1_checkpoint  # Use previous checkpoint
+    training_data_s3_path="s3://bucket/stage2-data.jsonl",
+    model_s3_path=stage1_checkpoint,  # Use previous checkpoint
+    config=ForgeConfig(output_s3_path="s3://bucket/stage2-output"),
 )
 
-stage2_result = stage2_customizer.train(job_name="stage2-training")
+stage2_result = stage2_trainer.train(job_name="stage2-training")
 ```
 
 **Note:** Iterative fine-tuning requires using the same model and training method (LoRA vs Full-Rank) across all stages.
@@ -315,14 +381,14 @@ This feature is useful whenever you want to test or validate inputs and still ha
 
 ``` python
 # Training dry run
-customizer.train(
+trainer.train(
     job_name="train_dry_run",
     dry_run=True,
     ...
 )
 
 # Evaluation dry run
-customizer.evaluate(
+evaluator.evaluate(
     job_name="evaluate_dry_run",
     dry_run=True,
     ...
@@ -342,24 +408,24 @@ Data mixing allows you to blend your custom training data with Nova's high-quali
 
 ```python
 # Initialize with data mixing enabled
-customizer = NovaModelCustomizer(
+trainer = ForgeTrainer(
     model=Model.NOVA_LITE_2,
     method=TrainingMethod.SFT_LORA,
     infra=SMHPRuntimeManager(...),  # Must use HyperPod
-    data_s3_path="s3://bucket/data.jsonl",
-    output_s3_path="s3://bucket/output",  # Optional
-    data_mixing_enabled=True
+    training_data_s3_path="s3://bucket/data.jsonl",
+    data_mixing_enabled=True,
+    config=ForgeConfig(output_s3_path="s3://bucket/output"),
 )
 
 # Configure data mixing percentages
-customizer.set_data_mixing_config({
+trainer.data_mixing.set_config({
     "customer_data_percent": 50,  # 50% your data
     "nova_code_percent": 30,      # 30% Nova code data (30% of Nova's 50%)
     "nova_general_percent": 70    # 70% Nova general data (70% of Nova's 50%)
 })
 
 # Or use 100% customer data (no Nova mixing)
-customizer.set_data_mixing_config({
+trainer.data_mixing.set_config({
     "customer_data_percent": 100,
     "nova_code_percent": 0,
     "nova_general_percent": 0
@@ -458,6 +524,45 @@ The SDK requires specific IAM permissions. Review the [IAM](#iam-rolespolicies) 
 * Grant only the minimum permissions needed for your use case
 * Use condition statements to restrict resource access
 * Regularly review and rotate access keys
+
+**Verifying Your IAM Setup**
+
+The SDK automatically validates your IAM permissions before every `train()`, `evaluate()`, and `batch_inference()` call. If your role is missing required permissions, the SDK will report the specific missing permissions before attempting to start a job.
+
+If you want to verify your setup without starting a job, use `dry_run=True`. This runs the full validation (IAM permissions, recipe, infrastructure) and reports any issues, but does not submit a job:
+
+```python
+trainer = ForgeTrainer(
+    model=Model.NOVA_LITE_2,
+    method=TrainingMethod.SFT_LORA,
+    infra=SMTJRuntimeManager(instance_type="ml.p5.48xlarge", instance_count=4),
+    training_data_s3_path="s3://bucket/train.jsonl",
+    config=ForgeConfig(output_s3_path="s3://bucket/output"),
+)
+
+# Validate everything without starting a job
+trainer.train(job_name="verify-setup", dry_run=True)
+```
+
+The validation checks include:
+- **Calling role permissions** — verifies your current role has the IAM actions needed for the chosen platform (e.g., `sagemaker:CreateTrainingJob` for SMTJ, `bedrock:CreateModelCustomizationJob` for Bedrock) using `iam:SimulatePrincipalPolicy` and policy inspection.
+- **Execution role** (SMTJ/SMTJServerless) — confirms the execution role exists, trusts `sagemaker.amazonaws.com`, and has the required S3 permissions (`s3:GetObject`, `s3:PutObject`, `s3:ListBucket`).
+- **Cluster access** (SMHP) — verifies the HyperPod cluster exists and your role can describe it.
+
+The IAM validation requires `iam:SimulatePrincipalPolicy` and policy-read permissions (e.g., `iam:GetRole`, `iam:ListRolePolicies`, `iam:ListAttachedRolePolicies`) on your calling role. If your role lacks these actions, the validation will fail with an error rather than silently skipping the checks. 
+
+You can disable the IAM validation check and rely on the AWS service to report permission errors at job submission time:
+
+```python
+from amzn_nova_forge.core import ValidationConfig
+
+trainer = ForgeTrainer(
+    ...
+    config=ForgeConfig(
+        validation_config=ValidationConfig(iam=False),
+    ),
+)
+```
 
 ### 2. Credential Management
 

@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -59,13 +59,15 @@ FILTER_CHECKS = [c for c in DATASET_CHECKS if c.get("filterable")]
 
 
 def _get_applicable_checks(
-    training_method: TrainingMethod, platform: Platform
+    training_method: TrainingMethod, platform: Platform, model: Model
 ) -> List[DatasetCheckEntry]:
     """Return checks from config that apply to the given training method and platform."""
     return [
         check
         for check in FILTER_CHECKS
-        if training_method in check["training_methods"] and platform in check["platforms"]
+        if training_method in check["applicable_training_methods"]
+        and platform in check["applicable_platforms"]
+        and model in check["applicable_models"]
     ]
 
 
@@ -150,7 +152,7 @@ class InvalidRecordsFilterOperation(NovaForgeFilterOperationBase):
         if platform is None:
             raise ValueError("platform is required for InvalidRecordsFilterOperation")
 
-        checks = _get_applicable_checks(training_method, platform)
+        checks = _get_applicable_checks(training_method, platform, nova_model)
 
         check_names: list[str] = []
 
@@ -163,7 +165,9 @@ class InvalidRecordsFilterOperation(NovaForgeFilterOperationBase):
             # Build supported list from all filterable checks (including those
             # covered by schema) so the error message is informative.
             all_filterable = [c for c in DATASET_CHECKS if c.get("filterable")]
-            supported = sorted({m.value for c in all_filterable for m in c["training_methods"]})
+            supported = sorted(
+                {m.value for c in all_filterable for m in c["applicable_training_methods"]}
+            )
             raise ValueError(
                 f"INVALID_RECORDS filter does not support training method "
                 f"'{training_method.value}'. Supported methods: {supported}."
@@ -173,32 +177,48 @@ class InvalidRecordsFilterOperation(NovaForgeFilterOperationBase):
         self._log_start(manager, "in-memory", "dict", "in-memory")
 
         original_dataset_fn = loader.dataset
-        total_count = 0
-        filtered_count = 0
-        kept = []
 
-        s3_client = boto3.client("s3")
-        for sample in original_dataset_fn():
-            total_count += 1
-            if pydantic_model is not None and _sample_fails_schema(
-                sample, pydantic_model, nova_model, s3_client
-            ):
-                filtered_count += 1
-                logger.debug("Filtered sample %d (schema validation)", total_count)
-            else:
-                kept.append(sample)
+        # Shared mutable result — the generator closure updates counts as
+        # records stream through, matching the lazy pattern used by
+        # SchemaTransformOperation._wire_transform_generator.
+        result = FilterOperationResult(
+            status="SUCCEEDED",
+            output_state=None,
+            filtered_count=0,
+            total_count=0,
+            filters_applied=check_names,
+        )
 
-        self._log_complete("in-memory", filtered_count=filtered_count, total_count=total_count)
+        filter_op = self
 
-        if total_count > 0 and filtered_count == total_count:
-            logger.warning(
-                "All %d samples were filtered out. If you loaded pre-transformed "
-                "data, verify it is in the expected schema format. Otherwise, "
-                "call transform() before filter(method=FilterMethod.INVALID_RECORDS).",
-                total_count,
-            )
+        def filter_generator(
+            captured_dataset=original_dataset_fn,
+            captured_pydantic_model=pydantic_model,
+            captured_nova_model=nova_model,
+            captured_result=result,
+            captured_filter_op=filter_op,
+        ):
+            # Reset counts so repeated consumption is idempotent.
+            captured_result.total_count = 0
+            captured_result.filtered_count = 0
 
-        loader.dataset = lambda: iter(kept)
+            s3_client = boto3.client("s3")
+            for sample in captured_dataset():
+                captured_result.total_count += 1
+                if captured_pydantic_model is not None and _sample_fails_schema(
+                    sample, captured_pydantic_model, captured_nova_model, s3_client
+                ):
+                    captured_result.filtered_count += 1
+                    logger.debug(
+                        "Filtered sample %d (schema validation)",
+                        captured_result.total_count,
+                    )
+                else:
+                    yield sample
+
+            captured_filter_op._log_complete("in-memory", captured_result)
+
+        loader.dataset = filter_generator
 
         local_state = DataState(
             path=state.path if state else "",
@@ -206,11 +226,6 @@ class InvalidRecordsFilterOperation(NovaForgeFilterOperationBase):
             location=DataLocation.LOCAL,
             generator=loader.dataset,
         )
+        result.output_state = local_state
 
-        return FilterOperationResult(
-            status="SUCCEEDED",
-            output_state=local_state,
-            filtered_count=filtered_count,
-            total_count=total_count,
-            filters_applied=check_names,
-        )
+        return result

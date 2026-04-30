@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,11 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import enum
 import io
 import json
 import os
 import re
 import subprocess
+import textwrap
 import time
 import zipfile
 from dataclasses import dataclass, field
@@ -71,6 +73,42 @@ _METHOD_TO_SERVERLESS_CONFIG: Dict[TrainingMethod, tuple[str, Optional[str]]] = 
     # TrainingMethod.RFT_FULL: ("RLVR", None),  # TODO: Add RLVR full support
 }
 DEFAULT_SMTJ_JOB_MAX_RUNTIME = 86400  # 1 day
+DEFAULT_SMTJ_JOB_SUBMIT_POLL_TIMEOUT = 30  # seconds to poll for job after submission
+
+DEFAULT_DATAPREP_MAX_JOB_RUNTIME = 3600
+DEFAULT_VOLUME_SIZE_GB = 100
+
+# Defaults for the AWS-managed Deep Learning Container used when no image_uri
+# is supplied. The actual URI is resolved at runtime via
+# ``sagemaker.core.image_uris.retrieve`` so the registry account is correct for
+# the caller's region (commercial, GovCloud, China, opt-in regions differ).
+DEFAULT_DLC_FRAMEWORK = "pytorch"
+DEFAULT_DLC_FRAMEWORK_VERSION = "2.8"
+DEFAULT_DLC_PY_VERSION = "py312"
+# Packages auto-installed for data-prep jobs. The stock PyTorch DLC doesn't
+# ship ray (needed for cluster bootstrap), and the bundled agi_data_curator
+# wheel still imports pandas.core.common.SettingWithCopyWarning, which was
+# removed in pandas 2.2 — so we pin pandas below that. The wheel also imports
+# loguru and uses s3fs for S3 IO, neither of which ship in the DLC. Pins are
+# skipped when the caller has already supplied their own version of the same
+# package.
+_DLC_REQUIRED_PACKAGES = ["ray[default]==2.35.0", "pandas<2.2", "loguru", "s3fs"]
+# Fallback passed to image_uris.retrieve when no instance_type is set. GPU
+# data-prep is not yet supported, so we always coerce to the CPU image below —
+# when GPU is added, wire a flag and forward the real instance_type instead.
+_DLC_DEFAULT_RESOLVER_INSTANCE = "ml.m5.xlarge"
+
+
+class SMTJRuntimeMode(enum.Enum):
+    """Mode selector for :class:`SMTJRuntimeManager`.
+
+    TRAINING is the default; data-prep pipelines (filter operations) call
+    ``set_mode(SMTJRuntimeMode.DATA_PREP)`` to route ``execute()`` /
+    ``cleanup()`` through the internal data-prep delegate.
+    """
+
+    TRAINING = "training"
+    DATA_PREP = "data_prep"
 
 
 def _is_hub_content_arn(arn: Optional[str]) -> bool:
@@ -96,12 +134,18 @@ class DataPrepJobConfig(JobConfig):
         - text_field: Column name containing the text to process
         - extra_args: Additional kwargs forwarded to the pipeline builder.
             Operation-specific keys (e.g. ``pipeline_id``) are passed here.
+        - extra_pip_packages: Optional extra PyPI packages to install on
+            the runtime workers. Appended to the runtime's base install
+            list (e.g. Glue's ``--pip-install``). Use this for stage-level
+            dependencies that aren't needed by every filter (e.g.
+            ``fasttext-wheel`` for language detection).
     """
 
     input_format: str = "parquet"
     output_format: str = "parquet"
     text_field: str = "text"
     extra_args: Dict[str, Any] = field(default_factory=dict)
+    extra_pip_packages: List[str] = field(default_factory=list)
 
 
 _account_id_cache: Optional[str] = None
@@ -128,6 +172,42 @@ def _get_caller_account_id(region: str = "us-east-1") -> str:
             )
             return "*"
     return _account_id_cache
+
+
+def _poll_for_training_job(sagemaker_client, job_name: str, timeout: int) -> str:
+    """Poll ``list_training_jobs`` until the submitted job appears.
+
+    Uses exponential backoff (2, 4, 8, … seconds) up to *timeout* seconds total.
+
+    Args:
+        sagemaker_client: A ``boto3`` SageMaker client.
+        job_name: The base job name passed to ``ModelTrainer``.
+        timeout: Maximum seconds to spend polling.
+
+    Returns:
+        The unique ``TrainingJobName`` assigned by SageMaker.
+
+    Raises:
+        ValueError: If the job does not appear within *timeout* seconds.
+    """
+    delay = 2
+    elapsed = 0
+    while True:
+        time.sleep(delay)
+        elapsed += delay
+        response = sagemaker_client.list_training_jobs(
+            NameContains=job_name,
+            SortBy="CreationTime",
+            SortOrder="Descending",
+            MaxResults=1,
+        )
+        summaries = response["TrainingJobSummaries"]
+        if summaries:
+            logger.info(f"Job lookup for '{job_name}': found after {elapsed}s")
+            return summaries[0]["TrainingJobName"]
+        if elapsed >= timeout:
+            raise ValueError(f"{job_name} failed to submit (not found after {timeout}s)")
+        delay = min(delay * 2, timeout - elapsed)
 
 
 class RuntimeManager(RuntimeManagerBase):
@@ -358,9 +438,17 @@ class RuntimeManager(RuntimeManagerBase):
 
 
 class SMTJRuntimeManager(RuntimeManager):
-    """Runtime manager for SageMaker Training Jobs.
+    """Runtime manager for SageMaker Training Jobs (training and data prep).
 
-    Standard SMTJ training manager using the SageMaker SDK ``ModelTrainer``.
+    Defaults to training mode: behaves as a standard SMTJ training manager
+    using the SageMaker SDK ``ModelTrainer``. To run data-prep pipelines,
+    call :meth:`set_mode` with :class:`SMTJRuntimeMode.DATA_PREP` — filter
+    operations do this automatically when a manager of this type is passed
+    as ``runtime_manager``.
+
+    Data-prep-mode constructor kwargs (``image_uri``, ``poll_interval``,
+    ``s3_artifact_bucket``, etc.) are stashed at construction and used
+    when :meth:`set_mode` flips the manager into data-prep mode.
 
     Args:
         instance_type: EC2 instance type.
@@ -371,7 +459,17 @@ class SMTJRuntimeManager(RuntimeManager):
         subnets: Optional VPC subnets.
         security_group_ids: Optional VPC security group IDs.
         max_job_runtime: Maximum runtime in seconds.
+        job_submit_poll_timeout: Seconds to poll for the job after submission.
         rft_lambda: Optional RFT reward Lambda ARN or file path.
+        image_uri: Docker image URI for data prep containers. Defaults to the
+            AWS-managed PyTorch DLC when empty.
+        poll_interval: Seconds between status polls for data prep jobs.
+        max_wait_time: Maximum seconds to wait for data prep completion.
+        s3_artifact_bucket: S3 bucket for data prep artifacts.
+        s3_artifact_prefix: S3 key prefix for data prep artifacts.
+        volume_size_gb: EBS volume size in GB for data prep jobs.
+        keep_alive_seconds: Warm pool keep-alive period for data prep.
+        region: AWS region override for data prep. Defaults to session region.
     """
 
     def __init__(
@@ -383,20 +481,132 @@ class SMTJRuntimeManager(RuntimeManager):
         encrypt_inter_container_traffic: bool = False,
         subnets: Optional[list[str]] = None,
         security_group_ids: Optional[list[str]] = None,
-        max_job_runtime: Optional[int] = DEFAULT_SMTJ_JOB_MAX_RUNTIME,
+        max_job_runtime: Optional[int] = None,
+        job_submit_poll_timeout: int = DEFAULT_SMTJ_JOB_SUBMIT_POLL_TIMEOUT,
         rft_lambda: Optional[str] = None,
+        # --- Data-prep-mode kwargs (used after set_mode(DATA_PREP)) ---
+        image_uri: str = "",
+        poll_interval: int = 30,
+        max_wait_time: int = 3600,
+        s3_artifact_bucket: Optional[str] = None,
+        s3_artifact_prefix: Optional[str] = None,
+        volume_size_gb: int = DEFAULT_VOLUME_SIZE_GB,
+        keep_alive_seconds: int = 0,
+        region: Optional[str] = None,
     ):
         # NOTE: Not setting execution_role directly due to issues with mypy type inference
         self._execution_role = execution_role
+        # Preserve the caller's original input (None, a role name, or an ARN)
+        # so the data-prep delegate can apply its own default (None → auto-
+        # create SmtjDataPrepExecutionRole) rather than inheriting whatever
+        # training-mode setup() resolved to.
+        self._caller_execution_role = execution_role
 
         self.subnets = subnets
         self.security_group_ids = security_group_ids
         self.encrypt_inter_container_traffic = encrypt_inter_container_traffic
-        self.max_job_runtime = max_job_runtime
+        # Default training runtime. When set_mode(DATA_PREP) is called and no
+        # caller override was supplied, the delegate is built with the
+        # data-prep default (see _build_data_prep_delegate).
+        self.max_job_runtime = max_job_runtime or DEFAULT_SMTJ_JOB_MAX_RUNTIME
+        self._max_job_runtime_override = max_job_runtime
+        self.job_submit_poll_timeout = job_submit_poll_timeout
+
+        # Stash data-prep kwargs; consumed by set_mode(DATA_PREP).
+        self._dataprep_image_uri = image_uri
+        self._dataprep_poll_interval = poll_interval
+        self._dataprep_max_wait_time = max_wait_time
+        self._dataprep_s3_artifact_bucket = s3_artifact_bucket
+        self._dataprep_s3_artifact_prefix = s3_artifact_prefix
+        self._dataprep_volume_size_gb = volume_size_gb
+        self._dataprep_keep_alive_seconds = keep_alive_seconds
+        self._dataprep_region = region
+
+        self._mode: SMTJRuntimeMode = SMTJRuntimeMode.TRAINING
+        self._data_prep_delegate: Optional["SMTJDataPrepRuntimeManager"] = None
 
         super().__init__(instance_type, instance_count, kms_key_id, rft_lambda)
-
         self.setup()
+
+    def set_mode(self, mode: SMTJRuntimeMode) -> None:
+        """Switch the manager between training and data-prep modes.
+
+        Idempotent when called with the current mode. The only supported
+        transition is TRAINING → DATA_PREP; once a manager is in data-prep
+        mode it cannot flip back, since the training setup state has been
+        discarded.
+
+        Called automatically by filter operations when an ``SMTJRuntimeManager``
+        is used as their ``runtime_manager``.
+
+        Args:
+            mode: Target mode.
+
+        Raises:
+            TypeError: If ``mode`` is not an :class:`SMTJRuntimeMode`.
+            RuntimeError: On an unsupported DATA_PREP → TRAINING flip.
+        """
+        if not isinstance(mode, SMTJRuntimeMode):
+            raise TypeError(f"set_mode() expects an SMTJRuntimeMode, got {type(mode).__name__}")
+
+        if mode == self._mode:
+            return
+
+        if mode == SMTJRuntimeMode.TRAINING:
+            # We've already switched into data-prep mode and discarded the
+            # training setup state; flipping back would need a fresh manager.
+            raise RuntimeError(
+                "Cannot switch an SMTJRuntimeManager from DATA_PREP back to "
+                "TRAINING. Construct a new SMTJRuntimeManager for training."
+            )
+
+        self._build_data_prep_delegate()
+        self._mode = SMTJRuntimeMode.DATA_PREP
+
+    def _build_data_prep_delegate(self) -> None:
+        from amzn_nova_forge.util.s3_utils import SMTJ_DATAPREP_ARTIFACT_PREFIX
+
+        dataprep_max_runtime = self._max_job_runtime_override or DEFAULT_DATAPREP_MAX_JOB_RUNTIME
+        self.max_job_runtime = dataprep_max_runtime
+
+        # Narrow the Optional types inherited from the base class — the
+        # SMTJRuntimeManager constructor requires both to be non-None.
+        assert self.instance_type is not None
+        assert self.instance_count is not None
+
+        self._data_prep_delegate = SMTJDataPrepRuntimeManager(
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            image_uri=self._dataprep_image_uri,
+            # Forward the *original* caller input (None / role-name / ARN)
+            # so the delegate falls back to its own default
+            # (SmtjDataPrepExecutionRole) when the caller passed nothing.
+            # Don't forward the training-mode resolved execution_role — it
+            # typically resolves to the caller's own identity, which doesn't
+            # trust sagemaker.amazonaws.com.
+            execution_role_name=self._caller_execution_role,
+            kms_key_id=self.kms_key_id,
+            subnets=self.subnets,
+            security_group_ids=self.security_group_ids,
+            max_job_runtime=dataprep_max_runtime,
+            poll_interval=self._dataprep_poll_interval,
+            max_wait_time=self._dataprep_max_wait_time,
+            s3_artifact_bucket=self._dataprep_s3_artifact_bucket,
+            s3_artifact_prefix=(self._dataprep_s3_artifact_prefix or SMTJ_DATAPREP_ARTIFACT_PREFIX),
+            volume_size_gb=self._dataprep_volume_size_gb,
+            keep_alive_seconds=self._dataprep_keep_alive_seconds,
+            region=self._dataprep_region,
+        )
+        # Drop training-setup state — unused in data-prep mode and confusing
+        # if it lingers.
+        for attr in (
+            "execution_role",
+            "sagemaker_client",
+            "sagemaker_session",
+            "_execution_role",
+        ):
+            if hasattr(self, attr):
+                delattr(self, attr)
 
     @classmethod
     def required_calling_role_permissions(cls, data_s3_path=None, output_s3_path=None):
@@ -446,6 +656,18 @@ class SMTJRuntimeManager(RuntimeManager):
         del self._execution_role
 
     def execute(self, job_config: JobConfig) -> str:
+        if self._mode == SMTJRuntimeMode.DATA_PREP:
+            assert self._data_prep_delegate is not None
+            return self._data_prep_delegate.execute(job_config)
+
+        if isinstance(job_config, DataPrepJobConfig):
+            raise ValueError(
+                "This SMTJRuntimeManager is in training mode but received a "
+                "DataPrepJobConfig. Call set_mode(SMTJRuntimeMode.DATA_PREP) "
+                "before running data-prep pipelines (filter operations do "
+                "this automatically)."
+            )
+
         from amzn_nova_forge.validation.validator import Validator
 
         Validator.validate_job_name(job_name=job_config.job_name)
@@ -499,15 +721,11 @@ class SMTJRuntimeManager(RuntimeManager):
                 **trainer_config
             ).with_tensorboard_output_config(tensorboard_output_config)
             model_trainer.train(wait=False, logs=False)
-            # Added since the job name has an auto generated suffix by sagemaker v3
-            sagemaker_client = boto3.client("sagemaker")
-            list_jobs_response = sagemaker_client.list_training_jobs(
-                NameContains=job_config.job_name,
-                SortBy="CreationTime",
-                SortOrder="Descending",
-                MaxResults=1,
+            logger.info(f"Training job submitted with base_job_name='{job_config.job_name}'")
+
+            unique_job_name = _poll_for_training_job(
+                self.sagemaker_client, job_config.job_name, self.job_submit_poll_timeout
             )
-            unique_job_name = list_jobs_response["TrainingJobSummaries"][0]["TrainingJobName"]
             return unique_job_name
 
         except Exception as e:
@@ -515,12 +733,695 @@ class SMTJRuntimeManager(RuntimeManager):
             raise
 
     def cleanup(self, job_name: str) -> None:
+        if self._mode == SMTJRuntimeMode.DATA_PREP:
+            assert self._data_prep_delegate is not None
+            return self._data_prep_delegate.cleanup(job_name)
+
         try:
             self.sagemaker_client.stop_training_job(TrainingJobName=job_name)
             self.sagemaker_client.close()
         except Exception as e:
             logger.error(f"Failed to cleanup job {job_name}: {str(e)}")
             raise
+
+
+class SMTJDataPrepRuntimeManager(RuntimeManager):
+    """Runtime manager for data preparation pipelines on SageMaker Training Jobs with Ray.
+
+    Launches a Ray cluster on SMTJ instances (including GPU types like
+    ml.g5, ml.p4d, ml.p5), uploads an entry script and bundled ``.whl``
+    dependencies to S3, and runs ForgeWorkflows pipelines on the cluster.
+    SageMaker manages instance provisioning, networking, and teardown.
+
+    Typically used via ``SMTJRuntimeManager(data_prep=True, ...)`` rather
+    than instantiated directly.
+    """
+
+    SMTJ_DATAPREP_ROLE_NAME = "SmtjDataPrepExecutionRole"
+    _TERMINAL_STATES = {"Completed", "Failed", "Stopped"}
+
+    # Entry-point script uploaded to S3 and executed inside the SMTJ container.
+    # Bootstraps a Ray cluster using SageMaker multi-node env vars, then runs the
+    # requested ForgeWorkflows pipeline on the head node.
+    _SMTJ_ENTRY_SCRIPT = textwrap.dedent("""\
+        from __future__ import annotations
+
+        import glob
+        import json
+        import logging
+        import os
+        import signal
+        import socket
+        import subprocess
+        import sys
+        import time
+
+        logging.basicConfig(level=logging.INFO)
+        logger = logging.getLogger("smtj_ray_pipeline")
+
+
+        def _parse_sm_hosts(hosts_raw):
+            \"\"\"Parse SM_HOSTS env var into a list of hostnames.\"\"\"
+            return (
+                json.loads(hosts_raw) if hosts_raw.startswith("[")
+                else (hosts_raw.split(",") if hosts_raw else [])
+            )
+
+
+        def _install_deps(pip_install):
+            \"\"\"Install bundled .whl files and any caller-supplied pip packages.
+
+            Bundled wheels are extracted directly into site-packages (no pip)
+            because at least one shipped wheel has a mismatched dist-info name
+            that pip rejects with "invalid wheel, .dist-info directory does not
+            start with ...". Extraction bypasses that validation. PyPI packages
+            supplied via ``pip_install`` still go through pip so transitive deps
+            resolve correctly.
+            \"\"\"
+            import site
+            import zipfile
+
+            deps_dir = "/opt/ml/input/data/deps"
+            whls = glob.glob(os.path.join(deps_dir, "*.whl")) if os.path.isdir(deps_dir) else []
+            if whls:
+                site_dirs = site.getsitepackages()
+                target = site_dirs[0] if site_dirs else site.getusersitepackages()
+                logger.info("Extracting bundled wheels to %s: %s", target, whls)
+                for whl_path in whls:
+                    with zipfile.ZipFile(whl_path, "r") as zf:
+                        zf.extractall(target)
+
+            if pip_install:
+                logger.info("Installing additional packages: %s", pip_install)
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", *pip_install],
+                    check=True,
+                )
+
+
+        def _start_ray_cluster():
+            \"\"\"Initialize Ray cluster using SageMaker multi-node environment variables.\"\"\"
+            hosts_raw = os.environ.get("SM_HOSTS", "")
+            current_host = os.environ.get("SM_CURRENT_HOST", "")
+
+            if not hosts_raw or not current_host:
+                import ray
+                ray.init()
+                logger.info("Single-node mode: Ray initialized locally")
+                return
+
+            hosts = _parse_sm_hosts(hosts_raw)
+            head_host = hosts[0]
+            port = 6379
+
+            if current_host == head_host:
+                subprocess.run(
+                    ["ray", "start", "--head", "--port", str(port)],
+                    check=True,
+                )
+                logger.info("Ray head started on %s:%d", current_host, port)
+            else:
+                head_ip = socket.gethostbyname(head_host)
+                # Wait for head node to become reachable
+                for attempt in range(60):
+                    try:
+                        with socket.socket() as s:
+                            s.settimeout(2)
+                            s.connect((head_ip, port))
+                        break
+                    except Exception:
+                        if attempt % 6 == 0:
+                            logger.info("Waiting for Ray head at %s:%d ...", head_ip, port)
+                        time.sleep(5)
+                else:
+                    raise RuntimeError(f"Ray head not reachable at {head_ip}:{port} after 300s")
+
+                subprocess.run(
+                    ["ray", "start", "--address", f"{head_ip}:{port}"],
+                    check=True,
+                )
+                logger.info("Ray worker started, connected to %s:%d", head_ip, port)
+
+            if current_host == head_host:
+                import ray
+                ray.init(address="auto")
+                logger.info("Ray head connected to cluster")
+
+
+        def main():
+            # SageMaker writes hyperparameters to this JSON file
+            hp_path = "/opt/ml/input/config/hyperparameters.json"
+            if os.path.exists(hp_path):
+                with open(hp_path) as f:
+                    hp = json.load(f)
+            else:
+                hp = {}
+
+            try:
+                pip_install = json.loads(hp.get("pip_install", "[]"))
+            except json.JSONDecodeError:
+                logger.warning("Could not parse pip_install as JSON, skipping")
+                pip_install = []
+            _install_deps(pip_install)
+
+            pipeline_id = hp.get("pipeline_id", "")
+            input_path = hp.get("input_path", "")
+            output_path = hp.get("output_path", "")
+            input_format = hp.get("input_format", "parquet")
+            output_format = hp.get("output_format", "parquet")
+            text_field = hp.get("text_field", "text")
+            extra_args_raw = hp.get("extra_args", "{}")
+
+            try:
+                extra_kwargs = json.loads(extra_args_raw)
+            except json.JSONDecodeError:
+                logger.warning("Could not parse extra_args as JSON, using empty dict")
+                extra_kwargs = {}
+
+            logger.info(
+                "SMTJ Ray pipeline invocation:\\n"
+                "  pipeline_id:   %s\\n"
+                "  input_path:    %s\\n"
+                "  output_path:   %s\\n"
+                "  input_format:  %s\\n"
+                "  output_format: %s\\n"
+                "  text_field:    %s\\n"
+                "  extra_kwargs:  %s",
+                pipeline_id, input_path, output_path,
+                input_format, output_format, text_field, extra_kwargs,
+            )
+
+            hosts_raw = os.environ.get("SM_HOSTS", "")
+            current_host = os.environ.get("SM_CURRENT_HOST", "")
+            hosts = _parse_sm_hosts(hosts_raw)
+
+            # Initialize Ray cluster
+            _start_ray_cluster()
+
+            # Only the head node runs the pipeline; workers block until SageMaker terminates.
+            if not hosts or current_host == hosts[0]:
+                from agi_data_curator.workflows.forge_workflows import ForgeWorkflows
+
+                forge = ForgeWorkflows(
+                    input_path=input_path,
+                    output_path=output_path,
+                    input_format=input_format,
+                    output_format=output_format,
+                )
+
+                merged_kwargs = {"text_field": text_field, **extra_kwargs}
+                metrics = forge.execute(pipeline_id, **merged_kwargs)
+
+                logger.info(
+                    "Pipeline %r finished [%s] in %.1fs (%.1f min)",
+                    metrics["identifier"],
+                    metrics["status"],
+                    metrics["elapsed_seconds"],
+                    metrics["elapsed_minutes"],
+                )
+
+                if metrics["status"] == "error":
+                    error_msg = metrics.get("error", "unknown error")
+                    logger.error("Pipeline failed: %s", error_msg)
+                    raise RuntimeError(f"Pipeline {pipeline_id!r} failed: {error_msg}")
+
+                result = metrics.get("result")
+                if isinstance(result, dict):
+                    import boto3 as _boto3
+ 
+                    summary_key = output_path.rstrip("/") + "/_summary.json"
+                    _bucket, _key = summary_key[len("s3://"):].split("/", 1)
+                    try:
+                        _boto3.client("s3").put_object(
+                            Bucket=_bucket,
+                            Key=_key,
+                            Body=json.dumps(result).encode("utf-8"),
+                            ContentType="application/json",
+                        )
+                        logger.info("Wrote summary to %s", summary_key)
+                    except Exception:
+                        logger.warning("Failed to write summary to %s", summary_key, exc_info=True)
+
+            else:
+                # Worker nodes: keep alive until SageMaker terminates all containers
+                logger.info("Worker node %s blocking until job completion", current_host)
+                signal.pause()
+
+
+        if __name__ == "__main__":
+            main()
+    """)
+
+    def __init__(
+        self,
+        instance_type: str,
+        instance_count: int = 1,
+        image_uri: str = "",
+        execution_role_name: Optional[str] = None,
+        kms_key_id: Optional[str] = None,
+        subnets: Optional[List[str]] = None,
+        security_group_ids: Optional[List[str]] = None,
+        max_job_runtime: int = DEFAULT_DATAPREP_MAX_JOB_RUNTIME,
+        poll_interval: int = 30,
+        max_wait_time: int = 3600,
+        s3_artifact_bucket: Optional[str] = None,
+        s3_artifact_prefix: Optional[str] = None,
+        volume_size_gb: int = DEFAULT_VOLUME_SIZE_GB,
+        keep_alive_seconds: int = 0,
+        region: Optional[str] = None,
+    ):
+        from amzn_nova_forge.util.s3_utils import SMTJ_DATAPREP_ARTIFACT_PREFIX
+
+        self._execution_role_name = execution_role_name
+        self.image_uri = image_uri
+        self.subnets = subnets
+        self.security_group_ids = security_group_ids
+        self.max_job_runtime = max_job_runtime
+        self.poll_interval = poll_interval
+        self.max_wait_time = max_wait_time
+        self.s3_artifact_bucket = s3_artifact_bucket
+        self.s3_artifact_prefix = (s3_artifact_prefix or SMTJ_DATAPREP_ARTIFACT_PREFIX).rstrip("/")
+        self.volume_size_gb = volume_size_gb
+        self.keep_alive_seconds = keep_alive_seconds
+        self._region = region
+
+        super().__init__(
+            instance_type=instance_type,
+            instance_count=instance_count,
+            kms_key_id=kms_key_id,
+        )
+        self.setup()
+
+    @property
+    def platform(self) -> Platform:
+        return Platform.SMTJ
+
+    @property
+    def runtime_name(self) -> str:
+        return "SageMaker Training Job"
+
+    @property
+    def runtime_config(self) -> str:
+        return (
+            f"region={getattr(self, 'region', 'unknown')}, "
+            f"instance_type={self.instance_type}, "
+            f"instance_count={self.instance_count}"
+        )
+
+    def setup(self) -> None:
+        boto_session = boto3.session.Session()
+        self.region = self._region or boto_session.region_name or "us-east-1"
+
+        if not self.image_uri:
+            from sagemaker.core.image_uris import retrieve
+
+            # The CPU vs. GPU PyTorch DLC is selected automatically by SageMaker
+            # based on the instance type passed to retrieve(): CPU families
+            # (ml.m*, ml.c*, ...) resolve to the CPU image, and GPU/accelerator
+            # families (ml.g*, ml.p*, ml.trn*) resolve to the matching GPU image.
+            # Data-prep pipelines don't leverage GPU compute today, but running
+            # on a GPU instance still works — the job just won't use the GPU.
+            # When no instance_type is set we fall back to a CPU default so the
+            # resolver has a concrete family to pick from.
+            resolver_instance = self.instance_type or _DLC_DEFAULT_RESOLVER_INSTANCE
+
+            self.image_uri = retrieve(
+                framework=DEFAULT_DLC_FRAMEWORK,
+                region=self.region,
+                version=DEFAULT_DLC_FRAMEWORK_VERSION,
+                py_version=DEFAULT_DLC_PY_VERSION,
+                image_scope="training",
+                instance_type=resolver_instance,
+            )
+            logger.info("No image_uri supplied — defaulting to AWS DLC %s", self.image_uri)
+
+        self.sagemaker_client = boto3.client("sagemaker", region_name=self.region)
+        self.s3_client = boto3.client("s3", region_name=self.region)
+
+        role_ref = self._execution_role_name or self.SMTJ_DATAPREP_ROLE_NAME
+        if role_ref.startswith("arn:"):
+            # Already a full ARN — use as-is
+            self.execution_role = role_ref
+        else:
+            # Treat as a role name — look up or create
+            iam_client = boto3.client("iam")
+            try:
+                self.execution_role = iam_client.get_role(RoleName=role_ref)["Role"]["Arn"]
+            except iam_client.exceptions.NoSuchEntityException:
+                logger.info(
+                    "IAM role %r not found — auto-creating it in your account for SMTJ data preparation.",
+                    role_ref,
+                )
+                from amzn_nova_forge.iam.iam_role_creator import (
+                    create_smtj_dataprep_execution_role,
+                )
+
+                self.execution_role = create_smtj_dataprep_execution_role(
+                    iam_client=iam_client,
+                    role_name=role_ref,
+                )["Role"]["Arn"]
+                logger.info("Created IAM role: %s", self.execution_role)
+
+        # Resolve artifact bucket and upload entry script + dependencies
+        self.s3_artifact_bucket = self._ensure_artifact_bucket()
+        self._upload_entry_script()
+        self._upload_bundled_whls()
+
+    def _upload_entry_script(self) -> None:
+        """Upload the Ray bootstrap + ForgeWorkflows entry script to S3."""
+        script_key = f"{self.s3_artifact_prefix}/scripts/invoke_smtj_pipeline.py"
+        self.s3_client.put_object(
+            Bucket=self.s3_artifact_bucket,
+            Key=script_key,
+            Body=self._SMTJ_ENTRY_SCRIPT.encode("utf-8"),
+        )
+        self.script_s3_path = f"s3://{self.s3_artifact_bucket}/{script_key}"
+        logger.info("Uploaded SMTJ entry script to %s", self.script_s3_path)
+
+    def _upload_bundled_whls(self) -> None:
+        """Upload all bundled .whl files from the dataset/bundled package to S3."""
+        from importlib import resources
+
+        bundled = resources.files("amzn_nova_forge.dataset.bundled")
+        whl_names = [item.name for item in bundled.iterdir() if item.name.endswith(".whl")]
+        if not whl_names:
+            raise FileNotFoundError("No .whl files found in amzn_nova_forge.dataset.bundled")
+
+        deps_prefix = f"{self.s3_artifact_prefix}/deps"
+        for whl_name in whl_names:
+            whl_bytes = bundled.joinpath(whl_name).read_bytes()
+            whl_key = f"{deps_prefix}/{whl_name}"
+            self.s3_client.put_object(
+                Bucket=self.s3_artifact_bucket,
+                Key=whl_key,
+                Body=whl_bytes,
+            )
+            logger.info("Uploaded bundled whl to s3://%s/%s", self.s3_artifact_bucket, whl_key)
+
+        self.deps_s3_prefix = f"s3://{self.s3_artifact_bucket}/{deps_prefix}"
+        logger.info("All bundled whls uploaded to %s", self.deps_s3_prefix)
+
+    def _ensure_artifact_bucket(self) -> str:
+        """Return an S3 artifact bucket, creating a default one if needed."""
+        if self.s3_artifact_bucket:
+            return self.s3_artifact_bucket
+
+        from amzn_nova_forge.util.s3_utils import (
+            ensure_bucket_exists,
+            get_dataprep_bucket_name,
+        )
+
+        default_bucket = get_dataprep_bucket_name(region=self.region)
+        ensure_bucket_exists(default_bucket, region=self.region)
+        return default_bucket
+
+    @_telemetry_emitter(Feature.DATA_PREP, "smtj_dataprep_execute")
+    def execute(self, job_config: JobConfig) -> str:
+        """Create a SageMaker Training Job for data prep, poll until completion.
+
+        Args:
+            job_config: A ``DataPrepJobConfig`` with ``data_s3_path``,
+                ``output_s3_path``, and ``extra_args["pipeline_id"]`` set.
+
+        Returns:
+            The SageMaker Training Job name.
+
+        Raises:
+            TypeError: If job_config is not a DataPrepJobConfig.
+            ValueError: If required fields are missing.
+            RuntimeError: If the training job fails.
+            TimeoutError: If the job does not complete within max_wait_time.
+        """
+        dataprep_config = self._validate_dataprep_config(job_config)
+        pipeline_id = dataprep_config.extra_args["pipeline_id"]
+
+        job_name = dataprep_config.job_name or self._build_job_name(pipeline_id)
+        start = time.time()
+
+        hyperparameters = self._build_hyperparameters(dataprep_config, pipeline_id)
+        create_params = self._build_create_training_job_params(
+            dataprep_config, job_name, hyperparameters
+        )
+
+        self.sagemaker_client.create_training_job(**create_params)
+        logger.info("Created SMTJ data prep job %r", job_name)
+        logger.info(
+            "  Console: https://%s.console.aws.amazon.com/sagemaker/home?region=%s#/jobs/%s",
+            self.region,
+            self.region,
+            job_name,
+        )
+
+        status = self._poll_until_terminal(job_name)
+
+        elapsed = round(time.time() - start, 2)
+        logger.info(
+            "SMTJ data prep job %r completed in %.1fs with status %s",
+            job_name,
+            elapsed,
+            status,
+        )
+
+        self._raise_if_not_completed(job_name, status)
+        return job_name
+
+    def _validate_dataprep_config(self, job_config: JobConfig) -> "DataPrepJobConfig":
+        """Validate that ``job_config`` is a well-formed DataPrepJobConfig.
+
+        Returns the same object narrowed to ``DataPrepJobConfig`` and with
+        ``extra_args["pipeline_id"]`` guaranteed to be non-empty.
+        """
+        if not isinstance(job_config, DataPrepJobConfig):
+            raise TypeError(
+                f"SMTJDataPrepRuntimeManager.execute() requires a DataPrepJobConfig, "
+                f"got {type(job_config).__name__}"
+            )
+
+        if not job_config.extra_args.get("pipeline_id", ""):
+            raise ValueError("pipeline_id is required in extra_args")
+        if not job_config.data_s3_path:
+            raise ValueError("data_s3_path (input_path) is required in DataPrepJobConfig")
+        if not job_config.output_s3_path:
+            raise ValueError("output_s3_path (output_path) is required in DataPrepJobConfig")
+
+        return job_config
+
+    @staticmethod
+    def _build_job_name(pipeline_id: str) -> str:
+        """Build a SageMaker-compliant training job name from the pipeline id.
+
+        SageMaker job names must match ``[a-zA-Z0-9](-*[a-zA-Z0-9]){0,62}``.
+        Prefix ``nova-forge-dataprep-`` (20) + ``-`` + 10-digit epoch = 31
+        chars, leaving 32 chars for the sanitized pipeline id.
+        """
+        sanitized_id = pipeline_id.replace("_", "-")[:32].rstrip("-")
+        return f"nova-forge-dataprep-{sanitized_id}-{int(time.time())}"
+
+    def _build_hyperparameters(
+        self, job_config: "DataPrepJobConfig", pipeline_id: str
+    ) -> Dict[str, str]:
+        """Build the HyperParameters dict forwarded to the training job.
+
+        SageMaker requires all hyperparameter values to be strings, so
+        ``extra_args`` and the merged pip-install list are JSON-encoded.
+        """
+        # Narrow the Optional[str] fields from the base JobConfig —
+        # _validate_dataprep_config already guaranteed these are non-empty.
+        assert job_config.data_s3_path is not None
+        assert job_config.output_s3_path is not None
+
+        forwarded_args = {k: v for k, v in job_config.extra_args.items() if k != "pipeline_id"}
+        hyperparameters: Dict[str, str] = {
+            "pipeline_id": pipeline_id,
+            "input_path": job_config.data_s3_path,
+            "output_path": job_config.output_s3_path,
+            "input_format": job_config.input_format,
+            "output_format": job_config.output_format,
+            "text_field": job_config.text_field,
+        }
+        if forwarded_args:
+            hyperparameters["extra_args"] = json.dumps(forwarded_args)
+
+        merged_pip = self._merge_pip_install(job_config.extra_pip_packages)
+        if merged_pip:
+            hyperparameters["pip_install"] = json.dumps(merged_pip)
+
+        return hyperparameters
+
+    @staticmethod
+    def _merge_pip_install(caller_extras: Optional[List[str]]) -> List[str]:
+        """Merge caller pip extras with the DLC baseline, deduped by base name.
+
+        Caller entries win on base-name collision so a caller
+        ``"ray==2.40.0"`` pin isn't shadowed by our default
+        ``"ray[default]==2.35.0"``.
+        """
+
+        def _base(pkg: str) -> str:
+            return pkg.split("[")[0].split("=")[0].split("<")[0].split(">")[0]
+
+        caller_pip = list(caller_extras or [])
+        caller_bases = {_base(p) for p in caller_pip}
+        merged: List[str] = list(caller_pip)
+        for pkg in _DLC_REQUIRED_PACKAGES:
+            if _base(pkg) not in caller_bases:
+                merged.append(pkg)
+        return merged
+
+    def _build_create_training_job_params(
+        self,
+        job_config: "DataPrepJobConfig",
+        job_name: str,
+        hyperparameters: Dict[str, str],
+    ) -> Dict[str, Any]:
+        """Assemble the kwargs for ``sagemaker.create_training_job``."""
+        resource_config: Dict[str, Any] = {
+            "InstanceType": self.instance_type,
+            "InstanceCount": self.instance_count,
+            "VolumeSizeInGB": self.volume_size_gb,
+        }
+        if self.keep_alive_seconds > 0:
+            resource_config["KeepAlivePeriodInSeconds"] = self.keep_alive_seconds
+
+        create_params: Dict[str, Any] = {
+            "TrainingJobName": job_name,
+            "RoleArn": self.execution_role,
+            "AlgorithmSpecification": {
+                "TrainingImage": self.image_uri,
+                "TrainingInputMode": "File",
+                "ContainerEntrypoint": [
+                    "python",
+                    "/opt/ml/input/data/code/invoke_smtj_pipeline.py",
+                ],
+            },
+            "ResourceConfig": resource_config,
+            "OutputDataConfig": {
+                "S3OutputPath": job_config.output_s3_path,
+            },
+            "StoppingCondition": {
+                "MaxRuntimeInSeconds": self.max_job_runtime,
+            },
+            "HyperParameters": hyperparameters,
+            "InputDataConfig": [
+                {
+                    "ChannelName": "code",
+                    "DataSource": {
+                        "S3DataSource": {
+                            "S3DataType": "S3Prefix",
+                            "S3Uri": self.script_s3_path,
+                            "S3DataDistributionType": "FullyReplicated",
+                        }
+                    },
+                },
+                {
+                    "ChannelName": "deps",
+                    "DataSource": {
+                        "S3DataSource": {
+                            "S3DataType": "S3Prefix",
+                            "S3Uri": self.deps_s3_prefix,
+                            "S3DataDistributionType": "FullyReplicated",
+                        }
+                    },
+                },
+            ],
+        }
+
+        if self.kms_key_id:
+            create_params["OutputDataConfig"]["KmsKeyId"] = self.kms_key_id
+            resource_config["VolumeKmsKeyId"] = self.kms_key_id
+
+        vpc_config = self._build_vpc_config()
+        if vpc_config:
+            create_params["VpcConfig"] = vpc_config
+
+        return create_params
+
+    def _build_vpc_config(self) -> Dict[str, Any]:
+        """Return the VpcConfig dict for the training job, or ``{}`` if no VPC is set."""
+        vpc_config: Dict[str, Any] = {}
+        if self.subnets:
+            vpc_config["Subnets"] = self.subnets
+        if self.security_group_ids:
+            vpc_config["SecurityGroupIds"] = self.security_group_ids
+        return vpc_config
+
+    def _raise_if_not_completed(self, job_name: str, status: str) -> None:
+        """Raise ``RuntimeError`` with the FailureReason if the job didn't succeed."""
+        if status == "Completed":
+            return
+        resp = self.sagemaker_client.describe_training_job(TrainingJobName=job_name)
+        failure_reason = resp.get("FailureReason", "")
+        raise RuntimeError(
+            f"SMTJ data prep job {job_name!r} failed with status {status}: {failure_reason}"
+        )
+
+    def _poll_until_terminal(self, job_name: str) -> str:
+        """Wait for SageMaker training job to reach a terminal state using a waiter."""
+        from botocore.exceptions import WaiterError
+
+        waiter = self.sagemaker_client.get_waiter("training_job_completed_or_stopped")
+        max_attempts = max(1, self.max_wait_time // self.poll_interval)
+
+        logger.info(
+            "Waiting for training job to complete (polling every %ds, max %ds)...",
+            self.poll_interval,
+            self.max_wait_time,
+        )
+        try:
+            waiter.wait(
+                TrainingJobName=job_name,
+                WaiterConfig={
+                    "Delay": self.poll_interval,
+                    "MaxAttempts": max_attempts,
+                },
+            )
+        except WaiterError:
+            # Waiter exceeded max attempts — check if the job actually
+            # reached a terminal state (e.g. Failed) that the built-in
+            # waiter doesn't recognise as an acceptor.
+            resp = self.sagemaker_client.describe_training_job(TrainingJobName=job_name)
+            status = resp["TrainingJobStatus"]
+            if status in self._TERMINAL_STATES:
+                return status
+            raise TimeoutError(
+                f"SMTJ data prep job {job_name!r} did not reach a terminal state "
+                f"within {self.max_wait_time}s (last status: {status})"
+            )
+
+        # Waiter succeeded — job is Completed or Stopped.
+        resp = self.sagemaker_client.describe_training_job(TrainingJobName=job_name)
+        return resp["TrainingJobStatus"]
+
+    @_telemetry_emitter(Feature.DATA_PREP, "smtj_dataprep_cleanup")
+    def cleanup(self, job_name: str) -> None:
+        """Stop a running SageMaker training job."""
+        try:
+            self.sagemaker_client.stop_training_job(TrainingJobName=job_name)
+            logger.info("Stopped SMTJ data prep job %r", job_name)
+        except Exception as e:
+            logger.error("Failed to stop SMTJ data prep job %r: %s", job_name, e)
+            raise
+
+    @classmethod
+    def required_calling_role_permissions(cls, data_s3_path=None, output_s3_path=None) -> List:
+        """Required IAM permissions for SMTJ data prep operations."""
+        permissions = super().required_calling_role_permissions(data_s3_path, output_s3_path)
+
+        permissions.extend(
+            [
+                ("sagemaker:CreateTrainingJob", "*"),
+                ("sagemaker:DescribeTrainingJob", "*"),
+                ("sagemaker:StopTrainingJob", "*"),
+                ("iam:GetRole", "*"),
+                ("iam:PassRole", "*"),
+                # Artifact bucket: auto-create, check existence, upload script + .whl
+                ("s3:CreateBucket", "*"),
+                ("s3:HeadBucket", "*"),
+                ("s3:PutObject", "*"),
+            ]
+        )
+
+        return permissions
 
 
 # TODO: Might need to take RIG as input in case of multiple RIGs

@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -58,7 +58,7 @@ SUPPORTED_SMI_CONFIGS = {
     (Model.NOVA_PRO, "ml.p5.48xlarge"): [(8000, 8), (16000, 2), (24000, 1)],
     # NOVA_LITE_2
     (Model.NOVA_LITE_2, "ml.g6.48xlarge"): [(8000, 8)],
-    (Model.NOVA_LITE_2, "ml.p5.48xlarge"): [(16000, 128), (64000, 32), (128000, 8)],
+    (Model.NOVA_LITE_2, "ml.p5.48xlarge"): [(16000, 128), (64000, 32), (128000, 8), (256000, 2)],
 }
 
 SUPPORTED_DATAMIXING_METHODS = [

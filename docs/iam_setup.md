@@ -71,9 +71,19 @@ Please refer to the "Sid" of each statement to determine which policies you need
             "Effect": "Allow",
             "Action": [
                 "iam:CreatePolicy",
-                "iam:GetPolicy"
+                "iam:CreatePolicyVersion",
+                "iam:DeletePolicyVersion",
+                "iam:GetPolicy",
+                "iam:ListPolicyVersions"
             ],
-            "Resource": "arn:aws:iam::<account_id>:policy/*"
+            "Resource": [
+                "arn:aws:iam::<account_id>:policy/BedrockDeployModelExecutionRole*",
+                "arn:aws:iam::<account_id>:policy/SageMakerDeployModelExecutionRole*",
+                "arn:aws:iam::<account_id>:policy/SmtjDataPrepExecutionRole*",
+                "arn:aws:iam::<account_id>:policy/GlueDataPrepExecutionRole*",
+                "arn:aws:iam::<account_id>:policy/BedrockAnalyzeExecutionRole*",
+                "arn:aws:iam::<account_id>:policy/<custom_role_name>*"
+            ]
         },
         {
             "Sid": "HandleTrainingInputAndOutput",
@@ -108,7 +118,8 @@ Please refer to the "Sid" of each statement to determine which policies you need
             "Sid": "ImportModelToBedrock",
             "Effect": "Allow",
             "Action": [
-                "bedrock:CreateCustomModel"
+                "bedrock:CreateCustomModel",
+                "bedrock:TagResource"
             ],
             "Resource": "*"
         },

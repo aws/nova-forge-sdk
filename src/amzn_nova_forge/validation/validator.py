@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,6 +30,7 @@ from amzn_nova_forge.core.enums import (
     TrainingMethod,
 )
 from amzn_nova_forge.core.runtime import RuntimeManager
+from amzn_nova_forge.core.types import ValidationConfig
 from amzn_nova_forge.core.validation_patterns import (
     CLUSTER_NAME_REGEX,
     JOB_NAME_REGEX,
@@ -116,11 +117,6 @@ class Validator:
     """
     Validator class providing validation functionality.
     """
-
-    @staticmethod
-    def _get_default_validation_config() -> Dict[str, bool]:
-        """Get default validation configuration."""
-        return {"iam": True, "infra": True, "recipe": True}.copy()
 
     @staticmethod
     def _resolve_execution_role(infra: Optional[RuntimeManager]) -> str:
@@ -1182,7 +1178,7 @@ class Validator:
         overrides_template: Dict[str, Any],
         output_s3_path: Optional[str] = None,
         data_s3_path: Optional[str] = None,
-        validation_config: Optional[Dict[str, bool]] = None,
+        validation_config: Optional[ValidationConfig] = None,
         rft_lambda_arn: Optional[str] = None,
         eval_task: Optional[EvaluationTask] = None,
         subtask: Optional[str] = None,
@@ -1215,11 +1211,7 @@ class Validator:
         errors: List[str] = []
 
         # Get validation configuration
-        default_config = cls._get_default_validation_config()
-        if validation_config:
-            default_config.update(validation_config)
-
-        validation_config = default_config
+        config = validation_config or ValidationConfig()
 
         # Bedrock region validation
         if isinstance(infra, BedrockRuntimeManager):
@@ -1232,13 +1224,13 @@ class Validator:
                 )
 
         # Infrastructure validation
-        if validation_config.get("iam", True):
+        if config.iam:
             cls._validate_iam_permissions(errors, infra, data_s3_path, output_s3_path)
-        if validation_config.get("infra", True) and platform == Platform.SMHP:
+        if config.infra and platform == Platform.SMHP:
             cls._validate_infrastructure(infra, errors)
 
         # Recipe validation
-        if validation_config.get("recipe", True):
+        if config.recipe:
             cls._validate_recipe(
                 recipe=recipe,
                 overrides_template=overrides_template,

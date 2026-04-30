@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,10 +19,12 @@ must inherit from to ensure consistent validation interface.
 """
 
 import re
+import tempfile
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 import boto3
+import filetype
 from pydantic import BaseModel, ValidationError, ValidationInfo
 
 from amzn_nova_forge.core.enums import Model, Platform, TrainingMethod
@@ -216,7 +218,7 @@ class BaseDatasetValidator(ABC):
                     raise ValueError(
                         f"Dataset consistency error: If any sample contains '{field_name}', "
                         f"all samples must contain '{field_name}'. Field first appeared in sample "
-                        f"{first_sample_with_field[field_name]} but is missing in earlier samples."
+                        f"{sample_index} but is missing in earlier samples."
                     )
                 else:
                     raise ValueError(
@@ -270,13 +272,18 @@ def _format_failed_samples(failed_samples_id_list: List[int]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _parse_s3_uri(uri: str) -> List[str]:
+    """Parse an S3 URI into (bucket, key)."""
+    return uri[len("s3://") :].split("/", 1)
+
+
 def _validate_keywords(instance: Any, validation: DatasetCheckEntry, ctx: Dict[str, Any]) -> None:
     text = getattr(instance, "text", None)
     if text is None:
         return
-    keywords: List[str] = validation.get("keywords", [])
-    text_lower = text.lower()
-    found = [kw for kw in keywords if kw.lower() in text_lower]
+    keywords: List[str] = validation.get("invalid_keywords", [])
+    # Reserved keyword matching is case-sensitive.
+    found = [kw for kw in keywords if kw in text]
     if found:
         raise ValueError(f"Please do not use these keywords: {', '.join(found)}")
 
@@ -285,10 +292,10 @@ def _validate_file_size(instance: Any, validation: DatasetCheckEntry, ctx: Dict[
     uri = instance.source.s3Location.uri
     s3_client = ctx.get("s3_client")
     if s3_client is None:
-        return
-    limit = validation["limit"]
+        raise InfrastructureError("Invalid s3_client: s3_client cannot be None.")
+    limit = validation["valid_max_limit"]
     try:
-        bucket, key = uri[len("s3://") :].split("/", 1)
+        bucket, key = _parse_s3_uri(uri)
         size = s3_client.head_object(Bucket=bucket, Key=key)["ContentLength"]
     except Exception as e:
         raise InfrastructureError(f"Failed to validate file size for {uri}: {e}")
@@ -301,8 +308,8 @@ def _validate_file_size(instance: Any, validation: DatasetCheckEntry, ctx: Dict[
 def _validate_content_count(
     instance: Any, validation: DatasetCheckEntry, ctx: Dict[str, Any]
 ) -> None:
-    field = validation["field"]
-    limit = validation["limit"]
+    field = validation["name"].replace("_count", "")
+    limit = validation["valid_max_limit"]
     count = sum(getattr(item, field, None) is not None for item in instance.content)
     if count > limit:
         raise ValueError(f"Only {limit} {field}(s) allowed per message, found {count}")
@@ -311,23 +318,22 @@ def _validate_content_count(
 def _validate_video_duration(
     instance: Any, validation: DatasetCheckEntry, ctx: Dict[str, Any]
 ) -> None:
-    import tempfile
 
     uri = instance.source.s3Location.uri
     s3_client = ctx.get("s3_client")
     if s3_client is None:
-        return
-    limit = validation["limit"]
+        raise InfrastructureError("Invalid s3_client: s3_client cannot be None.")
+    limit = validation["valid_max_limit"]
     try:
         from pymediainfo import MediaInfo
     except ImportError:
         raise InfrastructureError(
             "pymediainfo and/or its system dependency libmediainfo not installed. "
-            "Install with: pip install amzn-nova-forge[video]"
+            "See 'Image/Video validation' in docs/data_prep.md for setup instructions."
         )
 
     try:
-        bucket, key = uri[len("s3://") :].split("/", 1)
+        bucket, key = _parse_s3_uri(uri)
         with tempfile.NamedTemporaryFile(suffix=".mp4") as tmp:
             s3_client.download_fileobj(Bucket=bucket, Key=key, Fileobj=tmp)
             tmp.flush()
@@ -347,11 +353,120 @@ def _validate_video_duration(
 
 _ExecutorFn = Callable[[Any, DatasetCheckEntry, Dict[str, Any]], None]
 
+
+def _validate_format_allowlist(
+    instance: Any, validation: DatasetCheckEntry, ctx: Dict[str, Any]
+) -> None:
+    supported_models = validation["valid_models"]
+    supported_formats = validation["valid_formats"]
+
+    model = ctx.get("model")
+    fmt = getattr(instance, "format", None)
+    if fmt is None:
+        raise ValueError("Invalid format: multimodal content format cannot be None.")
+    if model not in supported_models or fmt.lower() not in supported_formats:
+        raise ValueError(
+            f"Invalid format {fmt} on model {model}. "
+            f"Supported formats are {supported_formats} on {supported_models}."
+        )
+
+    # Magic number consistency check using filetype library
+
+    uri = instance.source.s3Location.uri
+    s3_client = ctx.get("s3_client")
+    if s3_client is None:
+        raise InfrastructureError("Invalid s3_client: s3_client cannot be None.")
+    try:
+        bucket, key = _parse_s3_uri(uri)
+        resp = s3_client.get_object(Bucket=bucket, Key=key, Range="bytes=0-261")
+        header = resp["Body"].read()
+    except Exception as e:
+        raise InfrastructureError(f"Failed to read file header for {uri}: {e}")
+    kind = filetype.match(header)
+    if kind is None:
+        raise ValueError(f"File {uri} declared format '{fmt}' does not match file contents")
+    detected = kind.extension
+    declared = "jpg" if fmt.lower() == "jpeg" else fmt.lower()
+    if detected != declared:
+        raise ValueError(
+            f"File {uri} declared format '{fmt}' does not match detected format '{detected}'"
+        )
+
+
+def _validate_content_allowlist(
+    instance: Any, validation: DatasetCheckEntry, ctx: Dict[str, Any]
+) -> None:
+    supported_models = validation["valid_models"]
+    supported_contents = validation["valid_contents"]
+
+    model = ctx.get("model")
+    has_content = any(
+        getattr(item, content_type, None) is not None
+        for item in instance.content
+        for content_type in supported_contents
+    )
+
+    if has_content and model not in supported_models:
+        contents = [
+            getattr(item, content_type, None)
+            for item in instance.content
+            for content_type in supported_contents
+            if getattr(item, content_type, None) is not None
+        ]
+        raise ValueError(
+            f"Invalid content {contents} on model {model}. "
+            f"Supported contents are {supported_contents} on {supported_models}."
+        )
+
+
+def _validate_image_dimensions(
+    instance: Any, validation: DatasetCheckEntry, ctx: Dict[str, Any]
+) -> None:
+
+    uri = instance.source.s3Location.uri
+    s3_client = ctx.get("s3_client")
+    if s3_client is None:
+        raise InfrastructureError("Invalid s3_client: s3_client cannot be None.")
+    min_dim = validation["valid_min_limit"]
+    try:
+        from pymediainfo import MediaInfo
+    except ImportError:
+        raise InfrastructureError(
+            "pymediainfo and/or its system dependency libmediainfo not installed. "
+            "See 'Image/Video validation' in docs/data_prep.md for setup instructions."
+        )
+    try:
+        bucket, key = _parse_s3_uri(uri)
+        with tempfile.NamedTemporaryFile() as tmp:
+            s3_client.download_fileobj(Bucket=bucket, Key=key, Fileobj=tmp)
+            tmp.flush()
+            info = MediaInfo.parse(tmp.name)
+            image_tracks = [t for t in info.tracks if t.track_type == "Image"]
+            track = image_tracks[0] if image_tracks else None
+            if track is None:
+                general = [t for t in info.tracks if t.track_type == "General"]
+                track = general[0] if general else None
+            if track is None or track.width is None or track.height is None:
+                raise InfrastructureError(f"Unable to determine image dimensions for {uri}")
+            width, height = int(track.width), int(track.height)
+            if width < min_dim or height < min_dim:
+                raise ValueError(
+                    f"Image {uri} dimensions {width}x{height} below minimum {min_dim}x{min_dim}"
+                )
+    except ValueError:
+        raise
+    except Exception as e:
+        raise InfrastructureError(f"Failed to validate image dimensions for {uri}: {e}")
+
+
 _EXECUTORS: Dict[str, _ExecutorFn] = {
     "keyword": _validate_keywords,
     "file_size": _validate_file_size,
     "content_count": _validate_content_count,
     "video_duration": _validate_video_duration,
+    "format_allowlist": _validate_format_allowlist,
+    "content_allowlist": _validate_content_allowlist,
+    "image_dimensions": _validate_image_dimensions,
 }
 
 
@@ -361,14 +476,18 @@ def _run_validations_in_scope(
     """Run all DATASET_CHECKS scoped to this model's class name."""
     scope = type(instance).__name__
     ctx = info.context or {}
+    model = ctx.get("model")
+    if model is None:
+        raise ValueError("Invalid model: model type cannot be None.")
 
     for check in DATASET_CHECKS:
-        if (
-            not check["filterable"]
-            or "scope" not in check
-            or scope not in check["scope"]
-            or training_method not in check["training_methods"]
-        ):
+        if not check["filterable"]:
+            continue
+        if "scope" not in check or scope not in check["scope"]:
+            continue
+        if training_method not in check["applicable_training_methods"]:
+            continue
+        if model not in check["applicable_models"]:
             continue
 
         executor = _EXECUTORS.get(check["type"])

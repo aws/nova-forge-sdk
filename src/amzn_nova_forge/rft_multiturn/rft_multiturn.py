@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,6 +35,7 @@ from amzn_nova_forge.util.logging import logger
 from .base_infra import (
     BaseRFTInfrastructure,
     EnvType,
+    QueueMessageCounts,
     StackOutputs,
     VFEnvId,
     create_rft_execution_role,
@@ -454,9 +455,9 @@ class RFTMultiturnInfrastructure:
             current_time = int(time.time())
 
             for queue_name, counts in queue_status.items():
-                total_messages = counts["visible"] + counts["in_flight"]
+                total_messages = counts.visible + counts.in_flight
                 if total_messages > 0:
-                    last_receive = counts.get("last_receive_timestamp", 0)
+                    last_receive = counts.last_receive_timestamp
                     if last_receive > 0:
                         seconds_ago = current_time - last_receive
                         if seconds_ago < 60:
@@ -466,11 +467,11 @@ class RFTMultiturnInfrastructure:
                         else:
                             time_str = f"{seconds_ago // 3600}h ago"
                         non_empty_queues.append(
-                            f"{queue_name} ({counts['visible']} visible, {counts['in_flight']} in-flight, last message {time_str})"
+                            f"{queue_name} ({counts.visible} visible, {counts.in_flight} in-flight, last message {time_str})"
                         )
                     else:
                         non_empty_queues.append(
-                            f"{queue_name} ({counts['visible']} visible, {counts['in_flight']} in-flight)"
+                            f"{queue_name} ({counts.visible} visible, {counts.in_flight} in-flight)"
                         )
 
             if non_empty_queues:
@@ -813,7 +814,7 @@ class RFTMultiturnInfrastructure:
             "region": self.region,
         },
     )
-    def check_all_queues(self) -> Dict[str, Dict[str, int]]:
+    def check_all_queues(self) -> Dict[str, QueueMessageCounts]:
         """Check message counts in all queues"""
         if not self.stack_outputs:
             raise RuntimeError("Stack not deployed. Run setup() first.")

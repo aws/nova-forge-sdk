@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,11 +18,11 @@ This module implements validation for Nova 1.0 and 2.0 datasets in the Nova Conv
 ensuring they meet all requirements for supervised fine-tuning.
 """
 
-from typing import Dict, Iterator, List, Optional
+from typing import List, Optional
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
-from amzn_nova_forge.core.enums import Model, TrainingMethod, Version
+from amzn_nova_forge.core.enums import TrainingMethod, Version
 
 from .dataset_validator import (
     BaseDatasetValidator,
@@ -30,12 +30,6 @@ from .dataset_validator import (
     _run_validations_in_scope,
 )
 
-# Format constants, update as necessary.
-NOVA_ONE_IMAGE_FORMATS = ["gif", "jpeg", "png", "webp"]
-NOVA_TWO_IMAGE_FORMATS = ["gif", "jpeg", "png", "webp"]
-NOVA_ONE_VIDEO_FORMATS = ["mov", "mkv", "mp4", "webm"]
-NOVA_TWO_VIDEO_FORMATS = ["mov", "mkv", "mp4"]
-NOVA_TWO_DOC_FORMATS = ["pdf"]
 OPTIONAL_FIELDS = [
     "system",
     "messages.content.image",
@@ -84,24 +78,6 @@ class ImageContent(BaseModel):
     format: str
     source: Source
 
-    @field_validator("format")
-    @classmethod
-    def validate_format(cls, image_format, info: ValidationInfo):
-        """Validates that the image format is supported."""
-        model = info.context.get("model") if info.context else None
-
-        if model is not None and model.version == Version.ONE:
-            if image_format.lower() not in NOVA_ONE_IMAGE_FORMATS:
-                raise ValueError(
-                    f"Invalid image format, supported formats are {NOVA_ONE_IMAGE_FORMATS}"
-                )
-        else:
-            if image_format.lower() not in NOVA_TWO_IMAGE_FORMATS:
-                raise ValueError(
-                    f"Invalid image format, supported formats are {NOVA_TWO_IMAGE_FORMATS}"
-                )
-        return image_format
-
     @model_validator(mode="after")
     def run_validations(self, info: ValidationInfo) -> "ImageContent":
         _run_validations_in_scope(
@@ -115,23 +91,6 @@ class VideoContent(BaseModel):
 
     format: str
     source: Source
-
-    @field_validator("format")
-    @classmethod
-    def validate_format(cls, video_format, info: ValidationInfo):
-        """Validates that the video format is supported."""
-        model = info.context.get("model") if info.context else None
-        if model is not None and model.version == Version.ONE:
-            if video_format.lower() not in NOVA_ONE_VIDEO_FORMATS:
-                raise ValueError(
-                    f"Invalid video format, supported formats are {NOVA_ONE_VIDEO_FORMATS}"
-                )
-        else:
-            if video_format.lower() not in NOVA_TWO_VIDEO_FORMATS:
-                raise ValueError(
-                    f"Invalid video format, supported formats are {NOVA_TWO_VIDEO_FORMATS}"
-                )
-        return video_format
 
     @model_validator(mode="after")
     def run_validations(self, info: ValidationInfo) -> "VideoContent":
@@ -147,20 +106,10 @@ class DocContent(BaseModel):
     format: str
     source: Source
 
-    @field_validator("format")
-    @classmethod
-    def validate_format(cls, doc_format, info: ValidationInfo):
-        """Validates that the image format is supported."""
-        model = info.context.get("model") if info.context else None
-
-        if model is not None and model.version != Version.TWO:
-            raise ValueError(f"Doc usage is only supported for Nova 2.0.")
-        else:
-            if doc_format.lower() not in NOVA_TWO_DOC_FORMATS:
-                raise ValueError(
-                    f"Invalid doc format, supported formats are {NOVA_TWO_DOC_FORMATS}"
-                )
-        return doc_format
+    @model_validator(mode="after")
+    def run_validations(self, info: ValidationInfo) -> "DocContent":
+        _run_validations_in_scope(self, info, TrainingMethod.SFT_FULL)
+        return self
 
 
 class ReasoningText(BaseModel):
@@ -356,6 +305,8 @@ class ContentItem(BaseModel):
 class Message(BaseModel):
     """Represents a conversation message with role and content."""
 
+    model_config = ConfigDict(extra="forbid")
+
     role: str
     content: List[ContentItem]
 
@@ -380,26 +331,15 @@ class Message(BaseModel):
         has_tool_use = any(item.toolUse is not None for item in content_items)
         has_tool_result = any(item.toolResult is not None for item in content_items)
 
-        model = info.context.get("model") if info.context else None
-
         if has_image or has_video or has_document:
             if self.role.lower() == "assistant":
                 raise ValueError(
                     "Invalid content, multimodal data cannot be included when role is 'assistant'."
                 )
-            if model == Model.NOVA_MICRO:
-                raise ValueError(
-                    "Invalid content, multimodal data cannot be used with Nova Micro. Please use another model."
-                )
 
         if has_reasoning and self.role.lower() != "assistant":
             raise ValueError(
                 "Invalid content. 'reasoningContent' can only be included when role is 'assistant'."
-            )
-
-        if has_reasoning and (model is not None and model.version != Version.TWO):
-            raise ValueError(
-                "Invalid content. 'reasoningContent' is only supported for Nova 2.0 model training."
             )
 
         # Validate tool use rules
@@ -463,6 +403,8 @@ class SystemMessage(BaseModel):
 class SFTConverseDatasetSample(BaseModel):
     """Represents a complete conversation sample with system message and message turns."""
 
+    model_config = ConfigDict(extra="forbid")
+
     schemaVersion: str
     system: Optional[List[SystemMessage]] = None
     toolConfig: Optional[ToolConfig] = None
@@ -489,12 +431,6 @@ class SFTConverseDatasetSample(BaseModel):
     def validate_tool_use_rules(self, info: ValidationInfo) -> "SFTConverseDatasetSample":
         """Validates tool use rules across the conversation."""
         if self.toolConfig is not None:
-            # Check if model supports tool configuration
-            model = info.context.get("model") if info.context else None
-            if model is not None and model.version != Version.TWO:
-                raise ValueError(
-                    "Invalid toolConfig. Tool configuration is only supported for Nova Lite 2.0 model training."
-                )
             validate_tool_use_in_conversation(self.messages, self.toolConfig)
         return self
 

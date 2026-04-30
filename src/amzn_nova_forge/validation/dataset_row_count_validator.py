@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ Recipe origin:
     S3 URIs for recipe templates. ``download_templates_from_s3`` fetches and parses them,
     ``RecipeBuilder._build_final_recipe`` applies user overrides, and the resulting dict
     flows through ``Validator.validate`` → ``_validate_dataset_row_counts`` → here.
-    ``min_rows_recipe_field`` checks resolve values from this HubContent-derived recipe.
+    ``valid_min_limit_recipe_field`` checks resolve values from this HubContent-derived recipe.
 """
 
 from typing import Any, Dict, List, Optional
@@ -65,9 +65,9 @@ def get_applicable_row_count_checks(
         c
         for c in DATASET_CHECKS
         if c.get("type") == "row_count"
-        and method in c["training_methods"]
-        and platform in c["platforms"]
-        and model in c["models"]
+        and method in c["applicable_training_methods"]
+        and platform in c["applicable_platforms"]
+        and model in c["applicable_models"]
     ]
 
 
@@ -87,8 +87,8 @@ def validate_row_counts(
     path), messages are appended instead.
 
     *recipe* is the fully-built recipe dict (train path); when provided,
-    ``min_rows_recipe_field`` checks resolve the value from the recipe.
-    When *recipe* is ``None`` (loader path), ``min_rows_recipe_field``
+    ``valid_min_limit_recipe_field`` checks resolve the value from the recipe.
+    When *recipe* is ``None`` (loader path), ``valid_min_limit_recipe_field``
     checks are silently skipped.
     """
     applicable = get_applicable_row_count_checks(training_method, platform, model)
@@ -107,21 +107,21 @@ def validate_row_counts(
         if check.get(CONFIG_TO_INDICATE_PRE_TRAINING_CHECK) and errors is None:
             continue
 
-        max_rows = check.get("max_rows")
-        if max_rows is not None and num_samples > max_rows:
+        valid_max_limit = check.get("valid_max_limit")
+        if valid_max_limit is not None and num_samples > valid_max_limit:
             _report(
                 f"Dataset has {num_samples} samples, which exceeds the "
-                f"maximum of {max_rows} for {ctx}."
+                f"maximum of {valid_max_limit} for {ctx}."
             )
 
-        min_rows = check.get("min_rows")
-        if min_rows is not None and num_samples < min_rows:
+        valid_min_limit = check.get("valid_min_limit")
+        if valid_min_limit is not None and num_samples < valid_min_limit:
             _report(
                 f"Dataset has {num_samples} samples, which is below the "
-                f"minimum of {min_rows} for {ctx}."
+                f"minimum of {valid_min_limit} for {ctx}."
             )
 
-        recipe_field = check.get("min_rows_recipe_field")
+        recipe_field = check.get("valid_min_limit_recipe_field")
         if recipe_field and recipe is not None:
             try:
                 effective_min = _get_recipe_value(recipe, recipe_field)

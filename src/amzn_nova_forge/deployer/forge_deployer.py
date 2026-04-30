@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -61,14 +61,11 @@ from amzn_nova_forge.util.sagemaker import (
     create_sagemaker_endpoint,
     create_sagemaker_model,
     find_sagemaker_model_by_tag,
-    setup_environment_variables,
 )
 from amzn_nova_forge.validation.endpoint_validator import (
-    ENV_CONTEXT_LENGTH,
-    ENV_MAX_CONCURRENCY,
     SAGEMAKER_ENDPOINT_ARN_REGEX,
+    SageMakerEndpointEnvironment,
     validate_endpoint_arn,
-    validate_sagemaker_environment_variables,
     validate_unit_count,
 )
 from amzn_nova_forge.validation.validator import Validator
@@ -117,7 +114,7 @@ class ForgeDeployer:
         unit_count: int = 1,
         execution_role_name: Optional[str] = None,
         sagemaker_instance_type: Optional[str] = "ml.p5.48xlarge",
-        sagemaker_environment_variables: Optional[Dict[str, Any]] = None,
+        sagemaker_environment: Optional[SageMakerEndpointEnvironment] = None,
         skip_model_reuse: bool = False,
     ) -> DeploymentResult:
         """Deploy a model to Bedrock or SageMaker.
@@ -130,7 +127,7 @@ class ForgeDeployer:
             unit_count: Instance/PT unit count.
             execution_role_name: Optional IAM role name.
             sagemaker_instance_type: EC2 instance type for SageMaker.
-            sagemaker_environment_variables: Optional env vars for SageMaker.
+            sagemaker_environment: Optional SageMaker endpoint environment config.
             skip_model_reuse: If True, always create a new model (skip tag-based discovery).
 
         Returns:
@@ -153,9 +150,9 @@ class ForgeDeployer:
 
             context_length = None
             max_concurrency = None
-            if sagemaker_environment_variables:
-                context_length = sagemaker_environment_variables.get(ENV_CONTEXT_LENGTH)
-                max_concurrency = sagemaker_environment_variables.get(ENV_MAX_CONCURRENCY)
+            if sagemaker_environment:
+                context_length = str(sagemaker_environment.context_length)
+                max_concurrency = str(sagemaker_environment.max_concurrency)
 
             _validate_sagemaker_instance_type_for_model_deployment(
                 sagemaker_instance_type, self.model, context_length, max_concurrency
@@ -178,15 +175,11 @@ class ForgeDeployer:
                 endpoint_name=endpoint_name,
                 instance_type=sagemaker_instance_type,
                 unit_count=unit_count,
-                environment_variables=sagemaker_environment_variables,
+                sagemaker_environment=sagemaker_environment,
                 execution_role_name=execution_role_name,
             )
         else:
             raise ValueError(f"Unsupported deployment platform: {deploy_platform}")
-
-    # ------------------------------------------------------------------
-    # Status helpers
-    # ------------------------------------------------------------------
 
     @_telemetry_emitter(
         Feature.DEPLOY,
@@ -249,10 +242,6 @@ class ForgeDeployer:
         status = check_deployment_status(arn, platform)
         logger.info(f"Deployment status for {arn}: {status}")
 
-    # ------------------------------------------------------------------
-    # Model reuse
-    # ------------------------------------------------------------------
-
     @_telemetry_emitter(
         Feature.DEPLOY,
         "find_published_model",
@@ -301,10 +290,6 @@ class ForgeDeployer:
         if found_arn:
             self._published_models.add((platform, found_arn, escrow_path))
         return found_arn
-
-    # ------------------------------------------------------------------
-    # Two-stage Bedrock deployment: create model, then deploy endpoint
-    # ------------------------------------------------------------------
 
     def create_custom_model(
         self,
@@ -381,7 +366,7 @@ class ForgeDeployer:
             else:
                 name_format = f"{self.model}-{self.region}".lower()
             endpoint_name = name_format.replace(".", "-").replace("_", "-")
-        model_name = f"{endpoint_name}-{uuid.uuid4()}"[:63]
+        model_name = f"{endpoint_name}-{uuid.uuid4()}"[:63].rstrip("-")
 
         create_kwargs: Dict[str, Any] = {
             "modelName": model_name,
@@ -527,10 +512,7 @@ class ForgeDeployer:
 
         # IAM permission validation for PT update
         if (
-            (
-                self._config.validation_config is None
-                or self._config.validation_config.get("iam", True)
-            )
+            (self._config.validation_config is None or self._config.validation_config.iam)
             and existing_deployment_arn
             and attempt_pt_update
         ):
@@ -614,10 +596,6 @@ class ForgeDeployer:
         )
         return result
 
-    # ------------------------------------------------------------------
-    # Internal: Bedrock combined flow (create model + deploy endpoint)
-    # ------------------------------------------------------------------
-
     def _deploy_to_bedrock(
         self,
         model_artifact_path: str,
@@ -693,27 +671,19 @@ class ForgeDeployer:
             endpoint_name=endpoint_name,
         )
 
-    # ------------------------------------------------------------------
-    # Internal: SageMaker deployment
-    # ------------------------------------------------------------------
-
     def _deploy_to_sagemaker(
         self,
         model_artifact_path: str,
         instance_type: str,
         unit_count: int,
         endpoint_name: Optional[str] = None,
-        environment_variables: Optional[Dict[str, Any]] = None,
+        sagemaker_environment: Optional[SageMakerEndpointEnvironment] = None,
         execution_role_name: Optional[str] = None,
         skip_model_reuse: bool = False,
     ) -> DeploymentResult:
-        if environment_variables:
-            validate_sagemaker_environment_variables(
-                environment_variables, model=self.model, instance_type=instance_type
-            )
-            env_vars = environment_variables
-        else:
-            env_vars = setup_environment_variables()
+        env = sagemaker_environment or SageMakerEndpointEnvironment()
+        env.validate_smi_config_bounds(model=self.model, instance_type=instance_type)
+        env_vars = env.to_env_dict()
 
         if endpoint_name is None:
             if self.method is not None:

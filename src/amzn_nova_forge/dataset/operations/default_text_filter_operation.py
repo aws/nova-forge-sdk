@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -42,12 +42,11 @@ import time
 from typing import Any, Dict, Tuple, Type
 
 from amzn_nova_forge.dataset.data_state import DataLocation, DataState
-from amzn_nova_forge.dataset.operations.base import OperationResult
+from amzn_nova_forge.dataset.operations.base import FilterOperationResult
 from amzn_nova_forge.dataset.operations.filter_operation import (
     NovaForgeFilterOperationBase,
     _reload_output_into_loader,
     _resolve_s3_directory_to_jsonl,
-    _try_import_internal_only,
 )
 from amzn_nova_forge.manager.runtime_manager import DataPrepJobConfig
 
@@ -75,14 +74,11 @@ class DefaultTextFilterOperation(NovaForgeFilterOperationBase):
 
     def get_supported_runtimes(self) -> Tuple[Type, ...]:
         from amzn_nova_forge.manager.glue_runtime_manager import GlueRuntimeManager
+        from amzn_nova_forge.manager.runtime_manager import SMTJRuntimeManager
 
-        runtimes: Tuple[Type, ...] = (GlueRuntimeManager,)
-        internal_only = _try_import_internal_only()
-        if internal_only is not None:
-            runtimes = runtimes + (internal_only.SMTJDataPrepRuntimeManager,)
-        return runtimes
+        return (GlueRuntimeManager, SMTJRuntimeManager)
 
-    def execute(self, loader: Any, **kwargs: Any) -> OperationResult:
+    def execute(self, loader: Any, **kwargs: Any) -> FilterOperationResult:
         """Execute the default text filter pipeline.
 
         Args:
@@ -94,13 +90,14 @@ class DefaultTextFilterOperation(NovaForgeFilterOperationBase):
             text_field: Column/field name containing the text. Default ``"text"``.
             extra_args: Additional kwargs forwarded to the pipeline builder.
             runtime_manager: A ``RuntimeManager`` instance. Defaults to
-                ``GlueRuntimeManager`` with default settings.
+                ``SMTJRuntimeManager(data_prep=True)``. Glue is still supported
+                but customers must pass ``GlueRuntimeManager(...)`` explicitly.
             job_name: Custom job name. Auto-generated if not provided.
             region: AWS region.
             poll_interval: Seconds between status polls.
 
         Returns:
-            OperationResult with output_state describing the filtered output.
+            FilterOperationResult with output_state and filter counts.
         """
         state = kwargs.pop("state")
         state = self.prepare_input(state, **kwargs)
@@ -148,15 +145,19 @@ class DefaultTextFilterOperation(NovaForgeFilterOperationBase):
         if loader is not None and output_path:
             _reload_output_into_loader(loader, output_path, output_format)
 
-        self._log_complete(output_path)
-
         output_state = DataState(
             path=output_path,
             format=output_format,
             location=DataLocation.S3 if output_path.startswith("s3://") else DataLocation.LOCAL,
         )
 
-        return OperationResult(
+        # TODO: DefaultTextFilter runs on Ray which does not produce a filter
+        # summary. Return actual counts when such a summary is available.
+        result = FilterOperationResult(
             status="SUCCEEDED",
             output_state=output_state,
+            filtered_count=0,
+            total_count=0,
         )
+        self._log_complete(output_path, result)
+        return result

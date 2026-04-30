@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -254,7 +254,7 @@ class ForgeTrainer:
         if dry_run:
             return None
 
-        unique_job_name = f"{job_name}-{uuid.uuid4()}"[:63]
+        unique_job_name = f"{job_name}-{uuid.uuid4()}"[:63].rstrip("-")
         start_time = datetime.now(timezone.utc)
 
         job_config_params: Dict[str, Any] = {

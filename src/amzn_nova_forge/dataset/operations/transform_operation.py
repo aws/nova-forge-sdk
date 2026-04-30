@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -87,10 +87,6 @@ class SchemaTransformOperation(NovaForgeTransformOperation):
             generator=loader.dataset,
         )
         return OperationResult(status="SUCCEEDED", output_state=local_state)
-
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _has_data(loader: Any) -> bool:

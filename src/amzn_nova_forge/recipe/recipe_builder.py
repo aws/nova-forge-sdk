@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -36,6 +36,7 @@ from amzn_nova_forge.core.enums import (
     Version,
 )
 from amzn_nova_forge.core.runtime import RuntimeManager
+from amzn_nova_forge.core.types import ValidationConfig
 from amzn_nova_forge.monitor import MLflowMonitor
 from amzn_nova_forge.rft_multiturn import RFTMultiturnInfrastructure
 from amzn_nova_forge.util.checkpoint_util import validate_checkpoint_uri
@@ -813,7 +814,7 @@ class RecipeBuilder:
         overrides: Optional[Dict[str, Any]] = None,
         input_recipe_path: Optional[str] = None,
         output_recipe_path: Optional[str] = None,
-        validation_config: Optional[Dict[str, bool]] = None,
+        validation_config: Optional[ValidationConfig] = None,
     ) -> tuple:
         """
         Generate the recipe based on the user input.
@@ -822,7 +823,7 @@ class RecipeBuilder:
             overrides: Optional dict of user overrides to apply to the recipe
             input_recipe_path: Optional path for a YAML recipe file (both S3 and local paths are accepted)
             output_recipe_path: Optional path where the recipe YAML should be saved (only local path is accepted)
-            validation_config: Optional validation configuration dict
+            validation_config: Optional ValidationConfig for validation checks
 
         Returns:
             tuple of resolved values: recipe_path str, output_s3_path str, data_s3_path str

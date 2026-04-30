@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ ensuring they meet all requirements for reinforcement fine-tuning with and witho
 
 from typing import Dict, Iterator, List, Optional, Union
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from amzn_nova_forge.core.enums import Model
 
@@ -90,28 +90,37 @@ class RFTTool(BaseModel):
 
 
 class RFTMessage(BaseModel):
-    """Represents a simple RFT message with optional role and content per RFT specification."""
+    """Represents an RFT message per RFT specification."""
 
     role: Optional[str] = None
-    content: Optional[str] = None
+    content: Optional[Union[str, List]] = None
+    tool_calls: Optional[List] = None
+    tool_call_id: Optional[str] = None
+    model_config = ConfigDict(extra="forbid")
 
     @field_validator("role")
     @classmethod
     def validate_role(cls, role):
-        # Role is optional, but if provided must be valid
         if role is not None:
-            valid_roles = ["system", "user", "assistant"]
+            valid_roles = ["system", "user", "assistant", "tool", "bot", "developer"]
             if role.lower() not in valid_roles:
                 raise ValueError(f"Invalid role, must be one of {valid_roles}")
+            if role.lower() == "developer":
+                return "system"
         return role
 
     @field_validator("content")
     @classmethod
     def validate_content(cls, content):
-        # Content is optional, but if provided must not be empty
         if content is not None:
-            if not content.strip():
-                raise ValueError("Invalid content, if provided cannot be empty")
+            if isinstance(content, str):
+                if not content.strip():
+                    raise ValueError("Invalid content, if provided cannot be empty")
+            elif isinstance(content, list):
+                if not content:
+                    raise ValueError("Invalid content, if provided as list cannot be empty")
+            else:
+                raise ValueError("Invalid content, must be a string or list")
         return content
 
 

@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,11 +15,11 @@
 
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 import boto3
 from botocore.exceptions import ClientError
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from amzn_nova_forge.core.enums import Model, Platform
 from amzn_nova_forge.dataset.dataset_validator.rft_dataset_validator import (
@@ -29,67 +29,34 @@ from amzn_nova_forge.telemetry import UNKNOWN, Feature, _telemetry_emitter
 from amzn_nova_forge.util.logging import logger
 
 
+class RewardMetric(BaseModel):
+    """A single metric or reward entry from a reward function output."""
+
+    name: str
+    value: Union[int, float]
+    type: Literal["Metric", "Reward"]
+
+
+class RewardFunctionOutput(BaseModel):
+    """Validated output format for a reward function result."""
+
+    id: Any
+    aggregate_reward_score: Union[int, float]
+    metrics_list: Optional[List[RewardMetric]] = None
+
+
 def _validate_output_format(result: Dict[str, Any], idx: int) -> List[str]:
-    """
-    Validate the output format of a single reward function result.
-
-    Args:
-        result: The output dict from the reward function
-        idx: Index of the result for error messages
-
-    Returns:
-        List of error messages (empty if valid)
-    """
-    errors = []
-
+    """Validate the output format of a single reward function result."""
     if not isinstance(result, dict):
-        errors.append(f"Output {idx}: Expected dict, got {type(result).__name__}")
-        return errors
-
-    # Check required fields
-    if "id" not in result:
-        errors.append(f"Output {idx}: Missing 'id' field (required for RFT)")
-
-    if "aggregate_reward_score" not in result:
-        errors.append(f"Output {idx}: Missing 'aggregate_reward_score' field (required for RFT)")
-    elif not isinstance(result.get("aggregate_reward_score"), (int, float)):
-        errors.append(f"Output {idx}: 'aggregate_reward_score' should be a number")
-
-    # Validate metrics_list if present (optional for both training and evaluation)
-    if "metrics_list" in result:
-        metrics_list = result["metrics_list"]
-        if not isinstance(metrics_list, list):
-            errors.append(f"Output {idx}: 'metrics_list' should be a list")
-        else:
-            for metric_idx, metric in enumerate(metrics_list):
-                if not isinstance(metric, dict):
-                    errors.append(
-                        f"Output {idx}, metric {metric_idx}: Expected dict, got {type(metric).__name__}"
-                    )
-                else:
-                    # Validate required metric fields
-                    if "name" not in metric:
-                        errors.append(f"Output {idx}, metric {metric_idx}: Missing 'name' field")
-                    elif not isinstance(metric["name"], str):
-                        errors.append(
-                            f"Output {idx}, metric {metric_idx}: 'name' should be a string"
-                        )
-
-                    if "value" not in metric:
-                        errors.append(f"Output {idx}, metric {metric_idx}: Missing 'value' field")
-                    elif not isinstance(metric["value"], (int, float)):
-                        errors.append(
-                            f"Output {idx}, metric {metric_idx}: 'value' should be a number"
-                        )
-
-                    if "type" not in metric:
-                        errors.append(f"Output {idx}, metric {metric_idx}: Missing 'type' field")
-                    elif metric["type"] not in ["Metric", "Reward"]:
-                        errors.append(
-                            f"Output {idx}, metric {metric_idx}: 'type' should be 'Metric' or 'Reward', got '{metric['type']}'"
-                        )
-
-    return errors
+        return [f"Output {idx}: Expected dict, got {type(result).__name__}"]
+    try:
+        RewardFunctionOutput.model_validate(result)
+        return []
+    except ValidationError as e:
+        return [
+            f"Output {idx}: {'.'.join(str(p) for p in err['loc'])} - {err['msg']}"
+            for err in e.errors()
+        ]
 
 
 @_telemetry_emitter(

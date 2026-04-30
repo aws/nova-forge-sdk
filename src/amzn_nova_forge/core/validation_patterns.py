@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ Single source of truth for regex patterns used by both core/ and validation/.
 import re
 
 # https://docs.aws.amazon.com/sagemaker/latest/APIReference/API_TrainingJob.html
-JOB_NAME_REGEX = re.compile(r"^[a-zA-Z0-9\-]{1,63}$")
+JOB_NAME_REGEX = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$")
 
 # https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
 NAMESPACE_REGEX = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")

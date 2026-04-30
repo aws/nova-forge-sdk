@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -42,6 +42,7 @@ Supported input formats:
 import csv
 import json
 from abc import ABC, abstractmethod
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterator, Optional, Tuple, Union
 
 import pyarrow as pa
@@ -55,7 +56,8 @@ from amzn_nova_forge.telemetry import Feature, _telemetry_emitter
 
 from ..util.logging import logger
 from ..util.recipe import load_file_content
-from .data_state import DataLocation, DataState, OutputPathResolver
+from ..util.s3_utils import get_dataprep_bucket_name
+from .data_state import DataLocation, DataState, OutputPathResolver, PathSuffix
 from .file_utils import (
     check_extension,
     check_path_exists,
@@ -90,19 +92,24 @@ def _extract_model_training_method(**kwargs):
             training_method = method
     if training_method is not None:
         extra["method"] = training_method
+
+    eval_task = kwargs.get("eval_task")
+    if eval_task is not None:
+        extra["evalTask"] = eval_task.value if hasattr(eval_task, "value") else str(eval_task)
+
     return extra or None
 
 
 def _extract_filter_method(**kwargs):
-    """Extra-info callback for telemetry: extracts the filter method name."""
+    """Extra-info callback for telemetry: extracts the filter method name and platform."""
+    extra = {}
     method = kwargs.get("method")
     if method is not None:
-        return {"filterMethod": method.value}
-    return None
-
-
-# Filters that must run after transform() — they inspect the transformed chat template format.
-_POST_TRANSFORM_FILTERS = frozenset({FilterMethod.INVALID_RECORDS})
+        extra["filterMethod"] = method.value
+    runtime_manager = kwargs.get("runtime_manager")
+    if runtime_manager is not None:
+        extra["platform"] = runtime_manager.platform  # Platform enum instance
+    return extra or None
 
 
 class DatasetLoader(ABC):
@@ -144,13 +151,11 @@ class DatasetLoader(ABC):
         # or ("validate", ValidateMethod, kwargs).
         self._pending_operations: list[tuple[str, Union[FilterMethod, TransformMethod], dict]] = []
 
-        # Tracks whether transform() has been queued (guards filter ordering)
-        self._has_transforms: bool = False
-
         # Persisted state from the last execute() call, so subsequent
         # terminal operations don't replay the entire pipeline.
         self._last_state: Optional["DataState"] = None
         self._is_materialized: bool = False
+        self._session_id: Optional[str] = None
 
     # --- Unified dataset accessor ---
     @property
@@ -221,6 +226,7 @@ class DatasetLoader(ABC):
         self._load_path = path
         self._last_state = None  # Reset persisted state for new pipeline
         self._is_materialized = False
+        self._session_id = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
         return self
 
     @_telemetry_emitter(Feature.DATA_PREP, "show")
@@ -348,7 +354,6 @@ class DatasetLoader(ABC):
 
         self._pending_operations.append(("transform", method, kwargs))
         logger.info("Queued transform: %s", method.value)
-        self._has_transforms = True
         return self
 
     @_telemetry_emitter(Feature.DATA_PREP, "validate", extra_info_fn=_extract_model_training_method)
@@ -467,28 +472,6 @@ class DatasetLoader(ABC):
         Returns:
             self (for method chaining)
         """
-        # Pre-transform filters (DEFAULT_TEXT_FILTER, EXACT_DEDUP) operate on
-        # raw flat-text data and must be called before transform().
-        # Post-transform filters (INVALID_RECORDS) inspect the chat template
-        # and must be called after transform().
-
-        if self._has_transforms and method not in _POST_TRANSFORM_FILTERS:
-            raise ValueError(
-                "filter() must be called before transform() for pre-transform filters "
-                f"(got {method.value}). "
-                "Filters like DEFAULT_TEXT_FILTER and EXACT_DEDUP operate on raw data "
-                "with a flat text field, but transform() converts data to a nested "
-                "format (e.g. Converse) that these filters cannot process. "
-                "Use: loader.load(...).filter(...).transform(...) instead."
-            )
-        if not self._has_transforms and method in _POST_TRANSFORM_FILTERS:
-            logger.warning(
-                "%s filter expects data in the correct schema format, not raw text. "
-                "If you loaded pre-transformed data, verify it is in the "
-                "expected schema format. Otherwise, call transform() before "
-                "filter(). Samples that fail schema validation will be removed.",
-                method.value,
-            )
         self._pending_operations.append(("filter", method, kwargs))
         logger.info("Queued filter: %s", method.value)
         return self
@@ -558,13 +541,13 @@ class DatasetLoader(ABC):
 
         self._is_materialized = False
         state = self._last_state or DataState.from_loader(self)
-        resolver = OutputPathResolver(self._load_path or state.path)
+        resolver = OutputPathResolver(self._load_path or state.path, self._session_id)
 
         for op_type, method, kwargs in self._pending_operations:
             op = self._get_operation(op_type, method)
             kwargs["state"] = state
             if "output_path" not in kwargs:
-                kwargs["output_path"] = resolver.resolve(method)
+                kwargs["output_path"] = resolver.resolve_path(method)
             result = op.execute(self, **kwargs)
             state = result.output_state
 

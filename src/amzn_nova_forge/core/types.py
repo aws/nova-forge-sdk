@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, Optional, TypedDict
 
+from pydantic import BaseModel
+
 from amzn_nova_forge.core.constants import (
     DEFAULT_JOB_CACHE_DIR,
     REGION_TO_ESCROW_ACCOUNT_MAPPING,
@@ -28,7 +30,16 @@ from amzn_nova_forge.core.constants import (
 from amzn_nova_forge.core.enums import DeployPlatform, Platform, TrainingMethod
 
 if TYPE_CHECKING:
+    from amzn_nova_forge.core.job_cache import JobCachingConfig
     from amzn_nova_forge.monitor.mlflow_monitor import MLflowMonitor
+
+
+class ValidationConfig(BaseModel):
+    """Configuration controlling which pre-flight validation checks to run."""
+
+    iam: bool = True
+    infra: bool = True
+    recipe: bool = True
 
 
 @dataclass
@@ -46,12 +57,12 @@ class ForgeConfig:
     kms_key_id: Optional[str] = None
     output_s3_path: Optional[str] = None
     generated_recipe_dir: Optional[str] = None
-    validation_config: Optional[Dict[str, bool]] = None
+    validation_config: Optional[ValidationConfig] = None
     image_uri: Optional[str] = None
     mlflow_monitor: Optional[MLflowMonitor] = None
     enable_job_caching: bool = False
     job_cache_dir: str = DEFAULT_JOB_CACHE_DIR
-    job_caching_config: Optional[Dict[str, Any]] = None
+    job_caching_config: Optional[JobCachingConfig] = None
 
 
 class ModelConfigDict(TypedDict):

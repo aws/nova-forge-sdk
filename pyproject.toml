@@ -18,7 +18,10 @@ license = "Apache-2.0"
 readme = "README.md"
 dependencies = [
     "boto3",
+    "filetype",
     "matplotlib",
+    "pydantic>=2.0",
+    "pyarrow",
     "sagemaker>=3.5.0",
 ]
 

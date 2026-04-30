@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -74,6 +74,7 @@ from .trainer import ForgeTrainer
 from .util.reward_verifier import (
     verify_reward_function,
 )
+from .validation.endpoint_validator import SageMakerEndpointEnvironment
 
 _LAZY_IMPORTS = {
     "DefaultTextFilterOperation": ".dataset.operations.default_text_filter_operation",
@@ -145,4 +146,5 @@ __all__ = [
     "list_rft_stacks",
     "create_rft_execution_role",
     "verify_reward_function",
+    "SageMakerEndpointEnvironment",
 ]

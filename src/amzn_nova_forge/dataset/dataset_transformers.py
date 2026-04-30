@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -59,10 +59,6 @@ class TransformContext:
 
 
 class DatasetTransformer:
-    default_system_msg = (
-        "You are a helpful assistant who answers the question based on the task assigned"
-    )
-
     @staticmethod
     def convert_to_converse_sft_nova_one(rec, column_mappings, transform_ctx=None, s3_client=None):
         # These are the required columns for SFT Converse format for Nova 1.0.
@@ -86,11 +82,7 @@ class DatasetTransformer:
         # TODO: Clean up the checks here into a helper function.
 
         # If it has the required columns, put together the rest of the message.
-        system_message = (
-            [{"text": rec[system_col]}]
-            if system_col and system_col in rec
-            else [{"text": DatasetTransformer.default_system_msg}]
-        )
+        system_message = [{"text": rec[system_col]}] if system_col and system_col in rec else None
 
         # User message
         user_content = []
@@ -147,7 +139,6 @@ class DatasetTransformer:
         # Final JSON Line
         conversation = {
             "schemaVersion": "bedrock-conversation-2024",
-            "system": system_message,
             "messages": [
                 {
                     "role": "user",
@@ -156,6 +147,8 @@ class DatasetTransformer:
                 {"role": "assistant", "content": [{"text": rec[answer_col]}]},
             ],
         }
+        if system_message:
+            conversation["system"] = system_message
         return conversation
 
     @staticmethod
@@ -180,11 +173,7 @@ class DatasetTransformer:
             )
 
         # If it has the required columns, put together the rest of the message.
-        system_message = (
-            [{"text": rec[system_col]}]
-            if system_col and system_col in rec
-            else [{"text": DatasetTransformer.default_system_msg}]
-        )
+        system_message = [{"text": rec[system_col]}] if system_col and system_col in rec else None
 
         # User message
         user_content = []
@@ -253,7 +242,6 @@ class DatasetTransformer:
         # Final JSON Line
         conversation = {
             "schemaVersion": "bedrock-conversation-2024",
-            "system": system_message,
             "messages": [
                 {
                     "role": "user",
@@ -262,6 +250,8 @@ class DatasetTransformer:
                 {"role": "assistant", "content": assistant_content},
             ],
         }
+        if system_message:
+            conversation["system"] = system_message
         return conversation
 
     @staticmethod
@@ -620,7 +610,7 @@ class DatasetTransformer:
         Convert OpenAI messages to Converse format for Nova 1.0 and 2.0 SFT.
         Merges consecutive tool messages into a single user message to ensure alternating roles.
         """
-        system_content = DatasetTransformer.default_system_msg
+        system_content = None
         converse_messages = []
         pending_tool_results = []  # Collect tool results to merge
 
@@ -721,9 +711,11 @@ class DatasetTransformer:
 
         conversation = {
             "schemaVersion": "bedrock-conversation-2024",
-            "system": [{"text": system_content}],
             "messages": converse_messages,
         }
+
+        if system_content is not None:
+            conversation["system"] = [{"text": system_content}]
 
         # Add toolConfig if tools are present
         tool_config = DatasetTransformer._convert_openai_tools_to_converse_toolconfig(tools)

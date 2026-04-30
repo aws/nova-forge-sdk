@@ -27,34 +27,34 @@ class ForgeConfig:
     kms_key_id: Optional[str] = None
     output_s3_path: Optional[str] = None
     generated_recipe_dir: Optional[str] = None
-    validation_config: Optional[Dict[str, bool]] = None
+    validation_config: Optional[ValidationConfig] = None
     image_uri: Optional[str] = None
     mlflow_monitor: Optional[MLflowMonitor] = None
     enable_job_caching: bool = False
     job_cache_dir: str = "~/.nova-forge/cache"
-    job_caching_config: Optional[Dict[str, Any]] = None
+    job_caching_config: Optional[JobCachingConfig] = None
 ```
 
 **Parameters:**
 - `kms_key_id` (Optional[str]): KMS key ID for S3 encryption
 - `output_s3_path` (Optional[str]): S3 path for output artifacts. Auto-generated if not provided
 - `generated_recipe_dir` (Optional[str]): Local path to save generated recipe files
-- `validation_config` (Optional[Dict[str, bool]]): Controls pre-flight validation. Keys: `iam`, `infra`, `recipe` (all default to True)
+- `validation_config` (Optional[ValidationConfig]): Controls pre-flight validation. Fields: `iam` (bool), `infra` (bool), `recipe` (bool) — all default to True
 - `image_uri` (Optional[str]): Custom container image URI override
 - `mlflow_monitor` (Optional[MLflowMonitor]): MLflow monitoring configuration (SageMaker only)
 - `enable_job_caching` (bool): Enable caching of completed job results for reuse. Default: False
 - `job_cache_dir` (str): Directory for cached job results. Default: `~/.nova-forge/cache`
-- `job_caching_config` (Optional[Dict[str, Any]]): Advanced caching configuration options
+- `job_caching_config` (Optional[JobCachingConfig]): Advanced caching configuration. Fields: `include_core` (bool), `include_recipe` (bool), `include_infra` (bool), `include_params` (List[str]), `exclude_params` (List[str]), `allowed_statuses` (List[JobStatus])
 
 **Example:**
 ```python
-from amzn_nova_forge.core import ForgeConfig
+from amzn_nova_forge.core import ForgeConfig, ValidationConfig
 from amzn_nova_forge.monitor import MLflowMonitor
 
 config = ForgeConfig(
     output_s3_path="s3://my-bucket/output",
     kms_key_id="my-kms-key-id",
-    validation_config={"iam": True, "infra": True, "recipe": True},
+    validation_config=ValidationConfig(iam=True, infra=True, recipe=True),
     mlflow_monitor=MLflowMonitor(
         tracking_uri="arn:aws:sagemaker:us-east-1:123456789012:mlflow-app/app-xxx",
         experiment_name="nova-customization"
@@ -387,7 +387,7 @@ def deploy(
     unit_count: int = 1,
     execution_role_name: Optional[str] = None,
     sagemaker_instance_type: str = "ml.p5.48xlarge",
-    sagemaker_environment_variables: Optional[Dict[str, Any]] = None,
+    sagemaker_environment: Optional[SageMakerEndpointEnvironment] = None,
     skip_model_reuse: bool = False,
 ) -> DeploymentResult
 ```
@@ -399,10 +399,11 @@ def deploy(
 - `unit_count` (int): Number of PT units (Bedrock PT) or instances (SageMaker). Default: 1
 - `execution_role_name` (Optional[str]): IAM role name. If omitted, the SDK creates a default role
 - `sagemaker_instance_type` (str): Instance type for SageMaker deployment. Default: `"ml.p5.48xlarge"`
-- `sagemaker_environment_variables` (Optional[Dict[str, Any]]): Environment variables for SageMaker model configuration. Accepted keys:
-  - Required: `CONTEXT_LENGTH`, `MAX_CONCURRENCY`
-  - Optional generation defaults: `DEFAULT_TEMPERATURE`, `DEFAULT_TOP_P`, `DEFAULT_TOP_K`, `DEFAULT_MAX_NEW_TOKENS`, `DEFAULT_LOGPROBS`
-  - Optional speculative decoding: `SPECULATIVE_DECODING_METHOD` (`"eagle3"` or `"suffix"`), `DISABLE_SPECULATIVE_DECODING` (`"true"` or `"false"`), `SUFFIX_DECODING_MAX_TREE_DEPTH`, `SUFFIX_DECODING_MAX_CACHED_REQUESTS`, `SUFFIX_DECODING_MAX_SPEC_FACTOR`, `SUFFIX_DECODING_MIN_TOKEN_PROB`
+- `sagemaker_environment` (Optional[SageMakerEndpointEnvironment]): SageMaker endpoint environment config. Fields:
+  - `CONTEXT_LENGTH` (int, default: 4000), `MAX_CONCURRENCY` (int, default: 1)
+  - Optional generation defaults: `DEFAULT_TEMPERATURE` (0–2), `DEFAULT_TOP_P` (1e-10–1), `DEFAULT_TOP_K` (-1 to disable, or ≥1), `DEFAULT_MAX_NEW_TOKENS` (≥1), `DEFAULT_LOGPROBS` (1–20)
+  - Optional speculative decoding: `SPECULATIVE_DECODING_METHOD` (`"eagle3"` or `"suffix"`), `DISABLE_SPECULATIVE_DECODING` (`"true"` or `"false"`), `NUM_SPECULATIVE_TOKENS` (1–10), `SUFFIX_DECODING_MAX_TREE_DEPTH`, `SUFFIX_DECODING_MAX_CACHED_REQUESTS`, `SUFFIX_DECODING_MAX_SPEC_FACTOR`, `SUFFIX_DECODING_MIN_TOKEN_PROB`
+  - Optional memory/quantization: `KV_CACHE_DTYPE` (`"fp8"`), `QUANTIZATION_DTYPE` (`"fp8"`)
 - `skip_model_reuse` (bool): If True, always create a new model. Default: False
 
 **Returns:**
@@ -1148,7 +1149,7 @@ def deploy(
   job_result: Optional[TrainingResult] = None,
   execution_role_name: Optional[str] = None,
   sagemaker_instance_type: Optional[str] = "ml.p5.48xlarge",
-  sagemaker_environment_variables: Optional[Dict[str, Any]] = None,
+  sagemaker_environment: Optional[SageMakerEndpointEnvironment] = None,
 ) -> DeploymentResult
 ```
 
@@ -1166,10 +1167,7 @@ def deploy(
 - `job_result` (Optional[TrainingResult]): Training job result object to use for extracting checkpoint path and validating job completion. Also used to retrieve job_id if it's not provided.
 - `execution_role_name` (Optional[str]): IAM role for Bedrock or SageMaker. If provided, used as-is — no policies created or attached. If omitted, the SDK creates and manages a default role with required policies.
 - `sagemaker_instance_type`: Optional EC2 instance type for SageMaker deployment, defaults to ml.p5.48xlarge
-- `sagemaker_environment_variables`: Optional environment variables for model configuration. Accepted keys:
-  - Required: `CONTEXT_LENGTH`, `MAX_CONCURRENCY`
-  - Optional generation defaults: `DEFAULT_TEMPERATURE`, `DEFAULT_TOP_P`, `DEFAULT_TOP_K`, `DEFAULT_MAX_NEW_TOKENS`, `DEFAULT_LOGPROBS`
-  - Optional speculative decoding: `SPECULATIVE_DECODING_METHOD` (`"eagle3"` or `"suffix"`), `DISABLE_SPECULATIVE_DECODING` (`"true"` or `"false"`), `SUFFIX_DECODING_MAX_TREE_DEPTH`, `SUFFIX_DECODING_MAX_CACHED_REQUESTS`, `SUFFIX_DECODING_MAX_SPEC_FACTOR`, `SUFFIX_DECODING_MIN_TOKEN_PROB`
+- `sagemaker_environment` (Optional[SageMakerEndpointEnvironment]): SageMaker endpoint environment config. See `SageMakerEndpointEnvironment` for available fields and defaults.
 **Returns:**
 - `DeploymentResult`: Contains:
  - `endpoint` (EndpointInfo): Endpoint information
@@ -1201,10 +1199,10 @@ sagemaker_deployment = customizer.deploy(
  deploy_platform=DeployPlatform.SAGEMAKER,
  unit_count=1,
  endpoint_name="my-custom-nova-model-sagemaker",
- sagemaker_environment_variables={
-   "CONTEXT_LENGTH": "12000",
-   "MAX_CONCURRENCY": "16"
- }
+ sagemaker_environment=SageMakerEndpointEnvironment(
+   context_length=8000,
+   max_concurrency=4,
+ )
 )
 print(f"Model deployed: {sagemaker_deployment.endpoint.uri}")
 print(f"Endpoint: {sagemaker_deployment.endpoint.endpoint_name}")
@@ -1363,7 +1361,7 @@ def deploy_to_sagemaker(
   model_artifact_path: Optional[str] = None,
   unit_count: int = 1,
   endpoint_name: Optional[str] = None,
-  environment_variables: Optional[Dict[str, Any]] = None,
+  sagemaker_environment: Optional[SageMakerEndpointEnvironment] = None,
   execution_role_name: Optional[str] = None,
   skip_model_reuse: bool = False,
 ) -> DeploymentResult
@@ -1375,10 +1373,7 @@ def deploy_to_sagemaker(
 - `model_artifact_path` (Optional[str]): S3 path to model artifacts. Creates a new SM model.
 - `unit_count` (int): Number of instances. Default: 1.
 - `endpoint_name` (Optional[str]): Endpoint name (auto-generated if not provided).
-- `environment_variables` (Optional[Dict]): Model configuration. Accepted keys:
-  - Required: `CONTEXT_LENGTH`, `MAX_CONCURRENCY`
-  - Optional generation defaults: `DEFAULT_TEMPERATURE`, `DEFAULT_TOP_P`, `DEFAULT_TOP_K`, `DEFAULT_MAX_NEW_TOKENS`, `DEFAULT_LOGPROBS`
-  - Optional speculative decoding: `SPECULATIVE_DECODING_METHOD` (`"eagle3"` or `"suffix"`), `DISABLE_SPECULATIVE_DECODING` (`"true"` or `"false"`), `SUFFIX_DECODING_MAX_TREE_DEPTH`, `SUFFIX_DECODING_MAX_CACHED_REQUESTS`, `SUFFIX_DECODING_MAX_SPEC_FACTOR`, `SUFFIX_DECODING_MIN_TOKEN_PROB`
+- `sagemaker_environment` (Optional[SageMakerEndpointEnvironment]): SageMaker endpoint environment config. See `SageMakerEndpointEnvironment` for available fields and defaults.
 - `execution_role_name` (str): IAM execution role name.
 - `skip_model_reuse` (bool): If True, always create a new model (skip tag-based discovery). Default: False.
 
@@ -1648,6 +1643,8 @@ def __init__(
     encrypt_inter_container_traffic: bool = False,
     subnets: Optional[list[str]] = None,
     security_group_ids: Optional[list[str]] = None,
+    max_job_runtime: Optional[int] = 86400,
+    job_submit_poll_timeout: int = 30,
     rft_lambda: Optional[str] = None,
 )
 ```
@@ -1660,6 +1657,8 @@ def __init__(
 - `encrypt_inter_container_traffic` (bool): Boolean that determines whether to encrypt inter-container traffic. Default value is False.
 - `subnets` (Optional[list[str]]): Optional list of strings representing subnets. Default value is None.
 - `security_group_ids` (Optional[list[str]]): Optional list of strings representing security group IDs. Default value is None.
+- `max_job_runtime` (Optional[int]): Max Job Runtime in seconds (default: 1 day)
+- `job_submit_poll_timeout` (int): Maximum seconds to poll for the training job after submission (default: 30). Uses exponential backoff.
 - `rft_lambda` (Optional[str]): Lambda ARN or local `.py` file path for RFT reward function. Can also be set or updated after construction.
 
 **Example:**
@@ -2379,7 +2378,7 @@ loader.validate(
 #### `filter()`
 Queues a data filtering operation on the loader. All filters are lazy — `filter()` records the intent and execution happens when `execute()` is called (or implicitly via `transform()`, `show()`, `save()`). Multiple `filter()` calls can be chained.
 
-**Note:** Different filters work on different data formats. Text filters (`DEFAULT_TEXT_FILTER`, `EXACT_DEDUP`, `FUZZY_DEDUP`) operate on raw data and cannot be called after `transform()`. `INVALID_RECORDS` works on schema-formatted data and logs a warning if `transform()` hasn't been called.
+**Note:** Different filters work on different data formats. Text filters (`DEFAULT_TEXT_FILTER`, `EXACT_DEDUP`, `FUZZY_DEDUP`) operate on raw data with a flat text field. `INVALID_RECORDS` works on schema-formatted data. Using a filter on an incompatible data format may produce unexpected results.
 
 **Signature:**
 ```python
@@ -2420,10 +2419,9 @@ INVALID_RECORDS runs locally and modifies the loader's dataset in place.
 > **Note:** After `INVALID_RECORDS` runs, use `loader.show()` to inspect the filtered dataset or `loader.save()` to persist the results.
 
 **Raises:**
-- `ValueError`: If a text filter (`DEFAULT_TEXT_FILTER`, `EXACT_DEDUP`, `FUZZY_DEDUP`) is called after `transform()`.
 - `ValueError`: If required kwargs (`training_method`, `model`, `platform`) are missing for `INVALID_RECORDS`.
 
-> **Note:** If your data is already in the correct schema format (e.g. previously transformed and saved), you can call `filter(INVALID_RECORDS)` directly after `load()` without `transform()`. A warning will be logged reminding you to verify the data format.
+> **Note:** If your data is already in the correct schema format (e.g. previously transformed and saved), you can call `filter(INVALID_RECORDS)` directly after `load()` without `transform()`.
 
 **Example (full chain):**
 ```python

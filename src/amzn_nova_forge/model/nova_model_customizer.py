@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -35,6 +35,7 @@ from amzn_nova_forge.core.enums import (
     Platform,
     TrainingMethod,
 )
+from amzn_nova_forge.core.job_cache import JobCachingConfig
 from amzn_nova_forge.core.result import (
     EvaluationResult,
     TrainingResult,
@@ -45,6 +46,7 @@ from amzn_nova_forge.core.types import (
     DeploymentResult,
     EndpointInfo,
     ForgeConfig,
+    ValidationConfig,
 )
 from amzn_nova_forge.manager.runtime_manager import (
     BedrockRuntimeManager,
@@ -88,7 +90,10 @@ from amzn_nova_forge.util.data_mixing import DataMixing
 from amzn_nova_forge.util.data_utils import is_multimodal_data
 from amzn_nova_forge.util.logging import logger
 from amzn_nova_forge.util.recipe import load_recipe_templates
-from amzn_nova_forge.validation.endpoint_validator import is_sagemaker_arn
+from amzn_nova_forge.validation.endpoint_validator import (
+    SageMakerEndpointEnvironment,
+    is_sagemaker_arn,
+)
 
 
 def _resolve_deploy_platform(
@@ -187,7 +192,9 @@ class NovaModelCustomizer:
         self.infra = infra
         self._data_s3_path = data_s3_path
         self.model_path = model_path
-        self.validation_config = validation_config
+        self.validation_config = (
+            ValidationConfig(**validation_config) if validation_config else None
+        )
         self.deployment_mode = deployment_mode
 
         if isinstance(self.infra, SMTJRuntimeManager):
@@ -270,17 +277,7 @@ class NovaModelCustomizer:
         # Job caching configuration
         self.enable_job_caching = enable_job_caching
         self.job_cache_dir = ".cached-nova-jobs"
-        self._job_caching_config = {
-            "include_core": True,  # model, method, data_s3_path, job_type
-            "include_recipe": True,  # recipe_path, override parameters
-            "include_infra": False,  # instance_type, instance_count
-            "include_params": [],  # Additional params to include in hash
-            "exclude_params": [],  # Specific params to exclude ("*" = exclude all defaults)
-            "allowed_statuses": [
-                JobStatus.COMPLETED,
-                JobStatus.IN_PROGRESS,
-            ],  # JobStatus values allowed for reuse
-        }
+        self._job_caching_config = JobCachingConfig()
 
     @property
     def data_s3_path(self) -> Optional[str]:
@@ -830,7 +827,7 @@ class NovaModelCustomizer:
         job_result: Optional[TrainingResult] = None,
         execution_role_name: Optional[str] = None,
         sagemaker_instance_type: Optional[str] = "ml.p5.48xlarge",
-        sagemaker_environment_variables: Optional[Dict[str, Any]] = None,
+        sagemaker_environment: Optional[SageMakerEndpointEnvironment] = None,
         skip_model_reuse: bool = False,
     ) -> DeploymentResult:
         """
@@ -844,7 +841,7 @@ class NovaModelCustomizer:
             job_result: Training job result object to use for extracting checkpoint path and validating job completion. Also used to retrieve job_id if it's not provided.
             execution_role_name:  Optional IAM execution role name for Bedrock or SageMaker, defaults to BedrockDeployModelExecutionRole or SageMakerExecutionRoleName. If this role does not exist, it will be created.
             sagemaker_instance_type: Optional EC2 instance type for SageMaker deployment, defaults to ml.p5.48xlarge
-            sagemaker_environment_variables: Optional environment variables for model configuration
+            sagemaker_environment: Optional SageMaker endpoint environment config
             skip_model_reuse: If True, always create a new model (skip tag-based discovery of existing models)
 
         Returns:
@@ -883,7 +880,7 @@ class NovaModelCustomizer:
             unit_count=unit_count,
             execution_role_name=execution_role_name,
             sagemaker_instance_type=sagemaker_instance_type,
-            sagemaker_environment_variables=sagemaker_environment_variables,
+            sagemaker_environment=sagemaker_environment,
             skip_model_reuse=skip_model_reuse,
         )
 
@@ -921,7 +918,7 @@ class NovaModelCustomizer:
         model_artifact_path: Optional[str] = None,
         unit_count: int = 1,
         endpoint_name: Optional[str] = None,
-        environment_variables: Optional[Dict[str, Any]] = None,
+        sagemaker_environment: Optional[SageMakerEndpointEnvironment] = None,
         execution_role_name: Optional[str] = None,
         skip_model_reuse: bool = False,
     ) -> DeploymentResult:
@@ -964,7 +961,7 @@ class NovaModelCustomizer:
             endpoint_name=endpoint_name,
             instance_type=instance_type,
             unit_count=unit_count,
-            environment_variables=environment_variables,
+            sagemaker_environment=sagemaker_environment,
             execution_role_name=execution_role_name,
             skip_model_reuse=skip_model_reuse,
         )

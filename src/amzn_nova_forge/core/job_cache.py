@@ -1,4 +1,4 @@
-# Copyright 2025 Amazon Inc
+# Copyright Amazon.com, Inc. or its affiliates
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,7 +30,9 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field
 
 from amzn_nova_forge.core.constants import DEFAULT_JOB_CACHE_DIR
 from amzn_nova_forge.core.enums import Model, TrainingMethod
@@ -42,19 +44,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _default_job_caching_config() -> Dict[str, Any]:
-    """Return the default job caching configuration.
+class JobCachingConfig(BaseModel):
+    """Configuration controlling job cache matching behaviour."""
 
-    Matches the defaults historically set in ``NovaModelCustomizer.__init__``.
-    """
-    return {
-        "include_core": True,
-        "include_recipe": True,
-        "include_infra": False,
-        "include_params": [],
-        "exclude_params": [],
-        "allowed_statuses": [JobStatus.COMPLETED, JobStatus.IN_PROGRESS],
-    }
+    include_core: bool = True
+    include_recipe: bool = True
+    include_infra: bool = False
+    include_params: List[str] = Field(default_factory=list)
+    exclude_params: List[str] = Field(default_factory=list)
+    allowed_statuses: List[JobStatus] = Field(
+        default_factory=lambda: [JobStatus.COMPLETED, JobStatus.IN_PROGRESS]
+    )
 
 
 @dataclass
@@ -67,7 +67,7 @@ class JobCacheContext:
 
     enable_job_caching: bool
     job_cache_dir: str = DEFAULT_JOB_CACHE_DIR
-    job_caching_config: Optional[Dict[str, Any]] = None
+    job_caching_config: Optional[JobCachingConfig] = None
     model: Optional[Model] = None
     method: Optional[TrainingMethod] = None
     data_s3_path: Optional[str] = None
@@ -78,12 +78,7 @@ class JobCacheContext:
 
     def __post_init__(self) -> None:
         if self.job_caching_config is None:
-            self.job_caching_config = _default_job_caching_config()
-
-
-# ---------------------------------------------------------------------------
-# Helper: build a context from ForgeConfig
-# ---------------------------------------------------------------------------
+            self.job_caching_config = JobCachingConfig()
 
 
 def build_cache_context(
@@ -110,11 +105,6 @@ def build_cache_context(
         instance_type=instance_type,
         instance_count=instance_count,
     )
-
-
-# ---------------------------------------------------------------------------
-# Caching functions (operate on JobCacheContext, not a raw customizer)
-# ---------------------------------------------------------------------------
 
 
 def generate_job_hash(ctx: JobCacheContext, job_name: str, job_type: str, **job_params: Any) -> str:
@@ -177,7 +167,7 @@ def should_persist_results(ctx: JobCacheContext) -> bool:
 
 
 def matches_job_cache_criteria(
-    job_caching_config: dict, stored_hash: str, current_hash: str
+    job_caching_config: JobCachingConfig, stored_hash: str, current_hash: str
 ) -> bool:
     """Check if a stored segmented hash matches the current hash per config rules."""
 
@@ -194,29 +184,24 @@ def matches_job_cache_criteria(
 
     config = job_caching_config
 
-    exclude_params = config.get("exclude_params", [])
-    if isinstance(exclude_params, list):
-        for param in exclude_params:
-            stored_segments.pop(param, None)
-            current_segments.pop(param, None)
+    for param in config.exclude_params:
+        stored_segments.pop(param, None)
+        current_segments.pop(param, None)
 
-    include_params = config.get("include_params", [])
-    if isinstance(include_params, list):
-        for param in include_params:
-            if stored_segments.get(param) != current_segments.get(param):
-                return False
+    for param in config.include_params:
+        if stored_segments.get(param) != current_segments.get(param):
+            return False
 
-    exclude_params = config.get("exclude_params", [])
-    if isinstance(exclude_params, list) and "*" in exclude_params:
+    if "*" in config.exclude_params:
         return True
 
-    if config.get("include_core", True):
+    if config.include_core:
         core_fields = ["model", "method", "data_s3_path", "job_type", "model_path"]
         for field in core_fields:
             if stored_segments.get(field) != current_segments.get(field):
                 return False
 
-    if config.get("include_recipe", True):
+    if config.include_recipe:
         if stored_segments.get("recipe_path") != current_segments.get("recipe_path"):
             return False
         all_override_keys: set[str] = set()
@@ -226,7 +211,7 @@ def matches_job_cache_criteria(
             if stored_segments.get(override_key) != current_segments.get(override_key):
                 return False
 
-    if config.get("include_infra", False):
+    if config.include_infra:
         infra_fields = ["instance_type", "instance_count"]
         for field in infra_fields:
             if stored_segments.get(field) != current_segments.get(field):
@@ -253,16 +238,9 @@ def load_existing_result(
     if not should_persist_results(ctx):
         return None
 
-    caching_config = ctx.job_caching_config or _default_job_caching_config()
+    caching_config = ctx.job_caching_config or JobCachingConfig()
 
-    allowed_statuses = caching_config.get("allowed_statuses", None)
-    if not isinstance(allowed_statuses, list):
-        logger.error(
-            "Invalid allowed_statuses configuration: expected list, "
-            f"got {type(allowed_statuses).__name__} with value {allowed_statuses}. "
-            "Skipping job cache lookup."
-        )
-        return None
+    allowed_statuses = caching_config.allowed_statuses
 
     try:
         current_hash = generate_job_hash(ctx, job_name, job_type, **job_params)
