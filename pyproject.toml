@@ -24,7 +24,6 @@ dependencies = [
     "pyarrow",
     "sagemaker>=3.5.0",
 ]
-
 [project.optional-dependencies]
 dev = [
     "build",
@@ -34,7 +33,7 @@ dev = [
 ]
 
 [tool.setuptools.package-data]
-amzn_nova_forge = ["**/*.json", "**/*.yaml"]
+amzn_nova_forge = ["**/*.json", "**/*.yaml", "**/*.whl"]
 
 [tool.setuptools.dynamic]
 version = {attr = "amzn_nova_forge.__version__.VERSION"}
