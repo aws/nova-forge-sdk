@@ -114,7 +114,7 @@ class HuggingFaceDatasetLoader(DatasetLoader):
         """Load a dataset from HuggingFace Hub.
 
         Args:
-            path: Dataset identifier (e.g. "stanfordnlp/imdb").
+            path: Dataset identifier.
             split: Split name (e.g. "train"). None auto-selects if only one exists.
             name: Configuration name for multi-config datasets.
             revision: Git tag or commit hash to pin the dataset version.
