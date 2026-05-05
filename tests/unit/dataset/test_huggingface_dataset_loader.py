@@ -285,7 +285,6 @@ def test_prefixed_paths_passthrough_to_library_calls(prefixed_input):
     ],
 )
 def test_load_path_reflects_user_input(path, split, expected_load_path):
-    """``_load_path`` is derived from user input per Req 4.9, not from the normalized form."""
     fake_mod = _make_fake_datasets_module()
     with patch.dict(sys.modules, {"datasets": fake_mod}):
         loader = HuggingFaceDatasetLoader()
@@ -378,7 +377,7 @@ def test_split_none_single_split_auto_selects(caplog):
             for rec in caplog.records
         )
 
-        # _load_path is NOT rewritten to include the auto-selected split (Req 1.7).
+        # _load_path is NOT rewritten to include the auto-selected split.
         assert loader._load_path == "hf://owner/ds"
 
 
