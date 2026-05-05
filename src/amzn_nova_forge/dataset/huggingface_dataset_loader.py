@@ -119,7 +119,7 @@ class HuggingFaceDatasetLoader(DatasetLoader):
             name: Configuration name for multi-config datasets.
             revision: Git tag or commit hash to pin the dataset version.
             data_files: Specific file(s) within the dataset repo to load.
-            data_dir: Subdirectory to load from (e.g. "en" for allenai/c4).
+            data_dir: Subdirectory to load from.
 
         Returns:
             self (for method chaining)
