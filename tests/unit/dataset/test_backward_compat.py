@@ -25,11 +25,9 @@ import unittest
 from pathlib import Path
 
 from amzn_nova_forge.core.enums import Model, TrainingMethod
-from amzn_nova_forge.dataset.dataset_loader import (
-    CSVDatasetLoader,
-    JSONDatasetLoader,
-    JSONLDatasetLoader,
-)
+from amzn_nova_forge.dataset.csv_dataset_loader import CSVDatasetLoader
+from amzn_nova_forge.dataset.json_dataset_loader import JSONDatasetLoader
+from amzn_nova_forge.dataset.jsonl_dataset_loader import JSONLDatasetLoader
 
 LOGGER_NAME = "nova_forge_sdk"
 

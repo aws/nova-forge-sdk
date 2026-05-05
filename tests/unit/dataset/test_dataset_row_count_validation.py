@@ -20,7 +20,6 @@ Path 2: Validator._validate_dataset_row_counts() — called during train()/evalu
 import unittest
 from unittest.mock import MagicMock, patch
 
-from amzn_nova_forge.dataset.dataset_loader import JSONLDatasetLoader
 from amzn_nova_forge.dataset.dataset_validator.cpt_dataset_validator import (
     CPTDatasetValidator,
 )
@@ -30,6 +29,7 @@ from amzn_nova_forge.dataset.dataset_validator.dataset_validator import (
 from amzn_nova_forge.dataset.dataset_validator.sft_dataset_validator import (
     SFTDatasetValidator,
 )
+from amzn_nova_forge.dataset.jsonl_dataset_loader import JSONLDatasetLoader
 from amzn_nova_forge.model.model_enums import Model, Platform, TrainingMethod
 from amzn_nova_forge.validation.dataset_row_count_validator import (
     _get_recipe_value,

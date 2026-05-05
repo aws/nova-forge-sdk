@@ -78,6 +78,8 @@ class RecipeBuilder:
         data_mixing_instance: Optional[DataMixing] = None,
         image_uri_override: Optional[str] = None,
         is_multimodal: bool = False,
+        hub_content_version: Optional[str] = None,
+        enable_batch_sample_tracing: bool = False,
     ):
         self.region = region
         self.job_name = job_name
@@ -107,6 +109,12 @@ class RecipeBuilder:
 
         # Multimodal flag
         self.is_multimodal = is_multimodal
+
+        # Hub content version
+        self.hub_content_version = hub_content_version
+
+        # Batch sample tracing
+        self.enable_batch_sample_tracing = enable_batch_sample_tracing
 
         # MLflow
         if mlflow_monitor:
@@ -843,6 +851,7 @@ class RecipeBuilder:
             image_uri_override=self.image_uri_override,
             rft_multiturn_infra=self.rft_multiturn_infra,
             is_multimodal=self.is_multimodal,
+            hub_content_version=self.hub_content_version,
         )
 
         # Resolve user inputs
@@ -934,6 +943,11 @@ class RecipeBuilder:
         ):
             if "rl_env" in final_recipe_dict and "reward_lambda_arn" in final_recipe_dict["rl_env"]:
                 del final_recipe_dict["rl_env"]["reward_lambda_arn"]
+
+        if self.enable_batch_sample_tracing:
+            final_recipe_dict.setdefault("training_config", {})["enable_batch_sample_tracing"] = (
+                True
+            )
 
         # Serialize the generated recipe to YAML
         final_recipe_str = yaml.dump(

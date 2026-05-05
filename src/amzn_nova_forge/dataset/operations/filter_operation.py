@@ -31,6 +31,8 @@ from .utils import convert_to_s3_parquet, upload_local_file_to_s3
 logger = logging.getLogger(__name__)
 
 
+
+
 class NovaForgeFilterOperationBase(NovaForgeFilterOperation):
     """Base class for data filtering operations (default_text_filter, exact_dedup_filter, etc.).
 
@@ -117,7 +119,8 @@ class NovaForgeFilterOperationBase(NovaForgeFilterOperation):
             s3_base = kwargs.get("output_path", state.path)
             if not s3_base.startswith("s3://"):
                 raise ValueError(
-                    "Filter operations require an S3 output path when input is local. "
+                    "Filter operations require an S3 output path when input is not on S3 "
+                    "(e.g. local files or HuggingFace datasets). "
                     "Provide output_path as an S3 URI. "
                     "Example: loader.filter(method=..., output_path='s3://bucket/filtered/')"
                 )
@@ -134,7 +137,8 @@ class NovaForgeFilterOperationBase(NovaForgeFilterOperation):
             s3_base = kwargs.get("output_path", "")
             if not s3_base.startswith("s3://"):
                 raise ValueError(
-                    "Filter operations require an S3 output path when input is local. "
+                    "Filter operations require an S3 output path when input is not on S3 "
+                    "(e.g. local files or HuggingFace datasets). "
                     "Provide output_path as an S3 URI. "
                     "Example: loader.filter(method=..., output_path='s3://bucket/filtered/')"
                 )

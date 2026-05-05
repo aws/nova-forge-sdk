@@ -46,13 +46,13 @@ from amzn_nova_forge.dataset.configs.dataset_checks_config import (
     MAX_VIDEO_FILE_SIZE_BYTES,
     MAX_VIDEOS_PER_MESSAGE,
 )
-from amzn_nova_forge.dataset.dataset_loader import JSONLDatasetLoader
 from amzn_nova_forge.dataset.dataset_validator.eval_dataset_validator import (
     EvalDatasetSample,
 )
 from amzn_nova_forge.dataset.dataset_validator.rft_multiturn_dataset_validator import (
     RFTMultiturnDatasetSample,
 )
+from amzn_nova_forge.dataset.jsonl_dataset_loader import JSONLDatasetLoader
 from amzn_nova_forge.dataset.operations.filter_operation import (
     FilterMethod,
     get_filter_operation,

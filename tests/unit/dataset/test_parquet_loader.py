@@ -20,8 +20,8 @@ from unittest.mock import MagicMock, patch
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from amzn_nova_forge.dataset.dataset_loader import ParquetDatasetLoader
 from amzn_nova_forge.dataset.operations.base import DataPrepError
+from amzn_nova_forge.dataset.parquet_dataset_loader import ParquetDatasetLoader
 
 
 class TestParquetDatasetLoader(unittest.TestCase):
@@ -113,7 +113,7 @@ class TestParquetDatasetLoader(unittest.TestCase):
             finally:
                 os.unlink(f.name)
 
-    @patch("amzn_nova_forge.dataset.dataset_loader.pafs.S3FileSystem")
+    @patch("amzn_nova_forge.dataset.parquet_dataset_loader.pafs.S3FileSystem")
     def test_s3_loading(self, mock_s3fs_cls):
         """Test S3 loading with mocked S3FileSystem."""
         mock_fs = MagicMock()

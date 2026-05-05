@@ -11,7 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Centralised S3 bucket utilities for the Nova Forge SDK.
+"""Centralised S3 utilities for the Nova Forge SDK.
+
+This module provides:
+
+1. **Bucket management** — naming, creation, and existence checks for the
+   SDK's data-preparation bucket.
+2. **File operations** — download with caching, URI parsing, line reading,
+   and prefix listing for working with S3-hosted files.
 
 The SDK uses a default data-preparation bucket:
 
@@ -23,10 +30,20 @@ All operations that auto-create a bucket should use the helpers here
 so the naming stays consistent.
 """
 
-from typing import Optional
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import io
+import os
+import tempfile
+from collections.abc import Iterator
+from typing import Any, Optional
 
 import boto3
+from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError
+from tqdm import tqdm
 
 from amzn_nova_forge.util.logging import logger
 
@@ -133,3 +150,193 @@ def _create_bucket(
         raise
     except Exception as exc:
         raise RuntimeError(f"Failed to create bucket '{bucket}': {exc}") from exc
+
+
+def parse_s3_uri(uri: str) -> tuple[str, str]:
+    """Split an S3 URI into (bucket, key).
+
+    Raises:
+        ValueError: If the URI is not a valid ``s3://bucket/key`` format.
+    """
+    if not uri.startswith("s3://") or len(uri) <= 5:
+        msg = f"Invalid S3 URI: {uri}"
+        raise ValueError(msg)
+    parts = uri[5:].split("/", 1)
+    bucket = parts[0]
+    if not bucket:
+        msg = f"Invalid S3 URI (empty bucket name): {uri}"
+        raise ValueError(msg)
+    return bucket, parts[1] if len(parts) > 1 else ""
+
+
+def is_s3(path: str) -> bool:
+    """Return True if path is an S3 URI."""
+    return path.startswith("s3://")
+
+
+def s3_cache_path(s3_uri: str, cache_dir: str) -> str:
+    """Compute the local cache path for an S3 URI."""
+    os.makedirs(cache_dir, exist_ok=True)
+    h = hashlib.sha256(s3_uri.encode()).hexdigest()[:12]
+    base = os.path.basename(s3_uri.rstrip("/"))
+    return os.path.join(cache_dir, f"{base}.{h}")
+
+
+def cached_s3_file(s3_uri: str, cache_dir: str) -> str | None:
+    """Return local cache path if the file is already cached, else None."""
+    path = s3_cache_path(s3_uri, cache_dir)
+    if os.path.exists(path):
+        return path
+    return None
+
+
+def download_s3_file(s3_client: Any, bucket: str, key: str, local_path: str) -> None:
+    """Download a single S3 object to a local path (atomic via rename).
+
+    Uses multipart transfer and tqdm progress if available. Boto3 exceptions
+    propagate to the caller.
+    """
+
+    tmp_path = local_path + ".tmp"
+    config = TransferConfig(
+        multipart_threshold=8 * 1024 * 1024,
+        max_concurrency=10,
+        multipart_chunksize=8 * 1024 * 1024,
+    )
+    try:
+        head = s3_client.head_object(Bucket=bucket, Key=key)
+        total_bytes = head.get("ContentLength", 0)
+        logger.info("Downloading %s/%s ...", bucket, key)
+        with tqdm(
+            total=total_bytes,
+            unit="B",
+            unit_scale=True,
+            unit_divisor=1024,
+            desc="  Downloading",
+            ncols=80,
+        ) as pbar:
+            s3_client.download_file(
+                bucket,
+                key,
+                tmp_path,
+                Config=config,
+                Callback=lambda bytes_transferred: pbar.update(bytes_transferred),
+            )
+        os.replace(tmp_path, local_path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp_path)
+        raise
+
+
+def read_lines(
+    path: str, s3_client: Any | None = None, cache_dir: str | None = None
+) -> Iterator[str]:
+    """Read lines from a local or S3 file, yielding one line at a time.
+
+    Returns an iterator that streams lines without loading the entire file
+    into memory at once.
+
+    For S3 files, downloads to cache first if *cache_dir* is provided.
+    When *cache_dir* is ``None``, the S3 object is streamed directly into
+    memory without caching. Only use for small files (e.g., log files).
+    For large data files, use :func:`ensure_local` and stream.
+
+    Raises:
+        FileNotFoundError: If a local path does not exist.
+        ValueError: If an S3 URI is malformed.
+        RuntimeError: If an S3 client is required but not provided.
+    """
+    if is_s3(path):
+        if cache_dir is not None:
+            cached = cached_s3_file(path, cache_dir)
+            if cached:
+                with open(cached) as f:
+                    yield from f
+                return
+        if s3_client is None:
+            msg = f"S3 client required to read {path}"
+            raise RuntimeError(msg)
+        bucket, key = parse_s3_uri(path)
+        if cache_dir is not None:
+            local_path = s3_cache_path(path, cache_dir)
+            download_s3_file(s3_client, bucket, key, local_path)
+            with open(local_path) as f:
+                yield from f
+            return
+        # No cache — stream directly into memory
+        obj = s3_client.get_object(Bucket=bucket, Key=key)
+        content = obj["Body"].read().decode("utf-8")
+        yield from io.StringIO(content)
+    else:
+        if not os.path.exists(path):
+            msg = f"File not found: {path}"
+            raise FileNotFoundError(msg)
+        with open(path) as f:
+            yield from f
+
+
+def ensure_local(path: str, s3_client: Any | None = None, cache_dir: str | None = None) -> str:
+    """Ensure a file is available locally (downloading from S3 if needed).
+
+    When *cache_dir* is provided, files are cached for reuse across calls.
+    When *cache_dir* is ``None``, the file is downloaded to a temporary
+    location (caller is responsible for cleanup if needed).
+
+    Returns the local file path.
+
+    Raises:
+        FileNotFoundError: If a local path does not exist.
+        ValueError: If an S3 URI is malformed.
+        RuntimeError: If an S3 client is required but not provided.
+    """
+    if not is_s3(path):
+        if not os.path.exists(path):
+            msg = f"File not found: {path}"
+            raise FileNotFoundError(msg)
+        return path
+
+    if cache_dir is not None:
+        cached = cached_s3_file(path, cache_dir)
+        if cached:
+            return cached
+
+    if s3_client is None:
+        msg = f"S3 client required to download {path}"
+        raise RuntimeError(msg)
+    bucket, key = parse_s3_uri(path)
+    if cache_dir is not None:
+        local_path = s3_cache_path(path, cache_dir)
+    else:
+        suffix = os.path.basename(path.rstrip("/"))
+        fd, local_path = tempfile.mkstemp(suffix=f"_{suffix}")
+        os.close(fd)
+    try:
+        download_s3_file(s3_client, bucket, key, local_path)
+    except BaseException:
+        if cache_dir is None:
+            with contextlib.suppress(OSError):
+                os.remove(local_path)
+        raise
+    return local_path
+
+
+def list_s3_prefix(uri: str, s3_client: Any, suffix: str = "") -> list[str]:
+    """List S3 objects under a prefix, optionally filtered by suffix.
+
+    Returns a list of full ``s3://`` URIs.
+
+    Raises:
+        ValueError: If the URI is malformed.
+    """
+    bucket, prefix = parse_s3_uri(uri)
+    if not prefix.endswith("/"):
+        prefix += "/"
+    paginator = s3_client.get_paginator("list_objects_v2")
+    uris: list[str] = [
+        f"s3://{bucket}/{obj['Key']}"
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix)
+        for obj in page.get("Contents", [])
+        if not suffix or obj["Key"].endswith(suffix)
+    ]
+    return uris

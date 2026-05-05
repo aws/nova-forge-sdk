@@ -29,10 +29,8 @@ from unittest.mock import patch
 import pytest
 
 from amzn_nova_forge.core.enums import Model, TrainingMethod
-from amzn_nova_forge.dataset.dataset_loader import (
-    CSVDatasetLoader,
-    JSONLDatasetLoader,
-)
+from amzn_nova_forge.dataset.csv_dataset_loader import CSVDatasetLoader
+from amzn_nova_forge.dataset.jsonl_dataset_loader import JSONLDatasetLoader
 
 
 class TestMemoryEfficiency(unittest.TestCase):
@@ -100,7 +98,7 @@ class TestMemoryEfficiency(unittest.TestCase):
                 return self._generate_jsonl_lines(size)
 
             with patch(
-                "amzn_nova_forge.dataset.dataset_loader.load_file_content",
+                "amzn_nova_forge.dataset.jsonl_dataset_loader.load_file_content",
                 side_effect=lambda *args, **kwargs: mock_generator(),
             ):
                 loader = JSONLDatasetLoader()
@@ -156,7 +154,7 @@ class TestMemoryEfficiency(unittest.TestCase):
                 return self._generate_csv_lines(size)
 
             with patch(
-                "amzn_nova_forge.dataset.dataset_loader.load_file_content",
+                "amzn_nova_forge.dataset.csv_dataset_loader.load_file_content",
                 side_effect=lambda *args, **kwargs: mock_generator(),
             ):
                 loader = CSVDatasetLoader()
@@ -201,7 +199,7 @@ class TestMemoryEfficiency(unittest.TestCase):
                     yield json.dumps({"text": f"Sample text {i} " * 10})
 
             with patch(
-                "amzn_nova_forge.dataset.dataset_loader.load_file_content",
+                "amzn_nova_forge.dataset.jsonl_dataset_loader.load_file_content",
                 side_effect=lambda *args, **kwargs: mock_generator(),
             ):
                 loader = JSONLDatasetLoader()
@@ -245,7 +243,7 @@ class TestMemoryEfficiency(unittest.TestCase):
                 return self._generate_jsonl_lines(size)
 
             with patch(
-                "amzn_nova_forge.dataset.dataset_loader.load_file_content",
+                "amzn_nova_forge.dataset.jsonl_dataset_loader.load_file_content",
                 side_effect=lambda *args, **kwargs: mock_generator(),
             ):
                 loader = JSONLDatasetLoader()
@@ -302,7 +300,7 @@ class TestMemoryEfficiency(unittest.TestCase):
                 return self._generate_jsonl_lines(size)
 
             with patch(
-                "amzn_nova_forge.dataset.dataset_loader.load_file_content",
+                "amzn_nova_forge.dataset.jsonl_dataset_loader.load_file_content",
                 side_effect=lambda *args, **kwargs: mock_generator(),
             ):
                 # Suppress logger output
@@ -343,7 +341,7 @@ class TestMemoryEfficiency(unittest.TestCase):
             return self._generate_jsonl_lines(10)
 
         with patch(
-            "amzn_nova_forge.dataset.dataset_loader.load_file_content",
+            "amzn_nova_forge.dataset.jsonl_dataset_loader.load_file_content",
             side_effect=lambda *args, **kwargs: mock_generator(),
         ):
             loader = JSONLDatasetLoader()

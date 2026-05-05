@@ -18,8 +18,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from amzn_nova_forge.dataset.dataset_loader import JSONLDatasetLoader
 from amzn_nova_forge.dataset.file_utils import is_directory, scan_s3_directory
+from amzn_nova_forge.dataset.jsonl_dataset_loader import JSONLDatasetLoader
 from amzn_nova_forge.dataset.operations.base import DataPrepError
 
 

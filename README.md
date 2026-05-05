@@ -478,6 +478,10 @@ result.enable_job_notifications(
 - See [`docs/job_notifications.md`](docs/job_notifications.md) for detailed setup instructions, troubleshooting, and advanced usage
 - See [`docs/spec.md`](docs/spec.md) for complete API documentation on job notifications. 
 
+### Batch Sample Tracing
+
+Diagnose gradient spikes by identifying which training data lines were used in a specific training step. Enable with `enable_batch_sample_tracing=True` on `ForgeTrainer`, then call `trainer.trace_batch(result, step=N)` after the job completes. See [`docs/spec.md`](docs/spec.md) for full API details.
+
 ---
 ## Telemetry
 
