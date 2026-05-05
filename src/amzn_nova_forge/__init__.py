@@ -81,6 +81,7 @@ _LAZY_IMPORTS = {
     "ExactDedupFilterOperation": ".dataset.operations.exact_dedup_filter_operation",
     "FuzzyDedupFilterOperation": ".dataset.operations.fuzzy_dedup_filter_operation",
     "InvalidRecordsFilterOperation": ".dataset.operations.invalid_records_filter_operation",
+    "HuggingFaceDatasetLoader": ".dataset.huggingface_dataset_loader",
 }
 
 
@@ -98,6 +99,7 @@ def __getattr__(name: str):
 __all__ = [
     "ArrowDatasetLoader",
     "CSVDatasetLoader",
+    "HuggingFaceDatasetLoader",
     "JSONDatasetLoader",
     "JSONLDatasetLoader",
     "ParquetDatasetLoader",

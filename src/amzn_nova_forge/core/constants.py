@@ -28,6 +28,8 @@ from amzn_nova_forge.core.enums import (
 
 DEFAULT_REGION = "us-east-1"
 DEFAULT_JOB_CACHE_DIR = "~/.nova-forge/cache"
+DEFAULT_BATCH_TRACE_CACHE_DIR = "~/.nova-forge/batch_trace_cache"
+BATCH_TRACE_LOG_SUBDIR = "batch_tracing"
 
 REGION_TO_ESCROW_ACCOUNT_MAPPING = {
     "us-east-1": "708977205387",

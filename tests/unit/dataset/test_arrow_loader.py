@@ -21,7 +21,7 @@ import pyarrow as pa
 import pyarrow.feather
 import pyarrow.ipc
 
-from amzn_nova_forge.dataset.dataset_loader import ArrowDatasetLoader
+from amzn_nova_forge.dataset.arrow_dataset_loader import ArrowDatasetLoader
 from amzn_nova_forge.dataset.operations.base import DataPrepError
 
 
@@ -135,7 +135,7 @@ class TestArrowDatasetLoader(unittest.TestCase):
             finally:
                 os.unlink(f.name)
 
-    @patch("amzn_nova_forge.dataset.dataset_loader.pafs.S3FileSystem")
+    @patch("amzn_nova_forge.dataset.arrow_dataset_loader.pafs.S3FileSystem")
     def test_s3_loading(self, mock_s3fs_cls):
         """Test S3 loading with mocked S3FileSystem."""
         mock_fs = MagicMock()

@@ -11,17 +11,17 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .dataset_loader import (
-    ArrowDatasetLoader,
-    CSVDatasetLoader,
-    JSONDatasetLoader,
-    JSONLDatasetLoader,
-    ParquetDatasetLoader,
-)
+from .arrow_dataset_loader import ArrowDatasetLoader
+from .csv_dataset_loader import CSVDatasetLoader
+from .huggingface_dataset_loader import HuggingFaceDatasetLoader
+from .json_dataset_loader import JSONDatasetLoader
+from .jsonl_dataset_loader import JSONLDatasetLoader
+from .parquet_dataset_loader import ParquetDatasetLoader
 
 __all__ = [
     "ArrowDatasetLoader",
     "CSVDatasetLoader",
+    "HuggingFaceDatasetLoader",
     "JSONDatasetLoader",
     "JSONLDatasetLoader",
     "ParquetDatasetLoader",

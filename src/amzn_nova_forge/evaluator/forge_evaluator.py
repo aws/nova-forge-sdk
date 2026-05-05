@@ -85,11 +85,13 @@ class ForgeEvaluator:
         data_s3_path: Optional[str] = None,
         config: Optional[ForgeConfig] = None,
         region: Optional[str] = None,
+        hub_content_version: Optional[str] = None,
     ) -> None:
         self.model = model
         self.infra = infra
         self.data_s3_path = data_s3_path
         self._config = config or ForgeConfig()
+        self.hub_content_version = hub_content_version
 
         self.region = region or boto3.session.Session().region_name or DEFAULT_REGION
         validate_region(self.region)
@@ -260,6 +262,7 @@ class ForgeEvaluator:
             is_multimodal=self._is_multimodal,
             mlflow_monitor=self._config.mlflow_monitor,
             rft_multiturn_infra=rft_multiturn_infra,
+            hub_content_version=self.hub_content_version,
         )
 
         (

@@ -113,6 +113,43 @@ class TestGetHubContent(unittest.TestCase):
         self.assertIn("Failed to get SageMaker hub content", str(ctx.exception))
         self.assertIn("my-content", str(ctx.exception))
 
+    @patch("amzn_nova_forge.util.hub_util.boto3.client")
+    def test_passes_hub_content_version_when_provided(self, mock_boto_client):
+        mock_sagemaker = MagicMock()
+        mock_boto_client.return_value = mock_sagemaker
+        mock_sagemaker.describe_hub_content.return_value = {
+            "HubContentName": "my-content",
+            "HubContentVersion": "1.0.0",
+        }
+
+        result = get_hub_content(
+            "my-hub", "my-content", "Model", "us-east-1", hub_content_version="1.0.0"
+        )
+
+        mock_sagemaker.describe_hub_content.assert_called_once_with(
+            HubName="my-hub",
+            HubContentType="Model",
+            HubContentName="my-content",
+            HubContentVersion="1.0.0",
+        )
+        self.assertEqual(result["HubContentVersion"], "1.0.0")
+
+    @patch("amzn_nova_forge.util.hub_util.boto3.client")
+    def test_omits_hub_content_version_when_none(self, mock_boto_client):
+        mock_sagemaker = MagicMock()
+        mock_boto_client.return_value = mock_sagemaker
+        mock_sagemaker.describe_hub_content.return_value = {
+            "HubContentName": "my-content",
+        }
+
+        get_hub_content("my-hub", "my-content", "Model", "us-east-1")
+
+        mock_sagemaker.describe_hub_content.assert_called_once_with(
+            HubName="my-hub",
+            HubContentType="Model",
+            HubContentName="my-content",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

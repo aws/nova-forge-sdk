@@ -3749,6 +3749,92 @@ class TestRecipeBuilder(unittest.TestCase):
                 config = yaml.safe_load(f)
             self.assertEqual(config["data"]["data_s3_path"], "s3://bucket/override")
 
+    @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
+    @patch("amzn_nova_forge.recipe.recipe_builder.Validator")
+    def test_build_and_validate_batch_sample_tracing_non_bedrock(
+        self, mock_validator, mock_download, mock_metadata
+    ):
+        """enable_batch_sample_tracing=True on non-Bedrock platform injects flag into training_config."""
+        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+
+        recipe_template = {
+            "run": {"name": "{{name}}"},
+        }
+
+        overrides_template = {
+            "name": {"default": "", "type": "string"},
+        }
+
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=Platform.SMTJ,
+            model=self.mock_model,
+            method=self.method,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+            enable_batch_sample_tracing=True,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "recipe.yaml")
+            builder.build_and_validate(output_recipe_path=output_path)
+
+            with open(output_path, "r") as f:
+                config = yaml.safe_load(f)
+
+            self.assertIn("training_config", config)
+            self.assertTrue(config["training_config"]["enable_batch_sample_tracing"])
+
+    @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
+    @patch("amzn_nova_forge.recipe.recipe_builder.Validator")
+    def test_build_and_validate_batch_sample_tracing_default_false(
+        self, mock_validator, mock_download, mock_metadata
+    ):
+        """enable_batch_sample_tracing defaults to False — flag absent from recipe."""
+        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+
+        recipe_template = {
+            "run": {"name": "{{name}}"},
+        }
+
+        overrides_template = {
+            "name": {"default": "", "type": "string"},
+        }
+
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=self.platform,
+            model=self.mock_model,
+            method=self.method,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "recipe.yaml")
+            builder.build_and_validate(output_recipe_path=output_path)
+
+            with open(output_path, "r") as f:
+                config = yaml.safe_load(f)
+
+            # training_config should either not exist or not contain the flag
+            if "training_config" in config:
+                self.assertNotIn("enable_batch_sample_tracing", config["training_config"])
+
 
 if __name__ == "__main__":
     unittest.main()

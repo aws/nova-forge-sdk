@@ -255,7 +255,7 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
                         "SequenceLength": "8K",
                         "SmtjRecipeTemplateS3Uri": "s3://bucket/recipe.yaml",
                         "SmtjOverrideParamsS3Uri": "s3://bucket/override.json",
-                        "SmtjImageUri": "123.dkr.ecr.us-east-1.amazonaws.com/repo:tag",
+                        "SmtjImageUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/repo:tag",
                     }
                 ]
             }
@@ -1357,7 +1357,45 @@ class TestGetHubRecipeMetadata(unittest.TestCase):
         warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
         self.assertTrue(any("multimodal" in c for c in warning_calls))
 
-    # --- _get_smhp_replicas_enum tests ---
+    @patch("amzn_nova_forge.util.recipe.get_hub_content")
+    def test_get_hub_recipe_metadata_passes_hub_content_version(self, mock_get_hub_content):
+        mock_get_hub_content.return_value = {
+            "HubContentDocument": {
+                "RecipeCollection": [
+                    {
+                        "DisplayName": "Nova Lite LoRA SFT on GPU",
+                        "Name": "nova_lite_1_0_g5_g6_12x_gpu_lora_sft",
+                        "CustomizationTechnique": "SFT",
+                        "InstanceCount": 1,
+                        "Type": "FineTuning",
+                        "Hardware": "GPU",
+                        "SupportedInstanceTypes": ["ml.g5.12xlarge"],
+                        "Peft": "LORA",
+                        "SequenceLength": "8K",
+                        "SmtjRecipeTemplateS3Uri": "s3://bucket/recipe.yaml",
+                        "SmtjOverrideParamsS3Uri": "s3://bucket/overrides.json",
+                        "SmtjImageUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/repo:tag",
+                    }
+                ]
+            }
+        }
+
+        get_hub_recipe_metadata(
+            model=Model.NOVA_LITE,
+            method=TrainingMethod.SFT_LORA,
+            platform=Platform.SMTJ,
+            instance_type="ml.g5.12xlarge",
+            region="us-east-1",
+            hub_content_version="1.0.0",
+        )
+
+        mock_get_hub_content.assert_called_once_with(
+            hub_name="SageMakerPublicHub",
+            hub_content_name=Model.NOVA_LITE.hub_content_name,
+            hub_content_type="Model",
+            region="us-east-1",
+            hub_content_version="1.0.0",
+        )
 
     def _make_smhp_hub_content_for_enum(self, instance_type: str = "ml.p5.48xlarge"):
         return {
@@ -2021,7 +2059,7 @@ class TestLoadRecipeTemplatesSmtjServerless(unittest.TestCase):
         mock_get_hub_metadata.return_value = {
             "SmtjRecipeTemplateS3Uri": "s3://bucket/recipe.yaml",
             "SmtjOverrideParamsS3Uri": "s3://bucket/override.json",
-            "SmtjImageUri": "123.dkr.ecr.us-east-1.amazonaws.com/repo:tag",
+            "SmtjImageUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/repo:tag",
         }
         mock_download_s3.return_value = ({"run": {}}, {}, "image-uri")
 
@@ -2053,7 +2091,7 @@ class TestLoadRecipeTemplatesSmtjReplicasEnum(unittest.TestCase):
                         "SupportedInstanceTypes": [instance_type],
                         "SmtjRecipeTemplateS3Uri": "s3://bucket/smtj-recipe.yaml",
                         "SmtjOverrideParamsS3Uri": "s3://bucket/smtj-overrides.json",
-                        "SmtjImageUri": "123456789.dkr.ecr.us-east-1.amazonaws.com/nova:latest",
+                        "SmtjImageUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/nova:latest",
                     }
                 ]
             }

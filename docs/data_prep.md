@@ -10,7 +10,7 @@ This guide walks through the data preparation workflow using the Nova Forge SDK'
 
 | Theme | Operator | Purpose | Supported Runtimes |
 |---|---|---|---|
-| Load | `loader.load(path)` | Ingest data from JSONL, JSON, CSV, Parquet, or Arrow (local or S3) | Local |
+| Load | `loader.load(path)` | Ingest data from JSONL, JSON, CSV, Parquet, or Arrow (local or S3), or from HuggingFace Hub | Local |
 | Filter | `loader.filter(method=FilterMethod.DEFAULT_TEXT_FILTER)` | Remove records with excessive URL content (web-scraped boilerplate) | SMTJ (default), AWS Glue (legacy) |
 | Filter | `loader.filter(method=FilterMethod.EXACT_DEDUP)` | Remove exact duplicate records by content hash | SMTJ (default), AWS Glue (legacy) |
 | Filter | `loader.filter(method=FilterMethod.FUZZY_DEDUP)` | Remove near-duplicates via MinHash LSH similarity | SMTJ (default), AWS Glue (legacy) |
@@ -26,7 +26,7 @@ This guide walks through the data preparation workflow using the Nova Forge SDK'
 
 ## Overview
 
-The SDK provides dataset loaders for different file formats (`JSONLDatasetLoader`, `JSONDatasetLoader`, `CSVDatasetLoader`, `ParquetDatasetLoader`, `ArrowDatasetLoader`), all sharing the same chainable API. Operations are lazy — they queue up and execute when a terminal operation is called.
+The SDK provides dataset loaders for different file formats (`JSONLDatasetLoader`, `JSONDatasetLoader`, `CSVDatasetLoader`, `ParquetDatasetLoader`, `ArrowDatasetLoader`) plus `HuggingFaceDatasetLoader` for streaming directly from HuggingFace Hub — all sharing the same chainable API. Operations are lazy — they queue up and execute when a terminal operation is called.
 
 ```python
 from amzn_nova_forge import (
@@ -222,6 +222,81 @@ loader.load("s3://my-bucket/datasets/") # all .parquet files from S3 prefix
 - Files starting with `.` or `_` are ignored
 - Raises `DataPrepError` if no matching files found or if mismatched extensions exist
 - Records yielded lazily, one file at a time
+
+---
+
+## Loading from HuggingFace Hub
+
+`HuggingFaceDatasetLoader` streams datasets from [HuggingFace Hub](https://huggingface.co/datasets) directly into the Nova Forge pipeline. No network calls happen at `load()` time — the dataset is fetched lazily when a terminal operation (`save()`, `show()`, etc.) executes the pipeline.
+
+Requires the optional `datasets` dependency:
+
+```bash
+pip install amzn-nova-forge[huggingface]
+```
+
+### Authentication
+
+For private or gated datasets, authentication is handled by the `datasets` library's built-in credential resolution — either the `HF_TOKEN` environment variable or the cached token from `huggingface-cli login`.
+
+```bash
+export HF_TOKEN=hf_your_token_here
+# or
+huggingface-cli login
+```
+
+### `load(path, split=None, name=None, revision=None, data_files=None, data_dir=None)`
+
+- `path` — HuggingFace dataset identifier.
+- `split` — Dataset split to load, forwarded to `datasets.load_dataset(split=...)`. Accepts any value supported by the HF library, including a single split name (`"train"`, `"test"`), a slice (`"train[:100]"`, `"train[:10%]"`), or concatenated splits (`"train+test"`). When omitted (`None`), the loader probes available splits at iteration time: if the dataset has exactly one split it is auto-selected, and if the dataset has multiple splits a `DataPrepError` is raised listing the available splits.
+- `name` — Configuration name for multi-config datasets.
+- `revision` — Git tag or commit hash to pin the dataset version.
+- `data_files` — Specific data file(s) to load, forwarded to `datasets.load_dataset(data_files=...)`. Accepts a single file path string, a list of file path strings, or a mapping from split names to file path(s). `None` (default) omits the kwarg so the library's own default applies.
+- `data_dir` — Subdirectory of the dataset repository to load from, forwarded to `datasets.load_dataset(data_dir=...)`. `None` (default) omits the kwarg.
+
+### Accepted path forms
+
+`HuggingFaceDatasetLoader` accepts HuggingFace Hub identifiers: `"namespace/name"` pairs, bare legacy dataset names, the explicit `"hf://datasets/..."` URL form, and `"buckets/..."` storage bucket paths.
+
+### End-to-End Example — HuggingFace to S3
+
+```python
+from amzn_nova_forge import HuggingFaceDatasetLoader, Model, TrainingMethod
+from amzn_nova_forge.dataset.operations import TransformMethod, ValidateMethod
+
+loader = HuggingFaceDatasetLoader()
+loader.load("foo/bar", split="train_sft")
+
+loader.transform(
+    method=TransformMethod.SCHEMA,
+    training_method=TrainingMethod.SFT_LORA,
+    model=Model.NOVA_LITE_2,
+)
+loader.validate(
+    method=ValidateMethod.INVALID_RECORDS,
+    training_method=TrainingMethod.SFT_LORA,
+    model=Model.NOVA_LITE_2,
+)
+loader.save("s3://my-bucket/data/train.jsonl")
+```
+
+### Using HuggingFace-sourced data with distributed filter operations
+
+The in-memory terminal operations (`save()`, `show()`, `split()`, `validate()`, `transform()`, `filter(INVALID_RECORDS)`) consume the HuggingFace generator directly — no extra configuration needed.
+
+Distributed filter operations (`DEFAULT_TEXT_FILTER`, `EXACT_DEDUP`, `FUZZY_DEDUP`, `LANGUAGE_DETECTION`) need an S3 location to land intermediate and final outputs. Because HuggingFace data isn't on S3, you must pass an explicit `output_path` to each distributed filter step — same as when the input is a local file.
+
+```python
+loader = HuggingFaceDatasetLoader()
+loader.load("foo/bar", split="train_sft")
+
+loader.filter(
+    method=FilterMethod.EXACT_DEDUP,
+    text_field="text",
+    output_path="s3://my-bucket/filtered/dedup/",
+)
+loader.save("s3://my-bucket/data/train_dedup.jsonl")
+```
 
 ---
 
@@ -589,7 +664,7 @@ These apply to `DEFAULT_TEXT_FILTER`, `EXACT_DEDUP`, and `FUZZY_DEDUP`:
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `output_path` | `str` | Auto-derived | S3 URI for filtered output. Required for local input. |
+| `output_path` | `str` | Auto-derived | S3 URI for filtered output. Required when input is not on S3. |
 | `input_format` | `str` | `"parquet"` | `"parquet"` or `"jsonl"` |
 | `output_format` | `str` | `"parquet"` | `"parquet"` or `"jsonl"` |
 | `text_field` | `str` | `"text"` | Column name containing the text to process. |

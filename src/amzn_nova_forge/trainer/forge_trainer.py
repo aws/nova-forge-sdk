@@ -17,11 +17,17 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, cast
 
 import boto3
 
-from amzn_nova_forge.core.constants import DEFAULT_REGION, SUPPORTED_DATAMIXING_METHODS
+from amzn_nova_forge.core.constants import (
+    BATCH_TRACE_LOG_SUBDIR,
+    DEFAULT_BATCH_TRACE_CACHE_DIR,
+    DEFAULT_REGION,
+    SUPPORTED_DATAMIXING_METHODS,
+)
 from amzn_nova_forge.core.enums import Model, Platform, TrainingMethod
 from amzn_nova_forge.core.job_cache import (
     build_cache_context,
@@ -46,6 +52,7 @@ from amzn_nova_forge.model.nova_model_customizer_util import set_output_s3_path
 from amzn_nova_forge.monitor.log_monitor import CloudWatchLogMonitor
 from amzn_nova_forge.recipe.recipe_builder import RecipeBuilder
 from amzn_nova_forge.telemetry import Feature, _telemetry_emitter
+from amzn_nova_forge.trainer.utils.batch_trace import run as batch_trace_run
 from amzn_nova_forge.util.data_mixing import DataMixing
 from amzn_nova_forge.util.data_utils import is_multimodal_data
 from amzn_nova_forge.util.logging import logger
@@ -78,6 +85,8 @@ class ForgeTrainer:
         config: Optional[ForgeConfig] = None,
         region: Optional[str] = None,
         is_multimodal: Optional[bool] = None,
+        hub_content_version: Optional[str] = None,
+        enable_batch_sample_tracing: bool = False,
     ) -> None:
         self.model = model
         self.method = method
@@ -85,10 +94,14 @@ class ForgeTrainer:
         self.training_data_s3_path = training_data_s3_path
         self.model_s3_path = model_s3_path
         self.holdout_data_s3_path = holdout_data_s3_path
+        self.hub_content_version = hub_content_version
+        self._enable_batch_sample_tracing = enable_batch_sample_tracing
         self._config = config or ForgeConfig()
 
         self.region = region or boto3.session.Session().region_name or DEFAULT_REGION
         validate_region(self.region)
+
+        self._s3_client = None
 
         self._platform = infra.platform
 
@@ -104,6 +117,13 @@ class ForgeTrainer:
                 "To specify a base model, pass base_model_identifier to "
                 "BedrockRuntimeManager constructor instead."
             )
+        if enable_batch_sample_tracing:
+            if self._platform != Platform.SMHP:
+                raise ValueError(
+                    "enable_batch_sample_tracing is only supported on SageMaker HyperPod (SMHP)."
+                )
+            if method != TrainingMethod.CPT:
+                raise ValueError("enable_batch_sample_tracing is only supported for CPT training.")
 
         self.output_s3_path = set_output_s3_path(
             region=self.region,
@@ -151,6 +171,7 @@ class ForgeTrainer:
                 instance_type=self.infra.instance_type,
                 image_uri_override=self._config.image_uri,
                 is_multimodal=self._is_multimodal,
+                hub_content_version=self.hub_content_version,
             )
             if overrides_template:
                 self.data_mixing._load_defaults_from_template(overrides_template)
@@ -237,6 +258,8 @@ class ForgeTrainer:
             is_multimodal=self._is_multimodal,
             mlflow_monitor=self._config.mlflow_monitor,
             rft_multiturn_infra=rft_multiturn_infra,
+            hub_content_version=self.hub_content_version,
+            enable_batch_sample_tracing=self._enable_batch_sample_tracing,
         )
 
         (
@@ -368,3 +391,62 @@ class ForgeTrainer:
             **kwargs,
         )
         monitor.show_logs(limit=limit, start_from_head=start_from_head, end_time=end_time)
+
+    @_telemetry_emitter(Feature.TRAINING, "trace_batch")
+    def trace_batch(
+        self,
+        training_result: TrainingResult,
+        step: int,
+        output_path: str | None = None,
+        cache_dir: str = DEFAULT_BATCH_TRACE_CACHE_DIR,
+    ) -> Path | None:
+        """Identify which input data lines were used in a specific training step.
+
+        Requires that the training job was launched with
+        ``enable_batch_sample_tracing=True``.
+
+        Args:
+            training_result: Result from a completed training job.
+            step: Training step number to investigate.
+            output_path: Output file for matched lines
+                (default: ``step_<N>_samples.jsonl``).
+            cache_dir: Directory for caching downloaded files and fingerprint
+                indices (default: ``~/.nova-forge/batch_trace_cache/``).
+
+        Returns:
+            Path to the output file containing matched lines, or ``None`` if no
+            matches were found.
+
+        Raises:
+            ValueError: If training data path or output path is not available.
+            BatchTraceError: If batch tracing encounters an unrecoverable error.
+        """
+        if not self.training_data_s3_path:
+            msg = "training_data_s3_path is required for batch tracing"
+            raise ValueError(msg)
+
+        output_s3_path = training_result.model_artifacts.output_s3_path
+        if not output_s3_path:
+            msg = "training_result.model_artifacts.output_s3_path is required for batch tracing"
+            raise ValueError(msg)
+
+        if not self._enable_batch_sample_tracing:
+            logger.warning(
+                "Batch sample tracing was not enabled for this trainer. "
+                "If the training job was not launched with enable_batch_sample_tracing=True, "
+                "no batch hash logs will be available."
+            )
+
+        log_dir = f"{output_s3_path.rstrip('/')}/{training_result.job_id}/{BATCH_TRACE_LOG_SUBDIR}/"
+
+        if self._s3_client is None:
+            self._s3_client = boto3.client("s3", region_name=self.region)
+
+        return batch_trace_run(
+            data_path=self.training_data_s3_path,
+            log_dir=log_dir,
+            step=step,
+            output_path=output_path,
+            s3_client=self._s3_client,
+            cache_dir=cache_dir,
+        )

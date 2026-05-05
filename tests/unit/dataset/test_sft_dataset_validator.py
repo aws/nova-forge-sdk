@@ -34,9 +34,7 @@ _mock_pymediainfo.MediaInfo = _mock_mediainfo_cls
 sys.modules["pymediainfo"] = _mock_pymediainfo
 
 from amzn_nova_forge.core.enums import Model, TrainingMethod
-from amzn_nova_forge.dataset.dataset_loader import (
-    JSONLDatasetLoader,
-)
+from amzn_nova_forge.dataset.jsonl_dataset_loader import JSONLDatasetLoader
 
 # TODO: Clean up these unit tests to use helper functions to set up the datasets for readability.
 

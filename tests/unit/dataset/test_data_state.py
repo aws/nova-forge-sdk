@@ -17,19 +17,19 @@ import unittest
 from enum import Enum
 from unittest.mock import MagicMock
 
+import pytest
+
+from amzn_nova_forge.dataset.arrow_dataset_loader import ArrowDatasetLoader
+from amzn_nova_forge.dataset.csv_dataset_loader import CSVDatasetLoader
 from amzn_nova_forge.dataset.data_state import (
     DataLocation,
     DataState,
     OutputPathResolver,
     PathSuffix,
 )
-from amzn_nova_forge.dataset.dataset_loader import (
-    ArrowDatasetLoader,
-    CSVDatasetLoader,
-    JSONDatasetLoader,
-    JSONLDatasetLoader,
-    ParquetDatasetLoader,
-)
+from amzn_nova_forge.dataset.json_dataset_loader import JSONDatasetLoader
+from amzn_nova_forge.dataset.jsonl_dataset_loader import JSONLDatasetLoader
+from amzn_nova_forge.dataset.parquet_dataset_loader import ParquetDatasetLoader
 
 
 class TestDataStateFromLoader(unittest.TestCase):
@@ -119,6 +119,28 @@ class TestOutputPathResolver(unittest.TestCase):
     def test_session_id_fallback(self):
         resolver = OutputPathResolver("s3://bucket/train.jsonl")
         self.assertRegex(resolver._session_id, r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}")
+
+
+@pytest.mark.parametrize(
+    "path, expected_location",
+    [
+        ("s3://bucket/data.jsonl", DataLocation.S3),
+        ("/tmp/local/data.jsonl", DataLocation.LOCAL),
+        ("hf://foo/bar/train_sft", DataLocation.HUGGINGFACE),
+    ],
+    ids=["s3", "local", "huggingface"],
+)
+def test_from_loader_location_detection(path, expected_location):
+    """DataState.from_loader() maps path prefixes to the correct DataLocation."""
+    loader = MagicMock()
+    loader._load_path = path
+    loader._get_format.return_value = "jsonl"
+    loader.dataset = lambda: iter([])
+
+    state = DataState.from_loader(loader)
+
+    assert state.location == expected_location
+    assert state.path == path
 
 
 if __name__ == "__main__":

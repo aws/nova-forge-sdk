@@ -22,10 +22,8 @@ from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
-from amzn_nova_forge.dataset.dataset_loader import (
-    CSVDatasetLoader,
-    JSONLDatasetLoader,
-)
+from amzn_nova_forge.dataset.csv_dataset_loader import CSVDatasetLoader
+from amzn_nova_forge.dataset.jsonl_dataset_loader import JSONLDatasetLoader
 
 
 class TestLazyLoading(unittest.TestCase):
@@ -52,7 +50,7 @@ class TestLazyLoading(unittest.TestCase):
                 yield f'{{"id": {i}, "value": "line_{i}"}}'
 
         with patch(
-            "amzn_nova_forge.dataset.dataset_loader.load_file_content",
+            "amzn_nova_forge.dataset.jsonl_dataset_loader.load_file_content",
             side_effect=lambda *args, **kwargs: mock_line_generator(),
         ):
             loader = JSONLDatasetLoader()
@@ -95,7 +93,7 @@ class TestLazyLoading(unittest.TestCase):
                 yield f"{i},name_{i},value_{i}"
 
         with patch(
-            "amzn_nova_forge.dataset.dataset_loader.load_file_content",
+            "amzn_nova_forge.dataset.csv_dataset_loader.load_file_content",
             side_effect=lambda *args, **kwargs: mock_line_generator(),
         ):
             loader = CSVDatasetLoader()
@@ -133,7 +131,7 @@ class TestLazyLoading(unittest.TestCase):
                 yield f'{{"my_text": "line_{i}"}}'
 
         with patch(
-            "amzn_nova_forge.dataset.dataset_loader.load_file_content",
+            "amzn_nova_forge.dataset.jsonl_dataset_loader.load_file_content",
             side_effect=lambda *args, **kwargs: mock_line_generator(),
         ):
             loader = JSONLDatasetLoader()

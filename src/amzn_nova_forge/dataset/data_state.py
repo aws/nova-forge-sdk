@@ -27,6 +27,7 @@ class DataLocation(Enum):
 
     S3 = "s3"
     LOCAL = "local"
+    HUGGINGFACE = "huggingface"
 
 
 @dataclass
@@ -62,7 +63,12 @@ class DataState:
                 "Call load() before filter()/transform()/execute(). "
                 "Example: loader.load('s3://bucket/data.jsonl').filter(...).execute()"
             )
-        location = DataLocation.S3 if path.startswith("s3://") else DataLocation.LOCAL
+        if path.startswith("s3://"):
+            location = DataLocation.S3
+        elif path.startswith("hf://"):
+            location = DataLocation.HUGGINGFACE
+        else:
+            location = DataLocation.LOCAL
 
         return DataState(
             path=path,

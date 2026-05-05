@@ -186,6 +186,7 @@ def get_hub_recipe_metadata(
     task: Optional[EvaluationTask] = None,
     data_mixing: bool = False,
     is_multimodal: bool = False,
+    hub_content_version: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Extract a single recipe's metadata from a SageMaker DescribeHubContent response
@@ -197,6 +198,7 @@ def get_hub_recipe_metadata(
         region: AWS region
         instance_type: Instance type to fetch recipe metadata for (None for Bedrock)
         task: Evaluation task (only required for evaluation)
+        hub_content_version: Optional version of the hub content to retrieve
 
     Returns:
         Dict containing raw recipe metadata. Example:
@@ -275,6 +277,7 @@ def get_hub_recipe_metadata(
         hub_content_name=model.hub_content_name,
         hub_content_type="Model",
         region=region,
+        hub_content_version=hub_content_version,
     )
 
     document = hub_content.get("HubContentDocument", {})
@@ -647,6 +650,7 @@ def _get_smhp_replicas_enum(
     eval_task: Optional[EvaluationTask] = None,
     data_mixing_enabled: bool = False,
     is_multimodal: bool = False,
+    hub_content_version: Optional[str] = None,
 ) -> Optional[List[int]]:
     """
     Fetch the SMHP overrides template for the given model/method/instance_type and
@@ -664,6 +668,7 @@ def _get_smhp_replicas_enum(
         eval_task: Optional evaluation task
         data_mixing_enabled: Whether data mixing is enabled
         is_multimodal: Whether the dataset is multimodal
+        hub_content_version: Optional version of the hub content to retrieve
 
     Returns:
         List of valid instance counts, or None if unavailable
@@ -678,6 +683,7 @@ def _get_smhp_replicas_enum(
             task=eval_task,
             data_mixing=data_mixing_enabled,
             is_multimodal=is_multimodal,
+            hub_content_version=hub_content_version,
         )
         _, smhp_overrides, _ = download_templates_from_s3(
             recipe_metadata=smhp_metadata,
@@ -710,6 +716,7 @@ def load_recipe_templates(
     rft_multiturn_infra: Optional[RFTMultiturnInfrastructure] = None,
     image_uri_override: Optional[str] = None,
     is_multimodal: bool = False,
+    hub_content_version: Optional[str] = None,
 ) -> tuple:
     """
     Load recipe metadata and templates for Nova model customization.
@@ -727,6 +734,7 @@ def load_recipe_templates(
         eval_task: Optional evaluation task (only for evaluation methods)
         image_uri_override: Optional custom ECR image URI to override default
         is_multimodal: Whether the dataset contains multimodal data (image/video)
+        hub_content_version: Optional version of the hub content to retrieve
 
     Returns:
         tuple: (recipe_metadata, recipe_template, overrides_template, image_uri)
@@ -782,6 +790,7 @@ def load_recipe_templates(
             task=base_task,
             data_mixing=data_mixing_enabled,
             is_multimodal=is_multimodal,
+            hub_content_version=hub_content_version,
         )
 
         recipe_path = rft_multiturn_infra.get_recipe_path(
@@ -836,6 +845,7 @@ def load_recipe_templates(
         task=eval_task,
         data_mixing=data_mixing_enabled,
         is_multimodal=is_multimodal,
+        hub_content_version=hub_content_version,
     )
 
     # Download recipe and overrides templates
@@ -864,6 +874,7 @@ def load_recipe_templates(
             eval_task=eval_task,
             data_mixing_enabled=data_mixing_enabled,
             is_multimodal=is_multimodal,
+            hub_content_version=hub_content_version,
         )
         if smhp_replicas_enum:
             overrides_template.setdefault("replicas", {})["enum"] = smhp_replicas_enum

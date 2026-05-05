@@ -21,11 +21,9 @@ import pyarrow as pa
 import pyarrow.ipc
 import pyarrow.parquet as pq
 
+from amzn_nova_forge.dataset.arrow_dataset_loader import ArrowDatasetLoader
 from amzn_nova_forge.dataset.data_state import DataLocation, DataState
-from amzn_nova_forge.dataset.dataset_loader import (
-    ArrowDatasetLoader,
-    JSONLDatasetLoader,
-)
+from amzn_nova_forge.dataset.jsonl_dataset_loader import JSONLDatasetLoader
 from amzn_nova_forge.dataset.operations.base import OperationResult
 from amzn_nova_forge.dataset.operations.filter_operation import FilterMethod
 from amzn_nova_forge.dataset.operations.utils import (
