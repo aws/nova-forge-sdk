@@ -523,7 +523,7 @@ def test_no_token_parameter():
     with patch.dict(sys.modules, {"datasets": fake_mod}):
         loader = HuggingFaceDatasetLoader()
         with pytest.raises(TypeError):
-            loader.load("squad", token="abc")
+            loader.load("foo", token="abc")
 
 
 def test_lazy_import_site_shared():
@@ -536,6 +536,6 @@ def test_lazy_import_site_shared():
     with patch.dict(sys.modules, {"datasets": None}):
         loader = HuggingFaceDatasetLoader()
         with pytest.raises(ImportError) as exc_info:
-            loader.load("squad")
+            loader.load("foo")
 
         assert "pip install amzn-nova-forge[huggingface]" in str(exc_info.value)
