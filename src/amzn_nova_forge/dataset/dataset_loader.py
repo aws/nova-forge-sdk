@@ -39,23 +39,15 @@ Supported input formats:
     - S3 Arrow IPC/Feather files
 """
 
-import csv
 import json
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterator, Optional, Tuple, Union
 
-import pyarrow as pa
-import pyarrow.feather
-import pyarrow.fs as pafs
-import pyarrow.ipc
-import pyarrow.parquet as pq
-
 from amzn_nova_forge.core.enums import EvaluationTask, Model, TrainingMethod
 from amzn_nova_forge.telemetry import Feature, _telemetry_emitter
 
 from ..util.logging import logger
-from ..util.recipe import load_file_content
 from ..util.s3_utils import get_dataprep_bucket_name
 from .data_state import DataLocation, DataState, OutputPathResolver, PathSuffix
 from .file_utils import (
@@ -179,6 +171,12 @@ class DatasetLoader(ABC):
         """Return the canonical data format name for this loader."""
         return self._FORMAT
 
+    def _get_or_create_session_id(self) -> str:
+        """Return the session ID, generating one lazily on first access."""
+        if self._session_id is None:
+            self._session_id = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+        return self._session_id
+
     @abstractmethod
     def _make_single_file_generator(self, path: str) -> Callable[[], Iterator[Dict]]:
         """Return a generator factory for a single file.
@@ -226,7 +224,7 @@ class DatasetLoader(ABC):
         self._load_path = path
         self._last_state = None  # Reset persisted state for new pipeline
         self._is_materialized = False
-        self._session_id = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+        self._session_id = None
         return self
 
     @_telemetry_emitter(Feature.DATA_PREP, "show")
@@ -541,7 +539,9 @@ class DatasetLoader(ABC):
 
         self._is_materialized = False
         state = self._last_state or DataState.from_loader(self)
-        resolver = OutputPathResolver(self._load_path or state.path, self._session_id)
+        resolver = OutputPathResolver(
+            self._load_path or state.path, self._get_or_create_session_id()
+        )
 
         for op_type, method, kwargs in self._pending_operations:
             op = self._get_operation(op_type, method)
@@ -598,153 +598,3 @@ class DatasetLoader(ABC):
         """Deprecated: Use save() instead."""
         logger.warning("save_data() is deprecated, use save() instead.")
         return self.save(save_path)
-
-
-# === DATASET LOADER CLASSES ===
-class JSONLDatasetLoader(DatasetLoader):
-    _EXTENSIONS = {".jsonl"}
-    _FORMAT = "jsonl"
-
-    def _make_single_file_generator(self, path: str) -> Callable[[], Iterator[Dict]]:
-        """Return a generator factory for a single JSONL file."""
-
-        def jsonl_generator():
-            """Generator that yields records from JSONL file line by line."""
-            try:
-                for line in load_file_content(
-                    file_path=path, extension=".jsonl", encoding="utf-8-sig"
-                ):
-                    line = line.strip()
-                    if line:
-                        try:
-                            yield json.loads(line)
-                        except json.JSONDecodeError as e:
-                            preview = line[:120] + ("..." if len(line) > 120 else "")
-                            logger.warning("Skipping malformed JSON line in %s: %s", path, preview)
-            except Exception as e:
-                raise DataPrepError(f"Error loading JSONL file {path}: {e}") from e
-
-        return jsonl_generator
-
-
-class JSONDatasetLoader(DatasetLoader):
-    _EXTENSIONS = {".json"}
-    _FORMAT = "json"
-
-    def _make_single_file_generator(self, path: str) -> Callable[[], Iterator[Dict]]:
-        """Return a generator factory for a single JSON file."""
-
-        def json_generator():
-            """Generator that yields records from JSON file."""
-            try:
-                lines = list(load_file_content(file_path=path, extension=".json", encoding="utf-8"))
-                content = "\n".join(lines)
-                data = json.loads(content)
-                if isinstance(data, list):
-                    yield from data
-                else:
-                    yield data
-            except Exception as e:
-                raise DataPrepError(f"Error loading JSON file {path}: {e}") from e
-
-        return json_generator
-
-
-class CSVDatasetLoader(DatasetLoader):
-    _EXTENSIONS = {".csv"}
-    _FORMAT = "csv"
-
-    def _make_single_file_generator(self, path: str) -> Callable[[], Iterator[Dict]]:
-        """Return a generator factory for a single CSV file."""
-
-        def csv_generator():
-            """Generator that yields records from CSV file row by row."""
-            try:
-                lines = load_file_content(file_path=path, extension=".csv", encoding="utf-8-sig")
-                reader = csv.DictReader(lines)
-                yield from reader
-            except UnicodeError:
-                lines = load_file_content(file_path=path, extension=".csv", encoding="utf-8")
-                reader = csv.DictReader(lines)
-                yield from reader
-            except Exception as e:
-                raise DataPrepError(f"Error loading CSV file {path}: {e}") from e
-
-        return csv_generator
-
-
-class ParquetDatasetLoader(DatasetLoader):
-    """Load Parquet files lazily using PyArrow batch iteration."""
-
-    _EXTENSIONS = {".parquet", ".pq"}
-    _FORMAT = "parquet"
-
-    def _make_single_file_generator(self, path: str) -> Callable[[], Iterator[Dict]]:
-        """Return a generator factory for a single Parquet file."""
-
-        def parquet_generator():
-            try:
-                if path.startswith("s3://"):
-                    fs = pafs.S3FileSystem()
-                    s3_path = path[len("s3://") :]
-                    pf = pq.ParquetFile(fs.open_input_file(s3_path))
-                else:
-                    pf = pq.ParquetFile(path)
-
-                for batch in pf.iter_batches():
-                    yield from batch.to_pylist()
-            except Exception as e:
-                raise DataPrepError(f"Error loading Parquet file {path}: {e}") from e
-
-        return parquet_generator
-
-
-class ArrowDatasetLoader(DatasetLoader):
-    """Load Arrow IPC/Feather files lazily using batch iteration."""
-
-    _EXTENSIONS = {".arrow", ".feather", ".ipc"}
-    _FORMAT = "arrow"
-
-    @staticmethod
-    def _iter_arrow_batches(source) -> Iterator:
-        """Yield records from an Arrow IPC source, trying Stream then File format.
-
-        Arrow IPC has two layouts: Stream (sequential, no random access) and
-        File (has footer, supports random access). A .arrow/.ipc file could
-        be either. We try Stream first (more memory-efficient), then fall
-        back to File format.
-        """
-        try:
-            reader = pa.ipc.open_stream(source)
-            for batch in reader:
-                yield from batch.to_pylist()
-        except (pa.ArrowInvalid, pa.ArrowNotImplementedError):
-            # Not a stream — try IPC File format
-            if hasattr(source, "seek"):
-                source.seek(0)
-            reader = pa.ipc.open_file(source)
-            for i in range(reader.num_record_batches):
-                yield from reader.get_batch(i).to_pylist()
-
-    def _make_single_file_generator(self, path: str) -> Callable[[], Iterator[Dict]]:
-        """Return a generator factory for a single Arrow IPC or Feather file."""
-
-        def arrow_generator():
-            try:
-                if path.startswith("s3://"):
-                    fs = pafs.S3FileSystem()
-                    s3_path = path[len("s3://") :]
-                    source = fs.open_input_file(s3_path)
-                else:
-                    source = path
-
-                if path.endswith(".feather"):
-                    table = pa.feather.read_table(source)
-                    for batch in table.to_batches():
-                        yield from batch.to_pylist()
-                else:
-                    yield from ArrowDatasetLoader._iter_arrow_batches(source)
-            except Exception as e:
-                raise DataPrepError(f"Error loading Arrow file {path}: {e}") from e
-
-        return arrow_generator

@@ -25,6 +25,9 @@ dependencies = [
     "sagemaker>=3.5.0",
 ]
 [project.optional-dependencies]
+video = ["pymediainfo"]
+image = ["pymediainfo"]
+huggingface = ["datasets>=4.8.0"]
 dev = [
     "build",
     "setuptools",

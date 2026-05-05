@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import boto3
 
@@ -22,6 +22,7 @@ def get_hub_content(
     hub_content_name: str,
     hub_content_type: str,
     region: str,
+    hub_content_version: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
      Get hub content from SageMaker via the DescribeHubContent API
@@ -31,6 +32,7 @@ def get_hub_content(
         hub_content_name: Name of the hub content
         hub_content_type: Type of hub content
         region: AWS region
+        hub_content_version: Optional version of the hub content to retrieve
 
     Returns:
         Dict containing hub content
@@ -38,11 +40,15 @@ def get_hub_content(
     sagemaker_client = boto3.client("sagemaker", region_name=region)
 
     try:
-        response = sagemaker_client.describe_hub_content(
-            HubName=hub_name,
-            HubContentType=hub_content_type,
-            HubContentName=hub_content_name,
-        )
+        kwargs: Dict[str, Any] = {
+            "HubName": hub_name,
+            "HubContentType": hub_content_type,
+            "HubContentName": hub_content_name,
+        }
+        if hub_content_version is not None:
+            kwargs["HubContentVersion"] = hub_content_version
+
+        response = sagemaker_client.describe_hub_content(**kwargs)
 
         # Parse HubContentDocument if it's a JSON string
         if "HubContentDocument" in response:

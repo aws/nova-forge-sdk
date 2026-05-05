@@ -23,19 +23,18 @@ import jsonschema
 from botocore.exceptions import ClientError
 
 from amzn_nova_forge.core.enums import Model, TrainingMethod
+from amzn_nova_forge.dataset.arrow_dataset_loader import ArrowDatasetLoader
+from amzn_nova_forge.dataset.csv_dataset_loader import CSVDatasetLoader
 from amzn_nova_forge.dataset.dataset_format_schema import (
     SFT_NOVA_ONE_CONVERSE_2024,
     SFT_NOVA_TWO_CONVERSE_2024,
 )
-from amzn_nova_forge.dataset.dataset_loader import (
-    ArrowDatasetLoader,
-    CSVDatasetLoader,
-    JSONDatasetLoader,
-    JSONLDatasetLoader,
-    ParquetDatasetLoader,
-)
 from amzn_nova_forge.dataset.file_utils import resolve_path
+from amzn_nova_forge.dataset.json_dataset_loader import JSONDatasetLoader
+from amzn_nova_forge.dataset.jsonl_dataset_loader import JSONLDatasetLoader
 from amzn_nova_forge.dataset.operations.base import DataPrepError
+from amzn_nova_forge.dataset.parquet_dataset_loader import ParquetDatasetLoader
+
 
 
 class TestDatasetLoader(unittest.TestCase):
@@ -123,7 +122,7 @@ class TestDatasetLoader(unittest.TestCase):
         }
 
     @patch("amzn_nova_forge.dataset.dataset_loader.check_path_exists")
-    @patch("amzn_nova_forge.dataset.dataset_loader.load_file_content")
+    @patch("amzn_nova_forge.dataset.jsonl_dataset_loader.load_file_content")
     def test_load_json_dataset_from_s3(self, mock_load_file, mock_check_exists):
         with open("tests/test_data/sft_train_samples_converse.jsonl", "r") as f:
             lines = f.read().splitlines()
@@ -142,7 +141,7 @@ class TestDatasetLoader(unittest.TestCase):
         self.assertEqual(list(dataset_loader.dataset())[0], self.converse_first_row)
 
     @patch("amzn_nova_forge.dataset.dataset_loader.check_path_exists")
-    @patch("amzn_nova_forge.dataset.dataset_loader.load_file_content")
+    @patch("amzn_nova_forge.dataset.jsonl_dataset_loader.load_file_content")
     def test_load_jsonl_with_empty_lines(self, mock_load_file, mock_check_exists):
         jsonl_content = """{"id": "1", "name": "Alice"}
 
@@ -163,8 +162,8 @@ class TestDatasetLoader(unittest.TestCase):
         self.assertEqual(list(dataset_loader.dataset())[2], {"id": "3", "name": "Charlie"})
 
     @patch("amzn_nova_forge.dataset.dataset_loader.check_path_exists")
-    @patch("amzn_nova_forge.dataset.dataset_loader.load_file_content")
-    @patch("amzn_nova_forge.dataset.dataset_loader.logger")
+    @patch("amzn_nova_forge.dataset.jsonl_dataset_loader.load_file_content")
+    @patch("amzn_nova_forge.dataset.jsonl_dataset_loader.logger")
     def test_load_jsonl_with_malformed_json(self, mock_logger, mock_load_file, mock_check_exists):
         jsonl_content = """{"id": "1", "name": "Alice"}
     {"id": "2", "name": "Bob", invalid json here}
@@ -1485,33 +1484,38 @@ class TestResolvePath(unittest.TestCase):
         """Each loader's load() should call resolve_path."""
         resolve_mock_path = "amzn_nova_forge.dataset.dataset_loader.resolve_path"
         check_exists_path = "amzn_nova_forge.dataset.dataset_loader.check_path_exists"
-        load_content_path = "amzn_nova_forge.dataset.dataset_loader.load_file_content"
 
         loaders_with_paths = [
             (
                 JSONLDatasetLoader,
                 "data/train.jsonl",
-                {"load_file_content": load_content_path},
+                {
+                    "load_file_content": "amzn_nova_forge.dataset.jsonl_dataset_loader.load_file_content"
+                },
             ),
             (
                 JSONDatasetLoader,
                 "data/train.json",
-                {"load_file_content": load_content_path},
+                {
+                    "load_file_content": "amzn_nova_forge.dataset.json_dataset_loader.load_file_content"
+                },
             ),
             (
                 CSVDatasetLoader,
                 "data/train.csv",
-                {"load_file_content": load_content_path},
+                {
+                    "load_file_content": "amzn_nova_forge.dataset.csv_dataset_loader.load_file_content"
+                },
             ),
             (
                 ParquetDatasetLoader,
                 "data/train.parquet",
-                {"pq": "amzn_nova_forge.dataset.dataset_loader.pq"},
+                {"pq": "amzn_nova_forge.dataset.parquet_dataset_loader.pq"},
             ),
             (
                 ArrowDatasetLoader,
                 "data/train.arrow",
-                {"pa": "amzn_nova_forge.dataset.dataset_loader.pa"},
+                {"pa": "amzn_nova_forge.dataset.arrow_dataset_loader.pa"},
             ),
         ]
         for loader_cls, path, extra_mocks in loaders_with_paths:

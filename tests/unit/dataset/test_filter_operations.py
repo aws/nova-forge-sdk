@@ -20,10 +20,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from amzn_nova_forge.dataset.data_state import DataLocation, DataState
-from amzn_nova_forge.dataset.dataset_loader import JSONLDatasetLoader
 from amzn_nova_forge.dataset.dataset_validator.dataset_validator import (
     InfrastructureError,
 )
+from amzn_nova_forge.dataset.jsonl_dataset_loader import JSONLDatasetLoader
 from amzn_nova_forge.dataset.operations.base import (
     FilterOperationResult,
 )

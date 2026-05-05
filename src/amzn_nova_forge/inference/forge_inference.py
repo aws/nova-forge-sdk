@@ -68,12 +68,14 @@ class ForgeInference:
         infra: Optional[RuntimeManager] = None,
         config: Optional[ForgeConfig] = None,
         method: Optional[TrainingMethod] = None,
+        hub_content_version: Optional[str] = None,
     ) -> None:
         self.region = region or boto3.session.Session().region_name or DEFAULT_REGION
         self.model = model
         self.infra = infra
         self.method = method
         self._config = config or ForgeConfig()
+        self.hub_content_version = hub_content_version
 
         self._platform: Optional[Platform] = None
         if infra is not None:
@@ -247,6 +249,7 @@ class ForgeInference:
             output_s3_path=resolved_output,
             model_path=resolved_model_path,
             image_uri_override=self._config.image_uri,
+            hub_content_version=self.hub_content_version,
         )
 
         (

@@ -12,9 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import unittest
+import unittest.mock
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, PropertyMock, create_autospec, patch
 
+from amzn_nova_forge.core.constants import DEFAULT_BATCH_TRACE_CACHE_DIR
 from amzn_nova_forge.core.enums import Model, Platform, TrainingMethod
 from amzn_nova_forge.core.result import (
     BedrockTrainingResult,
@@ -229,6 +232,36 @@ class TestForgeTrainerInit(unittest.TestCase):
         )
         self.assertTrue(trainer._is_multimodal)
         mock_is_mm.assert_called_once_with("s3://bucket/data")
+
+    @patch("boto3.session.Session")
+    def test_batch_sample_tracing_rejects_non_smhp(self, mock_session):
+        type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
+        infra = _make_smtj_infra()
+
+        with self.assertRaises(ValueError) as ctx:
+            ForgeTrainer(
+                model=Model.NOVA_MICRO,
+                method=TrainingMethod.CPT,
+                infra=infra,
+                training_data_s3_path="s3://bucket/data",
+                enable_batch_sample_tracing=True,
+            )
+        self.assertIn("SageMaker HyperPod", str(ctx.exception))
+
+    @patch("boto3.session.Session")
+    def test_batch_sample_tracing_rejects_non_cpt(self, mock_session):
+        type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
+        infra = _make_smhp_infra()
+
+        with self.assertRaises(ValueError) as ctx:
+            ForgeTrainer(
+                model=Model.NOVA_MICRO,
+                method=TrainingMethod.SFT_LORA,
+                infra=infra,
+                training_data_s3_path="s3://bucket/data",
+                enable_batch_sample_tracing=True,
+            )
+        self.assertIn("CPT", str(ctx.exception))
 
 
 class TestForgeTrainerTrain(unittest.TestCase):
@@ -588,6 +621,134 @@ class TestForgeTrainerGetLogs(unittest.TestCase):
             cluster_name="my-cluster",
             namespace="kubeflow",
         )
+
+
+class TestForgeTrainerTraceBatch(unittest.TestCase):
+    """Tests for ForgeTrainer.trace_batch()."""
+
+    def _make_trainer(self, **kwargs):
+        infra = create_autospec(SMTJRuntimeManager)
+        infra.instance_type = "ml.p5.48xlarge"
+        infra.instance_count = 2
+        infra.kms_key_id = None
+        infra.platform = Platform.SMTJ
+        infra.rft_lambda_arn = None
+
+        defaults = dict(
+            model=Model.NOVA_MICRO,
+            method=TrainingMethod.SFT_LORA,
+            infra=infra,
+            training_data_s3_path="s3://bucket/data.jsonl",
+        )
+        defaults.update(kwargs)
+        with (
+            patch(
+                "amzn_nova_forge.trainer.forge_trainer.set_output_s3_path",
+                return_value="s3://bucket/output",
+            ),
+            patch("boto3.session.Session") as mock_session,
+        ):
+            type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
+            return ForgeTrainer(**defaults)
+
+    @patch("amzn_nova_forge.trainer.forge_trainer.batch_trace_run")
+    def test_delegates_to_batch_trace_run(self, mock_run):
+        mock_run.return_value = Path("step_42_samples.jsonl")
+        trainer = self._make_trainer()
+
+        result_obj = MagicMock()
+        result_obj.job_id = "my-job-123"
+        result_obj.model_artifacts = ModelArtifacts(
+            checkpoint_s3_path="s3://bucket/checkpoint",
+            output_s3_path="s3://bucket/output",
+        )
+
+        result = trainer.trace_batch(result_obj, step=42)
+
+        mock_run.assert_called_once_with(
+            data_path="s3://bucket/data.jsonl",
+            log_dir="s3://bucket/output/my-job-123/batch_tracing/",
+            step=42,
+            output_path=None,
+            s3_client=unittest.mock.ANY,
+            cache_dir=DEFAULT_BATCH_TRACE_CACHE_DIR,
+        )
+        self.assertEqual(result, Path("step_42_samples.jsonl"))
+
+    @patch("amzn_nova_forge.trainer.forge_trainer.batch_trace_run")
+    def test_passes_output_path_and_cache_dir(self, mock_run):
+        mock_run.return_value = Path("/tmp/out.jsonl")
+        trainer = self._make_trainer()
+
+        result_obj = MagicMock()
+        result_obj.job_id = "my-job-456"
+        result_obj.model_artifacts = ModelArtifacts(
+            checkpoint_s3_path=None,
+            output_s3_path="s3://bucket/output",
+        )
+
+        trainer.trace_batch(
+            result_obj, step=10, output_path="/tmp/out.jsonl", cache_dir="/tmp/cache"
+        )
+
+        mock_run.assert_called_once_with(
+            data_path="s3://bucket/data.jsonl",
+            log_dir="s3://bucket/output/my-job-456/batch_tracing/",
+            step=10,
+            output_path="/tmp/out.jsonl",
+            s3_client=unittest.mock.ANY,
+            cache_dir="/tmp/cache",
+        )
+
+    def test_raises_when_no_training_data_path(self):
+        trainer = self._make_trainer(training_data_s3_path=None)
+        result_obj = MagicMock()
+        result_obj.model_artifacts = ModelArtifacts(
+            checkpoint_s3_path=None, output_s3_path="s3://bucket/output"
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            trainer.trace_batch(result_obj, step=0)
+        self.assertIn("training_data_s3_path", str(ctx.exception))
+
+    def test_raises_when_no_output_s3_path(self):
+        trainer = self._make_trainer()
+        result_obj = MagicMock()
+        result_obj.model_artifacts = ModelArtifacts(checkpoint_s3_path=None, output_s3_path="")
+
+        with self.assertRaises(ValueError) as ctx:
+            trainer.trace_batch(result_obj, step=0)
+        self.assertIn("output_s3_path", str(ctx.exception))
+
+    @patch("amzn_nova_forge.trainer.forge_trainer.batch_trace_run")
+    def test_strips_trailing_slash_from_output_path(self, mock_run):
+        mock_run.return_value = None
+        trainer = self._make_trainer()
+
+        result_obj = MagicMock()
+        result_obj.job_id = "my-job-789"
+        result_obj.model_artifacts = ModelArtifacts(
+            checkpoint_s3_path=None,
+            output_s3_path="s3://bucket/output/",
+        )
+
+        trainer.trace_batch(result_obj, step=5)
+
+        call_kwargs = mock_run.call_args
+        self.assertEqual(
+            call_kwargs.kwargs["log_dir"], "s3://bucket/output/my-job-789/batch_tracing/"
+        )
+
+    @unittest.mock.patch("amzn_nova_forge.trainer.forge_trainer.batch_trace_run")
+    def test_warns_when_tracing_not_enabled(self, mock_run):
+        mock_run.return_value = None
+        trainer = self._make_trainer()
+        result = MagicMock()
+        result.model_artifacts.output_s3_path = "s3://bucket/output"
+        result.job_id = "job-123"
+        with self.assertLogs("nova_forge_sdk", level="WARNING") as cm:
+            trainer.trace_batch(training_result=result, step=1)
+        self.assertTrue(any("not enabled" in msg for msg in cm.output))
 
 
 if __name__ == "__main__":

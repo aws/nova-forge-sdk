@@ -11,4 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-VERSION = "1.4.5"  # pragma: no cover
+from amzn_nova_forge.trainer.utils.batch_trace import BatchTraceError
+
+__all__ = ["BatchTraceError"]

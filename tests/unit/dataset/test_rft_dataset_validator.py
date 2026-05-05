@@ -16,9 +16,7 @@ import tempfile
 import unittest
 
 from amzn_nova_forge.core.enums import Model, TrainingMethod
-from amzn_nova_forge.dataset.dataset_loader import (
-    JSONLDatasetLoader,
-)
+from amzn_nova_forge.dataset.jsonl_dataset_loader import JSONLDatasetLoader
 
 
 class TestRFTDatasetValidator(unittest.TestCase):

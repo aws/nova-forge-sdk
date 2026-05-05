@@ -19,6 +19,7 @@ from botocore.exceptions import ClientError
 
 from amzn_nova_forge.core.enums import Platform
 from amzn_nova_forge.dataset.data_state import DataLocation, DataState
+from amzn_nova_forge.dataset.jsonl_dataset_loader import JSONLDatasetLoader
 from amzn_nova_forge.dataset.operations.base import OperationResult
 from amzn_nova_forge.manager.glue_runtime_manager import (
     GlueRuntimeManager,
@@ -524,12 +525,10 @@ class TestLazyFilterExecution(unittest.TestCase):
     def _load_stub(self, loader, path):
         """Set _load_path without triggering real file I/O."""
         loader._load_path = path
-        loader._session_id = "2026-04-20_14-30-22"
         loader.dataset = lambda: iter([])
 
     def test_execute_without_load_raises(self):
         """execute() should raise ValueError when load() was not called."""
-        from amzn_nova_forge.dataset.dataset_loader import JSONLDatasetLoader
         from amzn_nova_forge.dataset.operations.filter_operation import FilterMethod
 
         loader = JSONLDatasetLoader()
@@ -541,7 +540,6 @@ class TestLazyFilterExecution(unittest.TestCase):
 
     def test_filter_does_not_execute_immediately(self):
         """Calling filter() should only queue — no execution."""
-        from amzn_nova_forge.dataset.dataset_loader import JSONLDatasetLoader
         from amzn_nova_forge.dataset.operations.filter_operation import FilterMethod
 
         loader = JSONLDatasetLoader()
@@ -556,7 +554,6 @@ class TestLazyFilterExecution(unittest.TestCase):
 
     def test_multiple_filters_are_queued(self):
         """Multiple filter() calls should queue without executing."""
-        from amzn_nova_forge.dataset.dataset_loader import JSONLDatasetLoader
         from amzn_nova_forge.dataset.operations.filter_operation import FilterMethod
 
         loader = JSONLDatasetLoader()
@@ -574,7 +571,6 @@ class TestLazyFilterExecution(unittest.TestCase):
     @patch("amzn_nova_forge.dataset.dataset_loader.get_filter_operation")
     def test_execute_runs_pending_operations(self, mock_get_op):
         """execute() should run all queued filters then clear the queue."""
-        from amzn_nova_forge.dataset.dataset_loader import JSONLDatasetLoader
         from amzn_nova_forge.dataset.operations.filter_operation import FilterMethod
 
         mock_op = MagicMock()
@@ -605,7 +601,6 @@ class TestLazyFilterExecution(unittest.TestCase):
     @patch("amzn_nova_forge.dataset.dataset_loader.get_filter_operation")
     def test_execute_chains_multiple_filters(self, mock_get_op):
         """execute() should run filters in order."""
-        from amzn_nova_forge.dataset.dataset_loader import JSONLDatasetLoader
         from amzn_nova_forge.dataset.operations.filter_operation import FilterMethod
 
         mock_op = MagicMock()
@@ -632,7 +627,6 @@ class TestLazyFilterExecution(unittest.TestCase):
 
     def test_execute_with_no_pending_is_noop(self):
         """execute() with no pending filters should be a no-op."""
-        from amzn_nova_forge.dataset.dataset_loader import JSONLDatasetLoader
 
         loader = JSONLDatasetLoader()
         result = loader.execute()
@@ -641,7 +635,6 @@ class TestLazyFilterExecution(unittest.TestCase):
     @patch("amzn_nova_forge.dataset.dataset_loader.get_filter_operation")
     def test_execute_auto_chains_input_from_previous_output(self, mock_get_op):
         """execute() should set input_path from previous output for second filter."""
-        from amzn_nova_forge.dataset.dataset_loader import JSONLDatasetLoader
         from amzn_nova_forge.dataset.operations.filter_operation import FilterMethod
 
         mock_op = MagicMock()
@@ -686,10 +679,12 @@ class TestLazyFilterExecution(unittest.TestCase):
         self.assertEqual(second_call_kwargs.kwargs["state"].path, "s3://bucket/filtered/")
 
     @patch("amzn_nova_forge.dataset.dataset_loader.get_filter_operation")
-    def test_execute_auto_generates_output_path(self, mock_get_op):
+    @patch("amzn_nova_forge.dataset.dataset_loader.datetime")
+    def test_execute_auto_generates_output_path(self, mock_datetime, mock_get_op):
         """output_path should be auto-generated as <parent>/<stem>/<session>/<method>_output/."""
-        from amzn_nova_forge.dataset.dataset_loader import JSONLDatasetLoader
         from amzn_nova_forge.dataset.operations.filter_operation import FilterMethod
+
+        mock_datetime.now.return_value.strftime.return_value = "2026-04-20_14-30-22"
 
         mock_op = MagicMock()
         mock_op.execute.return_value = OperationResult(
@@ -716,10 +711,12 @@ class TestLazyFilterExecution(unittest.TestCase):
         )
 
     @patch("amzn_nova_forge.dataset.dataset_loader.get_filter_operation")
-    def test_execute_auto_generates_chained_paths(self, mock_get_op):
+    @patch("amzn_nova_forge.dataset.dataset_loader.datetime")
+    def test_execute_auto_generates_chained_paths(self, mock_datetime, mock_get_op):
         """Full auto-chain: only input_path on first filter, everything else derived."""
-        from amzn_nova_forge.dataset.dataset_loader import JSONLDatasetLoader
         from amzn_nova_forge.dataset.operations.filter_operation import FilterMethod
+
+        mock_datetime.now.return_value.strftime.return_value = "2026-04-20_14-30-22"
 
         mock_op = MagicMock()
         mock_op.execute.side_effect = [
@@ -774,7 +771,6 @@ class TestLazyFilterExecution(unittest.TestCase):
     @patch("amzn_nova_forge.dataset.dataset_loader.get_filter_operation")
     def test_execute_explicit_output_not_overridden(self, mock_get_op):
         """Explicit output_path should not be overridden by auto-generation."""
-        from amzn_nova_forge.dataset.dataset_loader import JSONLDatasetLoader
         from amzn_nova_forge.dataset.operations.filter_operation import FilterMethod
 
         mock_op = MagicMock()

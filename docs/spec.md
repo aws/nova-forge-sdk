@@ -84,6 +84,8 @@ def __init__(
     config: Optional[ForgeConfig] = None,
     region: Optional[str] = None,
     is_multimodal: Optional[bool] = None,
+    hub_content_version: Optional[str] = None,
+    enable_batch_sample_tracing: bool = False,
 )
 ```
 
@@ -98,6 +100,11 @@ def __init__(
 - `config` (Optional[ForgeConfig]): Shared configuration. If not provided, defaults are used
 - `region` (Optional[str]): AWS region. Auto-detected if not provided
 - `is_multimodal` (Optional[bool]): Explicitly set multimodal mode when `data_mixing_enabled=True`. If None, auto-detects from data
+- `hub_content_version` (Optional[str]): Version of the hub content to retrieve from SageMaker Hub. If None, uses the latest version
+- `enable_batch_sample_tracing` (bool): Activate per-step batch hashing during training, which enables `trace_batch()` post-training. Supported platform/method combinations are validated at construction time. Default: False
+
+**Raises:**
+- `ValueError`: If `enable_batch_sample_tracing=True` is used with an unsupported platform or training method
 
 **Example:**
 ```python
@@ -189,7 +196,7 @@ def get_logs(
 - `started_time` (Optional[datetime]): Job start time to filter logs
 - `limit` (Optional[int]): Maximum number of log lines to retrieve
 - `start_from_head` (bool): If True, start from the beginning of logs. Default: False
-- `end_time` (Optional[str]): End time for searching a log time range
+- `end_time` (Optional[int]): End time in epoch milliseconds for searching a log time range
 
 **Returns:**
 - None (prints logs to console)
@@ -197,6 +204,59 @@ def get_logs(
 **Example:**
 ```python
 trainer.get_logs(job_result=result, limit=100, start_from_head=True)
+```
+---
+
+##### `trace_batch()`
+Extracts the lines from your input training data that were used in a specific training step's batch. Useful for diagnosing gradient spikes or training anomalies — given a step number, it matches the container's batch hash logs against your source data and writes the matched lines to an output file.
+
+The training job must have been launched with `enable_batch_sample_tracing=True` so that batch hash logs are written during training. Supported platform/method combinations are validated at `ForgeTrainer` construction time. If you create a new `ForgeTrainer` instance to trace a previously-launched job, the flag is not strictly required on the new instance — but a warning will be emitted.
+
+**Signature:**
+```python
+def trace_batch(
+    self,
+    training_result: TrainingResult,
+    step: int,
+    output_path: str | None = None,
+    cache_dir: str = "~/.nova-forge/batch_trace_cache",
+) -> Path | None
+```
+
+**Parameters:**
+- `training_result` (TrainingResult): Result from a completed training job. The method extracts `training_result.model_artifacts.output_s3_path` and `training_result.job_id` to locate the batch hash logs at `{output_s3_path}/{job_id}/batch_tracing/`.
+- `step` (int): Training step number to investigate (must match the step numbers in the container's batch hash logs).
+- `output_path` (Optional[str]): Path for the output file containing matched lines. Default: `step_<N>_samples.jsonl` in the current working directory.
+- `cache_dir` (str): Directory for caching downloaded files and fingerprint indices. Default: `~/.nova-forge/batch_trace_cache`. The cache stores downloaded S3 files (training data, hash logs) and a CSV fingerprint index. For large datasets the cache may grow to match the source data size. The cache is keyed by S3 path — if you replace the file at an existing S3 URI, delete the cache directory to avoid stale matches.
+
+**Returns:**
+- `Path | None`: Path to the output JSONL file containing the matched lines (verbatim copies from your source data, sorted by line number). Returns `None` if either the step had no logged batch data (step out of range or job still running) or the step's batch contained no samples from your file.
+
+**Raises:**
+- `ValueError`: If `training_data_s3_path` or `training_result.model_artifacts.output_s3_path` is not available
+- `BatchTraceError`: If batch tracing encounters an unrecoverable error (e.g., missing log files, AWS auth failure)
+  Import: `from amzn_nova_forge.trainer.utils import BatchTraceError`
+
+**Example:**
+```python
+trainer = ForgeTrainer(
+    model=Model.NOVA_LITE_2,
+    method=TrainingMethod.CPT,
+    infra=infra,
+    training_data_s3_path="s3://my-bucket/data.jsonl",
+    enable_batch_sample_tracing=True,
+)
+
+result = trainer.train(job_name="my-cpt-job")
+
+# After job completes, investigate step 42.
+# Output writes to ./step_42_samples.jsonl by default.
+matched_file = trainer.trace_batch(result, step=42)
+if matched_file:
+    print(f"Matched lines written to: {matched_file}")
+
+# Explicit output path:
+matched_file = trainer.trace_batch(result, step=42, output_path="/tmp/flagged.jsonl")
 ```
 ---
 
@@ -215,6 +275,7 @@ def __init__(
     data_s3_path: Optional[str] = None,
     config: Optional[ForgeConfig] = None,
     region: Optional[str] = None,
+    hub_content_version: Optional[str] = None,
 )
 ```
 
@@ -224,6 +285,7 @@ def __init__(
 - `data_s3_path` (Optional[str]): S3 path to evaluation data (required for BYOD evaluation tasks)
 - `config` (Optional[ForgeConfig]): Shared configuration
 - `region` (Optional[str]): AWS region. Auto-detected if not provided
+- `hub_content_version` (Optional[str]): Version of the hub content to retrieve from SageMaker Hub. If None, uses the latest version
 
 **Example:**
 ```python
@@ -323,7 +385,7 @@ def get_logs(
 - `started_time` (Optional[datetime]): Job start time to filter logs
 - `limit` (Optional[int]): Maximum number of log lines
 - `start_from_head` (bool): If True, start from the beginning of logs. Default: False
-- `end_time` (Optional[str]): End time for searching a log time range
+- `end_time` (Optional[int]): End time in epoch milliseconds for searching a log time range
 
 **Returns:**
 - None (prints logs to console)
@@ -613,6 +675,7 @@ def __init__(
     infra: Optional[RuntimeManager] = None,
     config: Optional[ForgeConfig] = None,
     method: Optional[TrainingMethod] = None,
+    hub_content_version: Optional[str] = None,
 )
 ```
 
@@ -622,6 +685,7 @@ def __init__(
 - `infra` (Optional[RuntimeManager]): Runtime infrastructure manager (required for batch inference)
 - `config` (Optional[ForgeConfig]): Shared configuration
 - `method` (Optional[TrainingMethod]): Training method (used for batch inference recipe generation)
+- `hub_content_version` (Optional[str]): Version of the hub content to retrieve from SageMaker Hub. If None, uses the latest version
 
 **Example:**
 ```python
@@ -739,7 +803,7 @@ def get_logs(
 - `started_time` (Optional[datetime]): Job start time to filter logs
 - `limit` (Optional[int]): Maximum number of log lines
 - `start_from_head` (bool): If True, start from the beginning of logs. Default: False
-- `end_time` (Optional[str]): End time for searching a log time range
+- `end_time` (Optional[int]): End time in epoch milliseconds for searching a log time range
 
 **Returns:**
 - None (prints logs to console)
@@ -835,6 +899,7 @@ def __init__(
  data_mixing_enabled: bool = False,
  enable_job_caching: bool = False,
  is_multimodal: Optional[bool] = None,
+ hub_content_version: Optional[str] = None,
 )
 ```
 **Parameters:**
@@ -856,6 +921,7 @@ def __init__(
   - **Note:** Datamixing is only supported for CPT, SFT_LORA, and SFT_FULL methods on SageMaker HyperPod (SMHP).
 - `is_multimodal` (Optional[bool]): Only applicable when `data_mixing_enabled=True`. Explicitly set multimodal mode. If None (default), auto-detects from data. Set to False to skip detection for performance on large text-only datasets. Ignored when `data_mixing_enabled=False`
 - `enable_job_caching` (bool): Whether to enable job result caching. When enabled, completed job results are cached to `job_cache_dir` (default: `.cached-nova-jobs/`) and reused for identical job configurations. Default: False
+- `hub_content_version` (Optional[str]): Version of the hub content to retrieve from SageMaker Hub. If None, uses the latest version
 
 **Raises:**
 - `ValueError`: If region is unsupported or model is invalid
@@ -1497,14 +1563,14 @@ def get_logs(
  self,
  limit: Optional[int] = None,
  start_from_head: bool = False,
- end_time: Optional[str] = None
+ end_time: Optional[int] = None
 )
 ```
 
 **Parameters:**
 - `limit` (Optional[int]): Maximum number of log lines to retrieve
 - `start_from_head` (bool): If True, start from the beginning of logs; if False, start from the end
-- `end_time` (Optional[str]): Optionally specify an end time for searching a log time range
+- `end_time` (Optional[int]): End time in epoch milliseconds for searching a log time range
 
 **Returns:**
 - None (prints logs to console)
@@ -2205,6 +2271,61 @@ from amzn_nova_forge.dataset import *
 loader = ArrowDatasetLoader()
 loader.load("s3://my-bucket/data/training.arrow")
 ```
+---
+### HuggingFaceDatasetLoader
+Loads datasets from [HuggingFace Hub](https://huggingface.co/datasets) and streams them through the Nova Forge data prep pipeline. Records are streamed lazily — no network calls happen at `load()` time. The dataset is fetched when a terminal operation (`save()`, `show()`, etc.) executes the pipeline.
+
+Requires the optional `datasets` dependency:
+```bash
+pip install amzn-nova-forge[huggingface]
+```
+
+Authentication for private or gated datasets is handled by the `datasets` library's built-in credential resolution. Set the `HF_TOKEN` environment variable or run `huggingface-cli login` before using the loader.
+
+#### Methods
+
+##### `load()`
+Loads a dataset from HuggingFace Hub.
+
+**Signature:**
+```python
+def load(
+ self,
+ path: str,
+ split: Optional[str] = None,
+ name: Optional[str] = None,
+ revision: Optional[str] = None,
+ data_files: Optional[Union[str, Sequence[str], Mapping[str, Union[str, Sequence[str]]]]] = None,
+ data_dir: Optional[str] = None,
+) -> "DatasetLoader"
+```
+
+**Parameters:**
+- `path` (str): HuggingFace dataset identifier (e.g. `"stanfordnlp/imdb"`, `"HuggingFaceH4/ultrachat_200k"`).
+- `split` (Optional[str]): Dataset split, forwarded to `datasets.load_dataset(split=...)`. Accepts any value supported by the HF library, including a single split name (`"train"`, `"test"`), a slice (`"train[:100]"`, `"train[:10%]"`), or concatenated splits (`"train+test"`). When `None`, the loader probes available splits: if the dataset has exactly one split it is auto-selected, and if the dataset has multiple splits a `DataPrepError` is raised listing the available splits.
+- `name` (Optional[str]): Configuration name for multi-config datasets (forwarded to `datasets.load_dataset(name=...)`).
+- `revision` (Optional[str]): Git tag or commit hash to pin the dataset version (forwarded to `datasets.load_dataset(revision=...)`).
+- `data_files` (Optional[Union[str, Sequence[str], Mapping[str, Union[str, Sequence[str]]]]]): Specific data file(s) to load, forwarded to `datasets.load_dataset(data_files=...)`. When `None` (default), the kwarg is omitted so the library's own default applies.
+- `data_dir` (Optional[str]): Subdirectory of the dataset repository to load from (e.g. `"en"` for the English subset of `allenai/c4`), forwarded to `datasets.load_dataset(data_dir=...)`. When `None` (default), the kwarg is omitted.
+
+**Returns:**
+- `DatasetLoader`: Self (for method chaining)
+
+**Raises:**
+- `ImportError`: If the `datasets` package is not installed. The error message includes the install command.
+- `DataPrepError`: If the dataset cannot be loaded. Authentication failures (401/403) surface with credential guidance; all other failures include the dataset path and the original error. Raised lazily when the pipeline is executed, not at `load()` time.
+
+**Example — public dataset:**
+```python
+from amzn_nova_forge.dataset import *
+
+# Load a public dataset and save to S3
+loader = HuggingFaceDatasetLoader()
+loader.load("stanfordnlp/imdb", split="train") \
+    .save("s3://my-bucket/data/imdb_train.jsonl")
+```
+
+
 ---
 ### Common DatasetLoader Methods
 These methods are available on all DatasetLoader subclasses.

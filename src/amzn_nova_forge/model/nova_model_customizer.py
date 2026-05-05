@@ -140,6 +140,7 @@ class NovaModelCustomizer:
         image_uri: Optional[str] = None,
         enable_job_caching: bool = False,
         is_multimodal: Optional[bool] = None,
+        hub_content_version: Optional[str] = None,
     ):
         """
         Initializes a NovaModelCustomizer instance.
@@ -166,6 +167,7 @@ class NovaModelCustomizer:
             enable_job_caching: Whether to enable job result caching. When enabled, completed
                               job results are cached to job_cache_dir (default: .cached-nova-jobs/)
                               and reused for identical job configurations.
+            hub_content_version: Optional version of the hub content to retrieve from SageMaker Hub
 
         Raises:
             ValueError: If region is unsupported or model is invalid
@@ -192,6 +194,7 @@ class NovaModelCustomizer:
         self.infra = infra
         self._data_s3_path = data_s3_path
         self.model_path = model_path
+        self.hub_content_version = hub_content_version
         self.validation_config = (
             ValidationConfig(**validation_config) if validation_config else None
         )
@@ -456,6 +459,7 @@ class NovaModelCustomizer:
             eval_task=getattr(self, "eval_task", None),
             image_uri_override=self._image_uri,
             is_multimodal=self.is_multimodal,
+            hub_content_version=self.hub_content_version,
         )
 
         # Load default configuration into DataMixing instance if enabled
@@ -594,6 +598,7 @@ class NovaModelCustomizer:
             config=self._build_forge_config(),
             region=self.region,
             is_multimodal=self.is_multimodal,
+            hub_content_version=self.hub_content_version,
         )
 
         # Forward user-configured data mixing (ForgeTrainer creates a fresh instance with defaults)
@@ -752,6 +757,7 @@ class NovaModelCustomizer:
             data_s3_path=self.data_s3_path,
             config=self._build_forge_config(),
             region=self.region,
+            hub_content_version=self.hub_content_version,
         )
 
         evaluation_result = evaluator.evaluate(
@@ -1154,6 +1160,7 @@ class NovaModelCustomizer:
             infra=self.infra,
             config=self._build_forge_config(),
             method=self.method,
+            hub_content_version=self.hub_content_version,
         )
 
         batch_inference_result = inference.invoke_batch(

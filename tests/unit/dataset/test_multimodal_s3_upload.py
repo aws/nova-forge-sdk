@@ -27,12 +27,12 @@ from amzn_nova_forge.dataset.dataset_format_schema import (
     SFT_NOVA_ONE_CONVERSE_2024,
     SFT_NOVA_TWO_CONVERSE_2024,
 )
-from amzn_nova_forge.dataset.dataset_loader import JSONLDatasetLoader
 from amzn_nova_forge.dataset.dataset_transformers import (
     MAX_IMAGE_SIZE,
     DatasetTransformer,
     TransformContext,
 )
+from amzn_nova_forge.dataset.jsonl_dataset_loader import JSONLDatasetLoader
 from amzn_nova_forge.dataset.operations.transform_operation import TransformMethod
 
 # A minimal valid 1x1 PNG
