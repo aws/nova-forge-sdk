@@ -347,7 +347,6 @@ import logging
 
 
 def test_split_none_single_split_auto_selects(caplog):
-    """Matrix row #1: single-split probe → auto-select, INFO log, load_dataset called."""
     fake_mod = _make_fake_datasets_module(load_dataset_return_value=[{"x": 1}])
     fake_mod.get_dataset_split_names.return_value = ["only_split"]
 
@@ -393,7 +392,6 @@ def test_split_none_single_split_auto_selects(caplog):
     ids=["2-splits", "3-splits", "4-splits"],
 )
 def test_split_none_multi_split_raises_with_guidance(split_names):
-    """Matrix row #2: multi-split probe → DataPrepError with guidance, no __cause__."""
     fake_mod = _make_fake_datasets_module(load_dataset_return_value=[])
     fake_mod.get_dataset_split_names.return_value = split_names
 
@@ -437,7 +435,6 @@ def test_split_none_multi_split_raises_with_guidance(split_names):
     ids=["401", "403", "Unauthorized"],
 )
 def test_split_none_probe_auth_error(probe_error):
-    """Matrix row #3: probe raises auth error → DataPrepError with credential guidance."""
     fake_mod = _make_fake_datasets_module(load_dataset_return_value=[])
     fake_mod.get_dataset_split_names.side_effect = probe_error
 
@@ -466,7 +463,6 @@ def test_split_none_probe_auth_error(probe_error):
     ids=["404", "ConnectionError", "TimeoutError", "ValueError"],
 )
 def test_split_none_probe_non_auth_error(probe_error):
-    """Matrix row #4: probe raises non-auth error → DataPrepError with path + original error."""
     fake_mod = _make_fake_datasets_module(load_dataset_return_value=[])
     fake_mod.get_dataset_split_names.side_effect = probe_error
 
@@ -488,7 +484,6 @@ def test_split_none_probe_non_auth_error(probe_error):
 
 
 def test_split_non_none_skips_probe():
-    """Matrix row #5: split='train' → probe never called, split forwarded."""
     fake_mod = _make_fake_datasets_module(load_dataset_return_value=[])
 
     with patch.dict(sys.modules, {"datasets": fake_mod}):
@@ -505,7 +500,6 @@ def test_split_non_none_skips_probe():
 
 
 def test_load_time_is_still_lazy_for_split_none():
-    """Matrix row #6: split=None — probe does NOT fire at load() time (laziness)."""
     fake_mod = _make_fake_datasets_module(load_dataset_return_value=[])
     fake_mod.get_dataset_split_names.return_value = ["train"]
 
@@ -518,7 +512,6 @@ def test_load_time_is_still_lazy_for_split_none():
 
 
 def test_no_token_parameter():
-    """Matrix row #16: ``token=`` kwarg is rejected (parent Req 2.2)."""
     fake_mod = _make_fake_datasets_module(load_dataset_return_value=[])
     with patch.dict(sys.modules, {"datasets": fake_mod}):
         loader = HuggingFaceDatasetLoader()
@@ -527,12 +520,6 @@ def test_no_token_parameter():
 
 
 def test_lazy_import_site_shared():
-    """Matrix row #17: missing ``datasets`` → ImportError mentioning install command.
-
-    Both ``load_dataset`` and ``get_dataset_split_names`` share the same
-    lazy-import site (Req 6.3), so neither resolves when the package is
-    absent.
-    """
     with patch.dict(sys.modules, {"datasets": None}):
         loader = HuggingFaceDatasetLoader()
         with pytest.raises(ImportError) as exc_info:
