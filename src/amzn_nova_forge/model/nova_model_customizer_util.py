@@ -39,8 +39,8 @@ def set_output_s3_path(
     Raises:
         ValueError: If unable to construct the output S3 path
     """
-    s3_client = boto3.client("s3")
-    sts_client = boto3.client("sts")
+    s3_client = boto3.client("s3", region_name=region)
+    sts_client = boto3.client("sts", region_name=region)
     account_id = sts_client.get_caller_identity()["Account"]
 
     # Strip trailing slash to avoid double-slash when path segments are concatenated later

@@ -14,7 +14,7 @@
 from abc import ABC
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Dict
+from typing import Dict, Optional
 
 import boto3
 
@@ -70,12 +70,14 @@ class SMTJTrainingResult(TrainingResult):
         model_artifacts: ModelArtifacts,
         model_type: Model,
         sagemaker_client=None,
+        region: Optional[str] = None,
     ):
-        self._sagemaker_client = sagemaker_client or boto3.client("sagemaker")
+        self._region = region
+        self._sagemaker_client = sagemaker_client or boto3.client("sagemaker", region_name=region)
         super().__init__(job_id, started_time, method, model_artifacts, model_type)
 
     def _create_status_manager(self) -> JobStatusManager:
-        return SMTJStatusManager(self._sagemaker_client)
+        return SMTJStatusManager(self._sagemaker_client, region=self._region)
 
     def _to_dict(self):
         return {
@@ -111,7 +113,9 @@ class SMHPTrainingResult(TrainingResult):
         cluster_name: str,
         model_type: Model,
         namespace: str = "kubeflow",
+        region: Optional[str] = None,
     ):
+        self._region = region
         self.cluster_name = cluster_name
         self.namespace = namespace
         super().__init__(job_id, started_time, method, model_artifacts, model_type)
@@ -153,12 +157,14 @@ class BedrockTrainingResult(TrainingResult):
         model_artifacts: ModelArtifacts,
         model_type: Model,
         bedrock_client=None,
+        region: Optional[str] = None,
     ):
-        self._bedrock_client = bedrock_client or boto3.client("bedrock")
+        self._region = region
+        self._bedrock_client = bedrock_client or boto3.client("bedrock", region_name=region)
         super().__init__(job_id, started_time, method, model_artifacts, model_type)
 
     def _create_status_manager(self) -> JobStatusManager:
-        return BedrockStatusManager(self._bedrock_client)
+        return BedrockStatusManager(self._bedrock_client, region=self._region)
 
     def _to_dict(self):
         return {

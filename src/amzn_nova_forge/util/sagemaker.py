@@ -205,7 +205,7 @@ def _get_sagemaker_inference_image(region: str) -> str:
 
 
 def get_model_artifacts(
-    job_name: str, infra: RuntimeManager, output_s3_path: str
+    job_name: str, infra: RuntimeManager, output_s3_path: str, region: Optional[str] = None
 ) -> ModelArtifacts:
     """
     Retrieve model artifacts for a job
@@ -221,7 +221,7 @@ def get_model_artifacts(
     Raises:
         Exception: If unable to obtain job artifact information
     """
-    sagemaker_client = boto3.client("sagemaker")
+    sagemaker_client = boto3.client("sagemaker", region_name=region)
 
     if infra.platform in (Platform.SMTJ, Platform.SMTJServerless):
         response = sagemaker_client.describe_training_job(TrainingJobName=job_name)
@@ -294,10 +294,7 @@ def get_cluster_instance_info(
     Raises:
         Exception: If unable to describe the cluster
     """
-    if region is None:
-        sagemaker_client = boto3.client("sagemaker")
-    else:
-        sagemaker_client = boto3.client("sagemaker", region_name=region)
+    sagemaker_client = boto3.client("sagemaker", region_name=region)
 
     try:
         response = sagemaker_client.describe_cluster(ClusterName=cluster_name)

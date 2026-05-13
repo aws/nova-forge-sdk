@@ -30,6 +30,7 @@ from amzn_nova_forge.core.validation_patterns import (
     validate_job_name,
     validate_namespace,
 )
+from amzn_nova_forge.util.subprocess_utils import _check_hyperpod_stderr
 
 logger = logging.getLogger("nova_forge_sdk")
 
@@ -82,9 +83,9 @@ class JobStatusManager(ABC):
 
 
 class SMTJStatusManager(JobStatusManager):
-    def __init__(self, sagemaker_client=None):
+    def __init__(self, sagemaker_client=None, region: Optional[str] = None):
         super().__init__()
-        self._sagemaker_client = sagemaker_client or boto3.client("sagemaker")
+        self._sagemaker_client = sagemaker_client or boto3.client("sagemaker", region_name=region)
 
     def get_job_status(self, job_id: str) -> tuple[JobStatus, str]:
         if self._job_status == JobStatus.COMPLETED or self._job_status == JobStatus.FAILED:
@@ -137,11 +138,7 @@ class SMHPStatusManager(JobStatusManager):
             check=True,
         )
 
-        if response.stderr:
-            logger.error(
-                f"Unable to connect to HyperPod cluster {self.cluster_name}: {response.stderr}"
-            )
-            raise RuntimeError(response.stderr)
+        _check_hyperpod_stderr(response.stderr)
 
         logger.info(
             f"Successfully connected to HyperPod cluster '{self.cluster_name}' in namespace '{self.namespace}'."
@@ -251,9 +248,9 @@ class BedrockStatusManager(JobStatusManager):
         cls._get_job_details = staticmethod(get_job_details)
         cls._log_job_status = staticmethod(log_job_status)
 
-    def __init__(self, bedrock_client=None):
+    def __init__(self, bedrock_client=None, region: Optional[str] = None):
         super().__init__()
-        self._bedrock_client = bedrock_client or boto3.client("bedrock")
+        self._bedrock_client = bedrock_client or boto3.client("bedrock", region_name=region)
 
     def get_job_status(self, job_id: str) -> tuple[JobStatus, str]:
         if self._job_status == JobStatus.COMPLETED or self._job_status == JobStatus.FAILED:

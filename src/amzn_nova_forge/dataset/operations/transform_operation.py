@@ -51,6 +51,7 @@ class SchemaTransformOperation(NovaForgeTransformOperation):
         training_method: Optional[TrainingMethod] = kwargs.get("training_method")
         model: Optional[Model] = kwargs.get("model")
         eval_task: Optional[EvaluationTask] = kwargs.get("eval_task")
+        region: Optional[str] = kwargs.get("region")
 
         if training_method is None or model is None:
             raise ValueError("training_method and model are required for schema transforms.")
@@ -76,6 +77,7 @@ class SchemaTransformOperation(NovaForgeTransformOperation):
             column_mappings,
             multimodal_data_s3_path,
             multimodal_data_bucket_owner,
+            region=region,
         )
         # Transform produces in-memory data — update state to LOCAL so that
         # _flush_pending() will materialize the dataset and prevent the lazy
@@ -135,6 +137,7 @@ class SchemaTransformOperation(NovaForgeTransformOperation):
         column_mappings: dict,
         multimodal_data_s3_path: Optional[str],
         multimodal_data_bucket_owner: Optional[str],
+        region: Optional[str] = None,
     ) -> None:
         """Try each transformer in order; apply the first whose source schema matches."""
         transformers: List[Dict[str, Any]] = transform_config.get("transformers", [])
@@ -155,6 +158,7 @@ class SchemaTransformOperation(NovaForgeTransformOperation):
                     source_schema,
                     multimodal_data_s3_path,
                     multimodal_data_bucket_owner,
+                    region=region,
                 )
                 return
 
@@ -171,6 +175,7 @@ class SchemaTransformOperation(NovaForgeTransformOperation):
         source_schema: Optional[dict],
         multimodal_data_s3_path: Optional[str],
         multimodal_data_bucket_owner: Optional[str],
+        region: Optional[str] = None,
     ) -> None:
         """Replace loader.dataset with a generator that applies the transformer."""
         transformer_func = self._get_transformer_function(method_name)
@@ -199,7 +204,7 @@ class SchemaTransformOperation(NovaForgeTransformOperation):
             bucket_owner = multimodal_data_bucket_owner
             if bucket_owner is None:
                 try:
-                    sts_client = boto3.client("sts")
+                    sts_client = boto3.client("sts", region_name=region)
                     account_id = sts_client.get_caller_identity()["Account"]
                     logger.info("Auto-resolved bucket owner for %r: %s", bucket, account_id)
                     bucket_owner = account_id
@@ -222,7 +227,9 @@ class SchemaTransformOperation(NovaForgeTransformOperation):
             logger.info("  Input: in-memory (dict)")
             logger.info("  Output: in-memory")
             # Create S3 client once for the entire transform pass.
-            s3_client = boto3.client("s3") if transform_ctx is not None else None
+            s3_client = (
+                boto3.client("s3", region_name=region) if transform_ctx is not None else None
+            )
             count = 0
             try:
                 for rec in captured_dataset():

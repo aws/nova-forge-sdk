@@ -435,11 +435,14 @@ class NovaModelCustomizer:
         if not self.data_mixing_enabled:
             return
 
-        # Data mixing is only supported on HyperPod for certain training methods
-        if platform != Platform.SMHP or method not in SUPPORTED_DATAMIXING_METHODS:
+        # Data mixing is only supported on HyperPod or SMTJServerless for certain training methods
+        if (
+            platform not in (Platform.SMHP, Platform.SMTJServerless)
+            or method not in SUPPORTED_DATAMIXING_METHODS
+        ):
             raise ValueError(
-                f"Data mixing is only supported for {SUPPORTED_DATAMIXING_METHODS} training methods on SageMaker HyperPod. "
-                "Change platform to SMHP or change to a supported training method to use data mixing."
+                f"Data mixing is only supported for {SUPPORTED_DATAMIXING_METHODS} training methods on SageMaker HyperPod or SMTJServerless. "
+                "Change platform to SMHP or SMTJServerless or change to a supported training method to use data mixing."
             )
 
         # Load recipe metadata and templates for non-evaluation methods
@@ -522,6 +525,7 @@ class NovaModelCustomizer:
             "model": self.model.value,
             "platform": self.platform,
             "dryRun": kwargs.get("dry_run", False),
+            "hasValidationData": kwargs.get("validation_data_s3_path") is not None,
         },
     )
     def train(
@@ -532,6 +536,7 @@ class NovaModelCustomizer:
         rft_lambda_arn: Optional[str] = None,
         rft_multiturn_infra: Optional[RFTMultiturnInfrastructure] = None,
         validation_data_s3_path: Optional[str] = None,
+        val_check_interval: Optional[int] = None,
         dry_run: bool = False,
     ) -> TrainingResult | None:
         """
@@ -552,7 +557,9 @@ class NovaModelCustomizer:
             rft_lambda_arn: Optional Lambda ARN for RFT reward function (only used for RFT training methods).
                 If passed, takes priority over rft_lambda_arn set on the RuntimeManager.
             rft_multiturn_infra: Optional RFT multiturn infrastructure, required for RFT_MULTITURN methods
-            validation_data_s3_path: Optional validation S3 path, only applicable for CPT (but is still optional for CPT)
+            validation_data_s3_path: Optional validation S3 path, applicable for CPT and SFT on SMTJ/SMTJServerless/SMHP, or any method on Bedrock (but is still optional)
+            val_check_interval: Optional positive integer controlling how often (in training steps) validation is run.
+                Defaults to 2500 if omitted. Only used when validation_data_s3_path is provided.
             dry_run: Actually starts a job if False, otherwise just performs validation. Default is False.
 
         Returns:
@@ -595,6 +602,7 @@ class NovaModelCustomizer:
             model_s3_path=self.model_path,
             data_mixing_enabled=self.data_mixing_enabled,
             holdout_data_s3_path=validation_data_s3_path,
+            val_check_interval=val_check_interval,
             config=self._build_forge_config(),
             region=self.region,
             is_multimodal=self.is_multimodal,
@@ -1227,6 +1235,7 @@ class NovaModelCustomizer:
                 job_id=self.job_id,
                 platform=self.platform,
                 started_time=int(self.job_started_time.timestamp() * 1000),
+                region=self.region,
                 **kwargs,
             )
             self.cloud_watch_log_monitor.show_logs(

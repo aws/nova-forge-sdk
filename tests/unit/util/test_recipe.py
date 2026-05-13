@@ -30,6 +30,7 @@ from amzn_nova_forge.core.enums import (
 from amzn_nova_forge.util.recipe import (
     FileLoadError,
     RecipePath,
+    _get_aws_account_id,
     _get_smhp_replicas_enum,
     _parse_s3_uri,
     _validate_extension,
@@ -2288,6 +2289,33 @@ data:
             )
 
         mock_smhp_enum.assert_not_called()
+
+
+class TestRegionPropagation(unittest.TestCase):
+    """Tests that region is correctly propagated to boto3.client calls."""
+
+    @patch("amzn_nova_forge.util.recipe.boto3.client")
+    def test_load_file_content_passes_region_to_s3_client(self, mock_boto_client):
+        mock_s3 = MagicMock()
+        mock_body = MagicMock()
+        mock_body.iter_lines.return_value = iter([b"content"])
+        mock_s3.get_object.return_value = {"Body": mock_body}
+        mock_boto_client.return_value = mock_s3
+
+        list(load_file_content("s3://bucket/key", region="eu-west-1"))
+
+        mock_boto_client.assert_called_once_with("s3", region_name="eu-west-1")
+
+    @patch("amzn_nova_forge.util.recipe.boto3.client")
+    def test_get_aws_account_id_passes_region_to_sts_client(self, mock_boto_client):
+        mock_sts = MagicMock()
+        mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
+        mock_boto_client.return_value = mock_sts
+
+        result = _get_aws_account_id(region="eu-west-1")
+
+        mock_boto_client.assert_called_once_with("sts", region_name="eu-west-1")
+        self.assertEqual(result, "123456789012")
 
 
 if __name__ == "__main__":

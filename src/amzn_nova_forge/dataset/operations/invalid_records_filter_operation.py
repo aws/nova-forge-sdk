@@ -139,6 +139,7 @@ class InvalidRecordsFilterOperation(NovaForgeFilterOperationBase):
         # Accept but ignore output_path — this filter operates in-memory.
         state = kwargs.pop("state", None)
         kwargs.pop("output_path", None)
+        region = kwargs.get("region")
 
         training_method = kwargs.get("training_method")
         nova_model = kwargs.get("model")
@@ -202,7 +203,7 @@ class InvalidRecordsFilterOperation(NovaForgeFilterOperationBase):
             captured_result.total_count = 0
             captured_result.filtered_count = 0
 
-            s3_client = boto3.client("s3")
+            s3_client = boto3.client("s3", region_name=region)
             for sample in captured_dataset():
                 captured_result.total_count += 1
                 if captured_pydantic_model is not None and _sample_fails_schema(

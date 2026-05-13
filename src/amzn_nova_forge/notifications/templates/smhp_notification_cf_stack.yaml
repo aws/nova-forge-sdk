@@ -23,10 +23,10 @@ Description: 'Nova Forge SDK: SMHP (SageMaker HyperPod) Notifications Infrastruc
 #   4. Subnet IDs (private subnets with NAT gateway)
 #   5. Security group ID (must allow outbound HTTPS to EKS API)
 #   6. Route table IDs (associated with your Lambda subnets)
-#   7. kubectl Lambda layer ARN (see docs/job_notifications.md)
+#   7. kubectl Lambda layer ARN (see docs/user-guides/job_notifications.md)
 #
 # Post-Deployment Steps:
-#   1. Create EKS access entry for Lambda role (see docs/job_notifications.md)
+#   1. Create EKS access entry for Lambda role (see docs/user-guides/job_notifications.md)
 #   2. Subscribe email addresses to SNS topic
 #   3. Use SDK to add job configurations to DynamoDB
 # ============================================================================

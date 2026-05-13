@@ -108,7 +108,10 @@ def _validate_extension(path: str, extension: str) -> None:
 
 
 def load_file_content(
-    file_path: str, extension: Optional[str] = None, encoding: Optional[str] = "utf-8"
+    file_path: str,
+    extension: Optional[str] = None,
+    encoding: Optional[str] = "utf-8",
+    region: Optional[str] = None,
 ):
     """
     Stream file content line by line from S3 or local filesystem.
@@ -134,7 +137,7 @@ def load_file_content(
     if s3_parts:
         bucket, key = s3_parts
         try:
-            s3 = boto3.client("s3")
+            s3 = boto3.client("s3", region_name=region)
             response = s3.get_object(Bucket=bucket, Key=key)
             # Stream from S3 using iter_lines
             for line in response["Body"].iter_lines():
@@ -395,7 +398,7 @@ def get_hub_recipe_metadata(
         raise ValueError(f"{method.name} using {instance_type} is not supported on {platform.name}")
 
 
-def _get_aws_account_id() -> str:
+def _get_aws_account_id(region: Optional[str] = None) -> str:
     """
     Get the AWS account ID from current credentials.
 
@@ -403,7 +406,7 @@ def _get_aws_account_id() -> str:
         AWS account ID string
     """
     try:
-        sts = boto3.client("sts")
+        sts = boto3.client("sts", region_name=region)
         response = sts.get_caller_identity()
         return response["Account"]
     except Exception as e:
@@ -442,9 +445,9 @@ def _download_from_s3_or_access_point(uri: str, region: Optional[str] = None) ->
     """
     # Replace {customer_id} placeholder if present
 
-    s3 = boto3.client("s3", region_name=region) if region else boto3.client("s3")
+    s3 = boto3.client("s3", region_name=region)
 
-    current_account = _get_aws_account_id()
+    current_account = _get_aws_account_id(region=region)
     formatted_uri = _replace_customer_id_placeholder(uri, current_account)
     # Check if this is an access point ARN (with or without s3:// prefix)
     arn_to_check = (
@@ -468,7 +471,7 @@ def _download_from_s3_or_access_point(uri: str, region: Optional[str] = None) ->
             raise ValueError(
                 f"Failed to download from S3 Access Point {e}"
                 f"\nVerify if account {current_account} has Forge subscription. Refer: https://docs.aws.amazon.com/sagemaker/latest/dg/nova-forge.html#nova-forge-prereq-access"
-                f"\nAlso ensure your IAM role has the right 's3:GetObject'. Refer DataMixingForgeRecipes permission in docs/iam_setup.md"
+                f"\nAlso ensure your IAM role has the right 's3:GetObject'. Refer DataMixingForgeRecipes permission in docs/user-guides/iam_setup.md"
                 f" or set data_mixing = False"
             )
 

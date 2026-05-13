@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 import os
 import uuid
+from typing import Optional
 
 import boto3
 import pyarrow as pa
@@ -73,7 +74,9 @@ def validate_default_bucket_access(
                 )
 
 
-def convert_to_s3_parquet(dataset_callable, s3_base_path: str, batch_size: int = 10000) -> str:
+def convert_to_s3_parquet(
+    dataset_callable, s3_base_path: str, batch_size: int = 10000, region: Optional[str] = None
+) -> str:
     """Convert a dataset generator to Parquet files on S3.
 
     Consumes the generator in batches, writes each batch as a separate
@@ -102,7 +105,7 @@ def convert_to_s3_parquet(dataset_callable, s3_base_path: str, batch_size: int =
     temp_no_scheme = temp_dir[len("s3://") :]
     bucket, key_prefix = temp_no_scheme.split("/", 1)
 
-    s3_client = boto3.client("s3")
+    s3_client = boto3.client("s3", region_name=region)
     part_idx = 0
     batch: list[dict] = []
 
@@ -133,7 +136,9 @@ def _write_parquet_part(
     s3_client.put_object(Bucket=bucket, Key=key, Body=buf.read())
 
 
-def upload_local_file_to_s3(local_path: str, s3_base_path: str) -> str:
+def upload_local_file_to_s3(
+    local_path: str, s3_base_path: str, region: Optional[str] = None
+) -> str:
     """Upload a local file to a temp S3 location, preserving its format.
 
     Args:
@@ -158,7 +163,7 @@ def upload_local_file_to_s3(local_path: str, s3_base_path: str) -> str:
     temp_no_scheme = s3_key_dir[len("s3://") :]
     bucket, key_prefix = temp_no_scheme.split("/", 1)
 
-    s3_client = boto3.client("s3")
+    s3_client = boto3.client("s3", region_name=region)
     key = f"{key_prefix}{filename}"
     with open(local_path, "rb") as f:
         s3_client.put_object(Bucket=bucket, Key=key, Body=f)

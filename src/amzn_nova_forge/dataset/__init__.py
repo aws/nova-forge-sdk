@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from .arrow_dataset_loader import ArrowDatasetLoader
+from .cloudwatch_dataset_loader import CloudWatchDatasetLoader
 from .csv_dataset_loader import CSVDatasetLoader
 from .huggingface_dataset_loader import HuggingFaceDatasetLoader
 from .json_dataset_loader import JSONDatasetLoader
@@ -20,6 +21,7 @@ from .parquet_dataset_loader import ParquetDatasetLoader
 
 __all__ = [
     "ArrowDatasetLoader",
+    "CloudWatchDatasetLoader",
     "CSVDatasetLoader",
     "HuggingFaceDatasetLoader",
     "JSONDatasetLoader",

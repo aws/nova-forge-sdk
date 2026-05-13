@@ -83,6 +83,7 @@ class EndpointInfo:
     endpoint_name: str
     uri: str
     model_artifact_path: str
+    region: Optional[str] = None
 
 
 @dataclass
@@ -121,7 +122,9 @@ class DeploymentResult:
             raise RuntimeError(
                 "Status checker not available. Ensure amzn_nova_forge.util.bedrock is imported."
             )
-        return DeploymentResult._status_checker(self.endpoint.uri, self.endpoint.platform)
+        return DeploymentResult._status_checker(
+            self.endpoint.uri, self.endpoint.platform, self.endpoint.region
+        )
 
 
 def validate_region(region: str) -> None:
@@ -141,10 +144,16 @@ class JobConfig:
     output_s3_path: Optional[str] = None
     data_s3_path: Optional[str] = None
     input_s3_data_type: Optional[str] = None
-    validation_data_s3_path: Optional[str] = None  # Validation data S3 path (for CPT and Bedrock)
+    validation_data_s3_path: Optional[str] = (
+        None  # Validation data S3 path (for CPT, SFT, and Bedrock)
+    )
+    trainer_config_hyperparameters: Optional[Dict[str, str]] = (
+        None  # Extra hyperparameters passed to the training job (e.g., val_check_interval)
+    )
     rft_lambda_arn: Optional[str] = None  # RFT Lambda ARN (for RFT jobs on Bedrock)
     mlflow_tracking_uri: Optional[str] = None  # MLflow tracking server ARN
     mlflow_experiment_name: Optional[str] = None
     mlflow_run_name: Optional[str] = None
     method: Optional[TrainingMethod] = None  # Training method (required for Bedrock)
+    data_mixing_config: Optional[Dict[str, Any]] = None  # Datamix percent fields (SMTJServerless)
     # TODO: The mlflow config is populated in recipe for both SMTJ and SMHP but will only work for SMHP as SMTJ support for mlflow is only through boto3, fix this with sagemaker 3 update

@@ -22,7 +22,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Dict, Iterator
+from typing import Dict, Iterator, Optional
 
 import boto3
 
@@ -93,7 +93,9 @@ class DatasetWriter:
             raise DatasetWriteError(f"Failed to write to local file {save_path}: {e}")
 
     @staticmethod
-    def save_to_s3(save_path: str, dataset_iter: Iterator[Dict], is_jsonl: bool) -> None:
+    def save_to_s3(
+        save_path: str, dataset_iter: Iterator[Dict], is_jsonl: bool, region: Optional[str] = None
+    ) -> None:
         """
         Stream dataset to S3 without loading all data into memory.
         Uses a temporary file and boto3's upload_file for efficient multipart upload.
@@ -135,7 +137,7 @@ class DatasetWriter:
                 DatasetWriter.save_to_local(tmp_path, dataset_iter, is_jsonl)
 
             # Upload the temporary file to S3
-            s3_client = boto3.client("s3")
+            s3_client = boto3.client("s3", region_name=region)
             s3_client.upload_file(
                 tmp_path, bucket, key, ExtraArgs={"ContentType": "application/json"}
             )

@@ -83,7 +83,6 @@ class MockRecipePath(RecipePath):
 
 class TestNovaModelCustomizer(unittest.TestCase):
     def setUp(self):
-
         self.model = Model.NOVA_MICRO
         self.method = TrainingMethod.SFT_LORA
         self.data_s3_path = "s3://test-bucket/data"
@@ -1156,6 +1155,14 @@ class TestTrain(TestNovaModelCustomizer):
         self.assertEqual(job_config.output_s3_path, self.output_s3_path)
         self.assertEqual(job_config.recipe_path, "mock_recipe.yaml")
 
+    @patch("amzn_nova_forge.trainer.forge_trainer.ForgeTrainer.__init__", return_value=None)
+    @patch("amzn_nova_forge.trainer.forge_trainer.ForgeTrainer.train")
+    def test_train_passes_val_check_interval_to_forge_trainer(self, mock_ft_train, mock_ft_init):
+        mock_ft_train.return_value = MagicMock()
+        self.customizer.train(job_name="test-job", val_check_interval=500)
+        init_kwargs = mock_ft_init.call_args.kwargs
+        self.assertEqual(init_kwargs["val_check_interval"], 500)
+
     @patch("amzn_nova_forge.recipe.recipe_builder.RecipeBuilder.build_and_validate")
     def test_train_runtime_manager_failure(self, mock_build_and_validate):
         mock_build_and_validate.return_value = (
@@ -2177,7 +2184,9 @@ class TestDeploy(TestNovaModelCustomizer):
         self.assertIn("Change deployment_mode", error_msg)
 
         # Verify we checked for existing deployment
-        mock_check_existing.assert_called_once_with("test-endpoint", DeployPlatform.BEDROCK_OD)
+        mock_check_existing.assert_called_once_with(
+            "test-endpoint", DeployPlatform.BEDROCK_OD, region="us-east-1"
+        )
 
         # Verify we didn't proceed with deployment
         mock_bedrock_role_creation.assert_not_called()
@@ -2236,7 +2245,7 @@ class TestDeploy(TestNovaModelCustomizer):
 
         # Verify update was called
         mock_update_pt.assert_called_once_with(
-            existing_arn, "test:new-model:arn", "test-pt-endpoint"
+            existing_arn, "test:new-model:arn", "test-pt-endpoint", region="us-east-1"
         )
 
         # Verify NO new deployment created
@@ -2279,7 +2288,9 @@ class TestDeploy(TestNovaModelCustomizer):
 
         # Verify we checked for existing deployment (pre-flight + deploy)
         self.assertEqual(mock_check_existing.call_count, 2)
-        mock_check_existing.assert_called_with("new-endpoint", DeployPlatform.BEDROCK_OD)
+        mock_check_existing.assert_called_with(
+            "new-endpoint", DeployPlatform.BEDROCK_OD, region="us-east-1"
+        )
 
         # Verify deployment proceeded successfully
         mock_bedrock_role_creation.assert_called_once()
@@ -3476,10 +3487,6 @@ class TestLambdaVerification(TestNovaModelCustomizer):
         self.assertIn("RFT lambda verification failed", error_msg)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestJobCachingAndPersistence(unittest.TestCase):
     def setUp(self):
         self.model = Model.NOVA_MICRO
@@ -4607,3 +4614,137 @@ class TestInvokeInferenceExtraInfo(unittest.TestCase):
         obj.model = Model.NOVA_MICRO
         result = _invoke_inference_extra_info(obj)
         assert result == {"model": Model.NOVA_MICRO.value, "platform": "UNKNOWN"}
+
+
+class TestDataMixingServerlessPlatform(unittest.TestCase):
+    """Tests for data mixing support on SMTJServerless in NovaModelCustomizer."""
+
+    def setUp(self):
+        self.data_s3_path = "s3://bucket/data.jsonl"
+        self.output_s3_path = "s3://bucket/output"
+
+    def _patch_clients(self, mock_client):
+        mock_sts = MagicMock()
+        mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
+        mock_s3 = MagicMock()
+        mock_s3.head_bucket.return_value = {}
+
+        def client_side_effect(service, **kw):
+            if service == "sts":
+                return mock_sts
+            elif service == "s3":
+                return mock_s3
+            return MagicMock()
+
+        mock_client.side_effect = client_side_effect
+
+    @patch("amzn_nova_forge.model.nova_model_customizer.load_recipe_templates")
+    @patch("boto3.client")
+    def test_smtj_serverless_sft_lora_data_mixing_succeeds(self, mock_client, mock_load_recipes):
+        """SMTJServerless + SFT_LORA + data_mixing_enabled=True must not raise."""
+        self._patch_clients(mock_client)
+        mock_load_recipes.return_value = (MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        infra = create_autospec(SMTJServerlessRuntimeManager)
+        infra.platform = Platform.SMTJServerless
+
+        customizer = NovaModelCustomizer(
+            model=Model.NOVA_MICRO,
+            method=TrainingMethod.SFT_LORA,
+            infra=infra,
+            data_s3_path=self.data_s3_path,
+            output_s3_path=self.output_s3_path,
+            data_mixing_enabled=True,
+        )
+        self.assertTrue(customizer.data_mixing_enabled)
+        mock_load_recipes.assert_called_once()
+
+    @patch("amzn_nova_forge.model.nova_model_customizer.load_recipe_templates")
+    @patch("boto3.client")
+    def test_smtj_serverless_sft_full_data_mixing_succeeds(self, mock_client, mock_load_recipes):
+        """SMTJServerless + SFT_FULL + data_mixing_enabled=True must not raise."""
+        self._patch_clients(mock_client)
+        mock_load_recipes.return_value = (MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        infra = create_autospec(SMTJServerlessRuntimeManager)
+        infra.platform = Platform.SMTJServerless
+
+        customizer = NovaModelCustomizer(
+            model=Model.NOVA_MICRO,
+            method=TrainingMethod.SFT_FULL,
+            infra=infra,
+            data_s3_path=self.data_s3_path,
+            output_s3_path=self.output_s3_path,
+            data_mixing_enabled=True,
+        )
+        self.assertTrue(customizer.data_mixing_enabled)
+
+    @patch("amzn_nova_forge.model.nova_model_customizer.load_recipe_templates")
+    def test_init_data_mixing_accepts_smtj_serverless(self, mock_load_recipes):
+        """_init_data_mixing must not raise for Platform.SMTJServerless + SFT_LORA."""
+        mock_load_recipes.return_value = (MagicMock(), MagicMock(), MagicMock(), MagicMock())
+        infra = create_autospec(SMTJServerlessRuntimeManager)
+        infra.platform = Platform.SMTJServerless
+
+        with patch("boto3.client"):
+            customizer = NovaModelCustomizer(
+                model=Model.NOVA_MICRO,
+                method=TrainingMethod.SFT_LORA,
+                infra=infra,
+                data_s3_path=self.data_s3_path,
+                output_s3_path=self.output_s3_path,
+                data_mixing_enabled=False,  # don't trigger _init_data_mixing in __init__
+            )
+
+        # Call _init_data_mixing directly — must not raise
+        mock_load_recipes.reset_mock()
+        customizer.data_mixing_enabled = True
+        customizer._init_data_mixing(
+            model=Model.NOVA_MICRO,
+            method=TrainingMethod.SFT_LORA,
+            platform=Platform.SMTJServerless,
+        )
+        # Verify load_recipe_templates was called with SMTJServerless + data_mixing_enabled=True
+        mock_load_recipes.assert_called()
+        call_kwargs = mock_load_recipes.call_args.kwargs
+        self.assertEqual(call_kwargs["platform"], Platform.SMTJServerless)
+        self.assertTrue(call_kwargs["data_mixing_enabled"])
+
+    @patch("boto3.client")
+    def test_smtj_serverless_unsupported_method_raises(self, mock_client):
+        """SMTJServerless + RFT_LORA + data_mixing_enabled=True must raise."""
+        self._patch_clients(mock_client)
+        infra = create_autospec(SMTJServerlessRuntimeManager)
+        infra.platform = Platform.SMTJServerless
+
+        with self.assertRaises(ValueError) as ctx:
+            NovaModelCustomizer(
+                model=Model.NOVA_MICRO,
+                method=TrainingMethod.RFT_LORA,
+                infra=infra,
+                data_s3_path=self.data_s3_path,
+                output_s3_path=self.output_s3_path,
+                data_mixing_enabled=True,
+            )
+        self.assertIn("Data mixing is only supported for", str(ctx.exception))
+        self.assertIn("SMTJServerless", str(ctx.exception))
+
+    @patch("boto3.client")
+    def test_smtj_non_serverless_still_raises(self, mock_client):
+        """Regular SMTJ (non-serverless) must still raise for data mixing."""
+        self._patch_clients(mock_client)
+        infra = create_autospec(SMTJRuntimeManager)
+        infra.platform = Platform.SMTJ
+
+        with self.assertRaises(ValueError) as ctx:
+            NovaModelCustomizer(
+                model=Model.NOVA_MICRO,
+                method=TrainingMethod.SFT_LORA,
+                infra=infra,
+                data_s3_path=self.data_s3_path,
+                output_s3_path=self.output_s3_path,
+                data_mixing_enabled=True,
+            )
+        self.assertIn("Data mixing is only supported for", str(ctx.exception))
+
+
+if __name__ == "__main__":
+    unittest.main()

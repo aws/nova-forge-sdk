@@ -547,7 +547,7 @@ class TestTransformMultimodalS3PathValidation:
         mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
         mock_s3 = MagicMock()
 
-        def side_effect(service):
+        def side_effect(service, **kwargs):
             if service == "sts":
                 return mock_sts
             elif service == "s3":

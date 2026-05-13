@@ -71,6 +71,7 @@ class RecipeBuilder:
         rft_lambda_arn: Optional[str] = None,
         rft_multiturn_infra: Optional["RFTMultiturnInfrastructure"] = None,
         validation_data_s3_path: Optional[str] = None,
+        val_check_interval: Optional[int] = None,
         eval_task: Optional[EvaluationTask] = None,
         subtask: Optional[str] = None,
         processor_config: Optional[Dict[str, Any]] = None,
@@ -150,9 +151,12 @@ class RecipeBuilder:
                 raise ValueError("'rft_multiturn_infra' is required for RFT multiturn evaluation")
 
         # Validation data handling
-        # CPT: Uses validation_data_s3_path in recipe configuration
-        # Bedrock (SFT/RFT): Passes validation_data_s3_path directly to API via JobConfig
-        # SMTJ/SMHP: Not supported (only CPT uses it)
+        # CPT: Uses validation_data_s3_path in recipe configuration (all platforms)
+        # SFT: Uses validation_data_s3_path on SMTJ/SMTJServerless/SMHP
+        # Bedrock: Passes validation_data_s3_path directly to API via JobConfig (any method)
+        self.validation_data_s3_path = None
+        self.val_check_interval = val_check_interval
+        _sft_methods = (TrainingMethod.SFT_LORA, TrainingMethod.SFT_FULL)
         if method == TrainingMethod.CPT:
             self.validation_data_s3_path = validation_data_s3_path
         elif validation_data_s3_path is not None and platform == Platform.BEDROCK:
@@ -160,10 +164,19 @@ class RecipeBuilder:
             # It will be added to the Bedrock API request in BedrockRuntimeManager.execute()
             self.validation_data_s3_path = validation_data_s3_path
             logger.info(f"Validation data will be used for Bedrock job: {validation_data_s3_path}")
-        elif validation_data_s3_path is not None:
-            # For SMTJ/SMHP non-CPT jobs, validation data is not supported
+        elif (
+            validation_data_s3_path is not None
+            and method in _sft_methods
+            and platform in (Platform.SMTJ, Platform.SMTJServerless, Platform.SMHP)
+        ):
+            self.validation_data_s3_path = validation_data_s3_path
             logger.info(
-                "'validation_data_s3_path' is only applicable for CPT on SMTJ/SMHP, or RFT/SFT method on Bedrock. Will ignore."
+                f"Validation data configured for {method.value} training: {validation_data_s3_path}"
+            )
+        elif validation_data_s3_path is not None:
+            # For non-CPT/SFT methods on SMTJ/SMHP/SMTJServerless, validation data is not supported
+            logger.info(
+                "'validation_data_s3_path' is only applicable for CPT, SFT on SMTJ/SMHP/SMTJServerless, or any method on Bedrock. Will ignore."
             )
 
         # Eval
@@ -340,6 +353,12 @@ class RecipeBuilder:
                 overrides_template.setdefault("mlflow_run_name", {})["default"] = (
                     self.mlflow_run_name
                 )
+            else:
+                # Ensure mlflow placeholders in the recipe template are resolved to empty strings
+                # so they don't get passed as raw "{{...}}" values to the API
+                overrides_template.setdefault("mlflow_tracking_uri", {})["default"] = ""
+                overrides_template.setdefault("mlflow_experiment_name", {})["default"] = ""
+                overrides_template.setdefault("mlflow_run_name", {})["default"] = ""
 
             # RFT
             if self.method == TrainingMethod.RFT_LORA or self.method == TrainingMethod.RFT_FULL:
@@ -347,14 +366,30 @@ class RecipeBuilder:
                     self.rft_lambda_arn
                 )
 
-            # CPT
-            if self.method == TrainingMethod.CPT and self.validation_data_s3_path is not None:
-                overrides_template.setdefault("validation_s3_path", {})["default"] = (
-                    self.validation_data_s3_path
+            # CPT / SFT validation data
+            _methods_with_validation = (
+                TrainingMethod.CPT,
+                TrainingMethod.SFT_LORA,
+                TrainingMethod.SFT_FULL,
+            )
+            if self.method in _methods_with_validation and self.validation_data_s3_path is not None:
+                if self.method == TrainingMethod.CPT:
+                    overrides_template.setdefault("validation_s3_path", {})["default"] = (
+                        self.validation_data_s3_path
+                    )
+                elif self.method in (TrainingMethod.SFT_LORA, TrainingMethod.SFT_FULL):
+                    overrides_template.setdefault("validation_data_s3_path", {})["default"] = (
+                        self.validation_data_s3_path
+                    )
+
+            # Val check interval
+            if self.val_check_interval is not None:
+                overrides_template.setdefault("val_check_interval", {})["default"] = (
+                    self.val_check_interval
                 )
 
             # Evaluation
-            elif self.method == TrainingMethod.EVALUATION:
+            if self.method == TrainingMethod.EVALUATION:
                 overrides_template.setdefault("task", {})["default"] = (
                     self.eval_task.get_recipe_value()
                 )
@@ -891,6 +926,7 @@ class RecipeBuilder:
             data_s3_path=overrides_template.get("data_s3_path", {}).get("default", None)
             if overrides_template
             else None,
+            validation_data_s3_path=self.validation_data_s3_path,
             validation_config=validation_config,
             rft_lambda_arn=overrides_template.get("reward_lambda_arn", {}).get("default", None)
             if overrides_template

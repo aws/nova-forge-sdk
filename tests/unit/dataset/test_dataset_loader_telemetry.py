@@ -101,3 +101,5 @@ class TestExtractModelTrainingMethod(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(result["evalTask"], "custom_task")
+
+

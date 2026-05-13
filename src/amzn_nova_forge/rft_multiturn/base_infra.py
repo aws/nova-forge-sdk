@@ -245,8 +245,8 @@ def create_rft_execution_role(
         Exception: If it fails at creating the new role or attaching policies.
     """
 
-    iam_client = boto3.client("iam")
-    sts_client = boto3.client("sts")
+    iam_client = boto3.client("iam", region_name=region)
+    sts_client = boto3.client("sts", region_name=region)
     account_id = sts_client.get_caller_identity()["Account"]
     role_name = role_name or RFT_EXECUTION_ROLE_NAME
 

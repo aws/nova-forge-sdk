@@ -216,11 +216,11 @@ def _requests_helper(url, timeout):
     return response
 
 
-def _get_accountId():
+def _get_accountId(region: Optional[str] = None):
     """Return the account ID from the boto session"""
 
     try:
-        sts = boto3.client("sts")
+        sts = boto3.client("sts", region_name=region)
         return sts.get_caller_identity()["Account"]
     except Exception:
         return None

@@ -169,7 +169,7 @@ class TestGetAccountId(unittest.TestCase):
         result = _get_accountId()
 
         self.assertEqual(result, "123456789012")
-        mock_boto3.client.assert_called_once_with("sts")
+        mock_boto3.client.assert_called_once_with("sts", region_name=None)
 
     @patch("amzn_nova_forge.telemetry.telemetry_logging.boto3")
     def test_returns_none_on_exception(self, mock_boto3):

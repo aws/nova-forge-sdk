@@ -619,5 +619,23 @@ class TestSMTJEvaluationResult(unittest.TestCase):
                 self.assertEqual(result_dict, test_results)
 
 
+class TestRegionPropagation(unittest.TestCase):
+    @patch("amzn_nova_forge.core.result.eval_result.boto3")
+    def test_smtj_evaluation_result_passes_region_to_sagemaker(self, mock_boto3):
+        mock_boto3.client.return_value = Mock()
+
+        SMTJEvaluationResult(
+            job_id="test-job",
+            started_time=datetime.now(),
+            eval_task=EvaluationTask.MMLU,
+            eval_output_path="s3://bucket/output",
+            sagemaker_client=None,
+            s3_client=Mock(),
+            region="eu-west-1",
+        )
+
+        mock_boto3.client.assert_called_with("sagemaker", region_name="eu-west-1")
+
+
 if __name__ == "__main__":
     unittest.main()

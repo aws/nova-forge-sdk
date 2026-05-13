@@ -535,6 +535,7 @@ class TestForgeInferenceGetLogs(unittest.TestCase):
             job_id="job-abc",
             platform=Platform.SMTJ,
             started_time=int(datetime(2024, 1, 1, tzinfo=timezone.utc).timestamp() * 1000),
+            region="us-east-1",
         )
         mock_monitor.show_logs.assert_called_once_with(
             limit=None, start_from_head=False, end_time=None
@@ -591,6 +592,7 @@ class TestForgeInferenceGetLogs(unittest.TestCase):
             started_time=int(start.timestamp() * 1000),
             cluster_name="my-cluster",
             namespace="my-namespace",
+            region="us-east-1",
         )
         mock_monitor.show_logs.assert_called_once()
 

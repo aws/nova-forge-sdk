@@ -90,6 +90,7 @@ def extract_checkpoint_path_from_job_output(
     output_s3_path: Optional[str] = None,
     job_id: Optional[str] = None,
     job_result: Optional[TrainingResult] = None,
+    region: Optional[str] = None,
 ) -> str:
     """
     Extracts the model checkpoint path from a training job's output.
@@ -120,7 +121,7 @@ def extract_checkpoint_path_from_job_output(
     """
     from amzn_nova_forge.core.result.job_result import JobStatus
 
-    s3_client = boto3.client("s3")
+    s3_client = boto3.client("s3", region_name=region)
 
     # If job_result is provided, check if job is completed
     if job_result is not None:

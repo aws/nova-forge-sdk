@@ -15,6 +15,7 @@
 
 import os
 from pathlib import Path
+from typing import Optional
 
 import boto3
 from botocore.exceptions import ClientError
@@ -41,7 +42,7 @@ def is_directory(path: str) -> bool:
     return os.path.isdir(path)
 
 
-def check_path_exists(path: str) -> None:
+def check_path_exists(path: str, region: Optional[str] = None) -> None:
     """Verify that a single file path exists. Raises DataPrepError for local
     files that don't exist. For S3, performs a best-effort HeadObject check —
     logs a warning on permission errors rather than raising.
@@ -56,7 +57,7 @@ def check_path_exists(path: str) -> None:
         s3_path = path[len("s3://") :]
         bucket, _, key = s3_path.partition("/")
         try:
-            client = boto3.client("s3")
+            client = boto3.client("s3", region_name=region)
             client.head_object(Bucket=bucket, Key=key)
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "")
@@ -150,7 +151,9 @@ def scan_local_directory(dir_path: str, expected_extensions: set[str]) -> list[s
     return matching
 
 
-def scan_s3_directory(dir_path: str, expected_extensions: set[str]) -> list[str]:
+def scan_s3_directory(
+    dir_path: str, expected_extensions: set[str], region: Optional[str] = None
+) -> list[str]:
     """Scan an S3 prefix for files matching expected extensions.
 
     Uses boto3 list_objects_v2 with Delimiter='/' for non-recursive listing.
@@ -163,7 +166,7 @@ def scan_s3_directory(dir_path: str, expected_extensions: set[str]) -> list[str]
     if not key_prefix.endswith("/"):
         key_prefix += "/"
 
-    client = boto3.client("s3")
+    client = boto3.client("s3", region_name=region)
     matching = []
     unexpected: list[str] = []
 

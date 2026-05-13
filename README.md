@@ -33,7 +33,7 @@ Nova Forge SDK is tested on:
 * Python 3.12
 
 ### IAM Roles/Policies
-* You will need an IAM role with sufficient permissions in order to use the Nova Forge SDK. You can find a list of these permissions in the `docs/iam_setup.md` file.
+* You will need an IAM role with sufficient permissions in order to use the Nova Forge SDK. You can find a list of these permissions in the `docs/user-guides/iam_setup.md` file.
 
 ### Instances
 
@@ -41,7 +41,7 @@ Nova customization jobs also require access to enough of the right instance type
 - The requested instance type and count should be compatible with the requested job. The SDK will validate your instance configuration for you.
 - The [SageMaker account quotas](https://docs.aws.amazon.com/general/latest/gr/sagemaker.html) for using the requested instance type in training jobs (for SMTJ) or HyperPod clusters (for SMHP) should allow the requested number of instances.
 - (For SMHP) The selected HyperPod cluster should have a [Restricted Instance Group](https://docs.aws.amazon.com/sagemaker/latest/dg/nova-hp-cluster.html) with enough instances of the right type to run the requested job. The SDK will validate that your cluster contains a valid instance group.
-- You can look in the `docs/instance_type_spec.md` file for the different instance types and combinations for specific jobs and methods.
+- You can look in the `docs/user-guides/instance_type_spec.md` file for the different instance types and combinations for specific jobs and methods.
 
 ### HyperPod CLI
 
@@ -144,7 +144,7 @@ loader.validate(method=ValidateMethod.INVALID_RECORDS, training_method=TrainingM
 loader.save("s3://my-bucket/prepared-data.jsonl")
 ```
 
-For the complete guide — including column mappings, dataset splitting, filtering, chaining operations, and end-to-end examples — see **[Data Preparation Guide](docs/data_prep.md)**.
+For the complete guide — including column mappings, dataset splitting, filtering, chaining operations, and end-to-end examples — see **[Data Preparation Guide](docs/user-guides/data_prep.md)**.
 
 For a hands-on notebook walkthrough, see [`samples/dataprep_quickstart.ipynb`](samples/dataprep_quickstart.ipynb).
 
@@ -161,10 +161,10 @@ The Nova Forge SDK is organized into the following modules:
 | **Monitor**        | Job monitoring and logging                    | `CloudWatchLogMonitor`, `MLflowMonitor`                          |
 | **RFT Multiturn**  | Reinforcement fine-tuning infrastructure      | `RFTMultiturnInfrastructure`                                      |
 
-* For detailed API documentation: See [`docs/spec.md`](docs/spec.md)
+* For detailed API documentation: See [`docs/spec/`](docs/spec/index.md)
 * For usage examples: See [`samples/nova_quickstart.ipynb`](samples/nova_quickstart.ipynb)
 * For RFT Singleturn examples: See [`samples/rft_singleturn_quickstart.ipynb`](samples/rft_singleturn_quickstart.ipynb)
-* For RFT Multiturn documentation: See [`docs/rft_multiturn.md`](docs/rft_multiturn.md)
+* For RFT Multiturn documentation: See [`docs/user-guides/rft_multiturn.md`](docs/user-guides/rft_multiturn.md)
 * For RFT Multiturn examples: See [`samples/rft_multiturn_quickstart.ipynb`](samples/rft_multiturn_quickstart.ipynb)
 
 ### Service Classes (Recommended)
@@ -228,16 +228,16 @@ result.show()
 
 For the equivalent workflow using the legacy `NovaModelCustomizer`, see the [Model Module](#model-module-deprecated) section below.
 
-For detailed API documentation on all service classes, see [`docs/spec.md`](docs/spec.md).
+For detailed API documentation on all service classes, see [`docs/spec/`](docs/spec/service-classes.md).
 
 ### Dataset Module
 Handles data loading, transformation, validation, filtering, and persistence for training datasets. Supports JSONL, JSON, CSV, Parquet, and Arrow formats from local files or S3.
 
-See the [Data Preparation](#data-preparation) section above for usage overview, or the full **[Data Preparation Guide](docs/data_prep.md)** for detailed documentation.
+See the [Data Preparation](#data-preparation) section above for usage overview, or the full **[Data Preparation Guide](docs/user-guides/data_prep.md)** for detailed documentation.
 
 ### Manager Module
 Manages runtime infrastructure for executing training and evaluation jobs.
-For the allowed instance types for each model/method combination, see `docs/instance_type_spec.md`.
+For the allowed instance types for each model/method combination, see `docs/user-guides/instance_type_spec.md`.
 
 **Main Methods:**
 - `execute()` - Start a training or evaluation job
@@ -274,7 +274,7 @@ result = manager.scale_cluster(
     target_instance_count=8
 )
 ```
-For more cluster scaling documentation, see [`docs/spec.md`](docs/spec.md).
+For more cluster scaling documentation, see [`docs/spec/runtime-managers.md`](docs/spec/runtime-managers.md).
 
 ### Model Module (Deprecated)
 
@@ -400,6 +400,7 @@ Data mixing allows you to blend your custom training data with Nova's high-quali
 
 **Key Features:**
 - Available for CPT and SFT training for Nova 1 and Nova 2 (both LoRA and Full-Rank) on SageMaker HyperPod
+- Available for SFT (text-only, LoRA and Full-Rank) on Nova 2 Lite on SMTJServerless
 - Mix customer data (0-100%) with Nova's curated data
 - Nova data categories include general knowledge and code
 - Nova data percentages must sum to 100%
@@ -407,11 +408,21 @@ Data mixing allows you to blend your custom training data with Nova's high-quali
 **Example Usage:**
 
 ```python
-# Initialize with data mixing enabled
+# Initialize with data mixing enabled (HyperPod)
 trainer = ForgeTrainer(
     model=Model.NOVA_LITE_2,
     method=TrainingMethod.SFT_LORA,
-    infra=SMHPRuntimeManager(...),  # Must use HyperPod
+    infra=SMHPRuntimeManager(...),
+    training_data_s3_path="s3://bucket/data.jsonl",
+    data_mixing_enabled=True,
+    config=ForgeConfig(output_s3_path="s3://bucket/output"),
+)
+
+# Or use SMTJServerless
+trainer = ForgeTrainer(
+    model=Model.NOVA_LITE_2,
+    method=TrainingMethod.SFT_LORA,
+    infra=SMTJServerlessRuntimeManager(...),
     training_data_s3_path="s3://bucket/data.jsonl",
     data_mixing_enabled=True,
     config=ForgeConfig(output_s3_path="s3://bucket/output"),
@@ -433,7 +444,7 @@ trainer.data_mixing.set_config({
 ```
 **Important Notes:**
 - The `dataset_catalog` field is system-managed and cannot be set by users
-- Data mixing is only available on SageMaker HyperPod platform for Forge customers.
+- Data mixing is available on SageMaker HyperPod and SMTJServerless for Forge customers.
 - Refer to the [Get Forge Subscription]('https://docs.aws.amazon.com/sagemaker/latest/dg/nova-forge.html#nova-forge-prereq-access') page to enable Nova subscription in your account to use this feature.
 
 ### Job Notifications
@@ -450,7 +461,7 @@ Get email notifications when your training jobs complete, fail, or are stopped. 
 **Platform Support:**
 - **SMTJ** (SageMaker Training Jobs): Minimal configuration required
 - **SMTJServerless** (SageMaker Serverless): No instance type needed — SageMaker manages compute automatically
-- **SMHP** (SageMaker HyperPod): Requires kubectl Lambda layer + additional parameters (see [`docs/spec.md`](spec.md) for more details)
+- **SMHP** (SageMaker HyperPod): Requires kubectl Lambda layer + additional parameters (see [`docs/spec/runtime-managers.md`](docs/spec/runtime-managers.md) for more details)
 - **Bedrock** (Amazon Bedrock): Fully managed, no infrastructure configuration required
 
 **Quick Example:**
@@ -473,14 +484,14 @@ result.enable_job_notifications(
 
 **Important Notes:**
 - Users must confirm their email subscription by clicking the link in the AWS SNS confirmation email
-- SMHP job notifications requires a kubectl Lambda layer (see [Job Notifications Guide](docs/job_notifications.md))
+- SMHP job notifications requires a kubectl Lambda layer (see [Job Notifications Guide](docs/user-guides/job_notifications.md))
 - Notification infrastructure is created once per region (SMTJ) or once per cluster (SMHP) and shared across jobs.
-- See [`docs/job_notifications.md`](docs/job_notifications.md) for detailed setup instructions, troubleshooting, and advanced usage
-- See [`docs/spec.md`](docs/spec.md) for complete API documentation on job notifications. 
+- See [`docs/user-guides/job_notifications.md`](docs/user-guides/job_notifications.md) for detailed setup instructions, troubleshooting, and advanced usage
+- See [`docs/spec/notifications.md`](docs/spec/notifications.md) for complete API documentation on job notifications.
 
 ### Batch Sample Tracing
 
-Diagnose gradient spikes by identifying which training data lines were used in a specific training step. Enable with `enable_batch_sample_tracing=True` on `ForgeTrainer`, then call `trainer.trace_batch(result, step=N)` after the job completes. See [`docs/spec.md`](docs/spec.md) for full API details.
+Diagnose gradient spikes by identifying which training data lines were used in a specific training step. Enable with `enable_batch_sample_tracing=True` on `ForgeTrainer`, then call `trainer.trace_batch(result, step=N)` after the job completes. See [`docs/spec/service-classes.md`](docs/spec/service-classes.md) for full API details.
 
 ---
 ## Telemetry
@@ -497,7 +508,7 @@ This comprehensive SDK enables end-to-end customization of Amazon Nova models wi
 
 To get started customizing Nova models, please see the following files:
 * Notebook with "quick start" examples to start customizing at `samples/nova_quickstart.ipynb`
-* Specification document with detailed information about each module at `docs/spec.md`
+* Specification document with detailed information about each module at [`docs/spec/`](docs/spec/index.md)
 
 ---
 ## Security Best Practices for SDK Users

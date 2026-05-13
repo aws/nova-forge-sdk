@@ -172,7 +172,9 @@ def wait_for_model_ready(
         time.sleep(poll_interval)
 
 
-def check_deployment_status(deployment_arn: str, platform: DeployPlatform) -> Optional[str]:
+def check_deployment_status(
+    deployment_arn: str, platform: DeployPlatform, region: Optional[str] = None
+) -> Optional[str]:
     """
     Checks the current status of a Bedrock deployment.
 
@@ -185,7 +187,7 @@ def check_deployment_status(deployment_arn: str, platform: DeployPlatform) -> Op
     """
     status = None
 
-    bedrock_client = boto3.client("bedrock")
+    bedrock_client = boto3.client("bedrock", region_name=region)
     if platform == DeployPlatform.BEDROCK_OD:
         try:
             status = bedrock_client.get_custom_model_deployment(
@@ -256,7 +258,9 @@ def get_required_bedrock_update_permissions(
     return []
 
 
-def check_existing_deployment(endpoint_name: str, platform: DeployPlatform) -> Optional[str]:
+def check_existing_deployment(
+    endpoint_name: str, platform: DeployPlatform, region: Optional[str] = None
+) -> Optional[str]:
     """
     Check if a deployment with the given name exists.
 
@@ -267,7 +271,7 @@ def check_existing_deployment(endpoint_name: str, platform: DeployPlatform) -> O
     Returns:
         Optional[str]: The ARN of the existing deployment if found, None otherwise
     """
-    bedrock_client = boto3.client("bedrock")
+    bedrock_client = boto3.client("bedrock", region_name=region)
 
     try:
         if platform == DeployPlatform.BEDROCK_OD:
@@ -290,7 +294,7 @@ def check_existing_deployment(endpoint_name: str, platform: DeployPlatform) -> O
 
 
 def delete_existing_deployment(
-    deployment_arn: str, platform: DeployPlatform, endpoint_name: str
+    deployment_arn: str, platform: DeployPlatform, endpoint_name: str, region: Optional[str] = None
 ) -> None:
     """
     Delete an existing deployment and wait for completion.
@@ -303,7 +307,7 @@ def delete_existing_deployment(
     Raises:
         Exception: If deletion fails or times out
     """
-    bedrock_client = boto3.client("bedrock")
+    bedrock_client = boto3.client("bedrock", region_name=region)
 
     try:
         logger.info(f"Deleting existing deployment '{endpoint_name}'...")
@@ -369,7 +373,7 @@ def delete_existing_deployment(
 
 
 def update_provisioned_throughput_model(
-    deployment_arn: str, new_model_arn: str, endpoint_name: str
+    deployment_arn: str, new_model_arn: str, endpoint_name: str, region: Optional[str] = None
 ) -> None:
     """
     Update a Provisioned Throughput deployment to use a new custom model.
@@ -382,7 +386,7 @@ def update_provisioned_throughput_model(
     Raises:
         Exception: If update fails
     """
-    bedrock_client = boto3.client("bedrock")
+    bedrock_client = boto3.client("bedrock", region_name=region)
 
     try:
         logger.info(f"Updating PT deployment '{endpoint_name}' to new model...")

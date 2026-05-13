@@ -112,7 +112,8 @@ class BaseDatasetValidator(ABC):
                     "Please use the loader.transform() method to transform your data to Converse format first."
                 )
 
-        s3_client = boto3.client("s3")
+        region = kwargs.get("region")
+        s3_client = boto3.client("s3", region_name=region)
         # Validate each data entry
         for i, sample in enumerate(dataset):
             try:
@@ -318,7 +319,6 @@ def _validate_content_count(
 def _validate_video_duration(
     instance: Any, validation: DatasetCheckEntry, ctx: Dict[str, Any]
 ) -> None:
-
     uri = instance.source.s3Location.uri
     s3_client = ctx.get("s3_client")
     if s3_client is None:
@@ -329,7 +329,7 @@ def _validate_video_duration(
     except ImportError:
         raise InfrastructureError(
             "pymediainfo and/or its system dependency libmediainfo not installed. "
-            "See 'Image/Video validation' in docs/data_prep.md for setup instructions."
+            "See 'Image/Video validation' in docs/user-guides/data_prep.md for setup instructions."
         )
 
     try:
@@ -422,7 +422,6 @@ def _validate_content_allowlist(
 def _validate_image_dimensions(
     instance: Any, validation: DatasetCheckEntry, ctx: Dict[str, Any]
 ) -> None:
-
     uri = instance.source.s3Location.uri
     s3_client = ctx.get("s3_client")
     if s3_client is None:
@@ -433,7 +432,7 @@ def _validate_image_dimensions(
     except ImportError:
         raise InfrastructureError(
             "pymediainfo and/or its system dependency libmediainfo not installed. "
-            "See 'Image/Video validation' in docs/data_prep.md for setup instructions."
+            "See 'Image/Video validation' in docs/user-guides/data_prep.md for setup instructions."
         )
     try:
         bucket, key = _parse_s3_uri(uri)

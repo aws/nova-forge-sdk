@@ -131,14 +131,14 @@ class Validator:
         return execution_role
 
     @staticmethod
-    def _is_cross_account_role(execution_role_arn: str) -> bool:
+    def _is_cross_account_role(execution_role_arn: str, region: Optional[str] = None) -> bool:
         """Check if execution role is in a different account."""
         try:
             # Extract account from role ARN: arn:aws:iam::ACCOUNT:role/RoleName
             role_account = execution_role_arn.split(":")[4]
 
             # Get current account
-            sts_client = boto3.client("sts")
+            sts_client = boto3.client("sts", region_name=region)
             current_account = sts_client.get_caller_identity()["Account"]
 
             return role_account != current_account
@@ -160,7 +160,7 @@ class Validator:
         """
         try:
             # Assume the cross-account role
-            sts_client = boto3.client("sts")
+            sts_client = boto3.client("sts", region_name=region_name)
             assumed_role = sts_client.assume_role(
                 RoleArn=execution_role_arn, RoleSessionName="SageMakerValidation"
             )
@@ -502,7 +502,9 @@ class Validator:
 
             role_name = execution_role.split("/")[-1]
 
-            is_cross_account_role = Validator._is_cross_account_role(execution_role)
+            is_cross_account_role = Validator._is_cross_account_role(
+                execution_role, region=region_name
+            )
 
             # Check if this is a cross-account role
             if is_cross_account_role:
@@ -615,7 +617,9 @@ class Validator:
                         errors.append(f"Failed to validate execution role permissions: {str(e)}")
         except Exception as e:
             # For cross-account roles, silently skip IAM validation on unexpected errors
-            if execution_role and Validator._is_cross_account_role(execution_role):
+            if execution_role and Validator._is_cross_account_role(
+                execution_role, region=region_name
+            ):
                 return
 
             if not execution_role:
@@ -1037,6 +1041,9 @@ class Validator:
 
             # Validate proper types are used
             if "type" in override_metadata:
+                # None is allowed for optional fields (recipe key exists but has no value set)
+                if recipe_value is None and not override_metadata.get("required", False):
+                    continue
                 python_type_name = TYPE_ALIASES.get(override_metadata["type"])
                 if python_type_name is None:
                     continue
@@ -1178,6 +1185,7 @@ class Validator:
         overrides_template: Dict[str, Any],
         output_s3_path: Optional[str] = None,
         data_s3_path: Optional[str] = None,
+        validation_data_s3_path: Optional[str] = None,
         validation_config: Optional[ValidationConfig] = None,
         rft_lambda_arn: Optional[str] = None,
         eval_task: Optional[EvaluationTask] = None,
@@ -1197,6 +1205,7 @@ class Validator:
             overrides_template: Dict containing recipe constraints
             output_s3_path: Output S3 data path
             data_s3_path: Input S3 data path
+            validation_data_s3_path: Optional S3 path for validation data
             validation_config: Optional configuration to determine which resource validation checks to perform
             rft_lambda_arn: Optional Lambda ARN for RFT
             eval_task: Optional evaluation task
@@ -1231,6 +1240,15 @@ class Validator:
 
         # Recipe validation
         if config.recipe:
+            # Validate validation_data_s3_path S3 format if provided
+            if validation_data_s3_path:
+                s3_parts = _parse_s3_uri(validation_data_s3_path)
+                if not s3_parts:
+                    errors.append(
+                        f"Invalid S3 path for validation_data_s3_path: {validation_data_s3_path}. "
+                        "Expected format: s3://bucket-name/path/to/data.jsonl"
+                    )
+
             cls._validate_recipe(
                 recipe=recipe,
                 overrides_template=overrides_template,

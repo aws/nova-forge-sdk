@@ -244,7 +244,12 @@ class TestDeployBedrock(unittest.TestCase):
             deploy_platform=DeployPlatform.BEDROCK_PT,
         )
 
-        mock_update_pt.assert_called_once()
+        mock_update_pt.assert_called_once_with(
+            "arn:aws:bedrock:us-east-1:123456789012:pt/existing-pt",
+            "arn:aws:bedrock:us-east-1:123456789012:custom-model/my-model",
+            "nova-micro-us-east-1",
+            region="us-east-1",
+        )
         self.assertEqual(
             result.endpoint.uri,
             "arn:aws:bedrock:us-east-1:123456789012:pt/existing-pt",
@@ -751,11 +756,13 @@ class TestGetStatus(unittest.TestCase):
     def test_get_status_by_arn_returns_job_status(self, mock_check_status, mock_validate_region):
         deployer = self._make_deployer()
         status = deployer.get_status_by_arn(
-            "arn:aws:bedrock:us-east-1:123:deployment/d", DeployPlatform.BEDROCK_OD
+            "arn:aws:bedrock:us-east-1:123456789012:deployment/d", DeployPlatform.BEDROCK_OD
         )
         self.assertEqual(status, JobStatus.IN_PROGRESS)
         mock_check_status.assert_called_once_with(
-            "arn:aws:bedrock:us-east-1:123:deployment/d", DeployPlatform.BEDROCK_OD
+            "arn:aws:bedrock:us-east-1:123456789012:deployment/d",
+            DeployPlatform.BEDROCK_OD,
+            region="us-east-1",
         )
 
     @patch(f"{PATCH_PREFIX}.check_deployment_status", return_value=None)
@@ -784,22 +791,26 @@ class TestGetLogs(unittest.TestCase):
         endpoint = EndpointInfo(
             platform=DeployPlatform.BEDROCK_OD,
             endpoint_name="ep",
-            uri="arn:aws:bedrock:us-east-1:123:deployment/d",
+            uri="arn:aws:bedrock:us-east-1:123456789012:deployment/d",
             model_artifact_path="s3://bucket/model",
         )
         result = DeploymentResult(endpoint=endpoint, created_at=datetime.now(timezone.utc))
 
         deployer.get_logs(job_result=result)
         mock_check_status.assert_called_once_with(
-            "arn:aws:bedrock:us-east-1:123:deployment/d", DeployPlatform.BEDROCK_OD
+            "arn:aws:bedrock:us-east-1:123456789012:deployment/d",
+            DeployPlatform.BEDROCK_OD,
+            region="us-east-1",
         )
 
     @patch(f"{PATCH_PREFIX}.check_deployment_status", return_value="InProgress")
     def test_get_logs_with_endpoint_arn_only(self, mock_check_status, mock_validate_region):
         deployer = self._make_deployer()
-        deployer.get_logs(endpoint_arn="arn:aws:sagemaker:us-east-1:123:endpoint/ep")
+        deployer.get_logs(endpoint_arn="arn:aws:sagemaker:us-east-1:123456789012:endpoint/ep")
         mock_check_status.assert_called_once_with(
-            "arn:aws:sagemaker:us-east-1:123:endpoint/ep", DeployPlatform.SAGEMAKER
+            "arn:aws:sagemaker:us-east-1:123456789012:endpoint/ep",
+            DeployPlatform.SAGEMAKER,
+            region="us-east-1",
         )
 
     @patch(f"{PATCH_PREFIX}.logger")
@@ -807,6 +818,24 @@ class TestGetLogs(unittest.TestCase):
         deployer = self._make_deployer()
         deployer.get_logs()
         mock_logger.info.assert_called_once_with("No endpoint ARN available. Call deploy() first.")
+
+
+class TestDeploymentResultRegion(unittest.TestCase):
+    """Tests for region propagation through DeploymentResult.status."""
+
+    def test_deployment_result_status_passes_region(self):
+        endpoint = EndpointInfo(
+            platform=DeployPlatform.BEDROCK_OD,
+            endpoint_name="ep",
+            uri="arn:test",
+            model_artifact_path="s3://x",
+            region="eu-west-1",
+        )
+        result = DeploymentResult(endpoint=endpoint, created_at=datetime.now(timezone.utc))
+        with patch.object(DeploymentResult, "_status_checker") as mock_checker:
+            mock_checker.return_value = "Active"
+            _ = result.status
+            mock_checker.assert_called_once_with("arn:test", DeployPlatform.BEDROCK_OD, "eu-west-1")
 
 
 if __name__ == "__main__":

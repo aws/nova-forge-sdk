@@ -305,6 +305,7 @@ class ForgeEvaluator:
                 eval_task=eval_task,
                 started_time=start_time,
                 eval_output_path=eval_output_s3_path,
+                region=self.region,
             )
         else:
             cluster_name = cast(SMHPRuntimeManager, self.infra).cluster_name
@@ -317,6 +318,7 @@ class ForgeEvaluator:
                 eval_output_path=eval_output_s3_path,
                 cluster_name=cluster_name,
                 namespace=namespace,
+                region=self.region,
             )
 
         logger.info(
@@ -361,6 +363,7 @@ class ForgeEvaluator:
             job_id=resolved_job_id,
             platform=self._platform,
             started_time=int(resolved_started.timestamp() * 1000),
+            region=self.region,
             **kwargs,
         )
         monitor.show_logs(limit=limit, start_from_head=start_from_head, end_time=end_time)

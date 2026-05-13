@@ -61,6 +61,7 @@ from amzn_nova_forge.util.sagemaker import (
     extract_lambda_arn_from_hub_content,
     register_lambda_as_hub_content,
 )
+from amzn_nova_forge.util.subprocess_utils import _check_hyperpod_stderr
 from amzn_nova_forge.validation.endpoint_validator import is_sagemaker_arn
 
 # Maps TrainingMethod to (CustomizationTechnique, Peft|None) for ServerlessJobConfig
@@ -715,7 +716,21 @@ class SMTJRuntimeManager(RuntimeManager):
                         s3_data_distribution_type="FullyReplicated",
                     ),
                 )
-                trainer_config["input_data_config"] = [input_data]
+                input_data_config = [input_data]
+                if job_config.validation_data_s3_path:
+                    validation_input = InputData(
+                        channel_name="validation",
+                        data_source=S3DataSource(
+                            s3_uri=job_config.validation_data_s3_path,
+                            s3_data_type=job_config.input_s3_data_type,
+                            s3_data_distribution_type="FullyReplicated",
+                        ),
+                    )
+                    input_data_config.append(validation_input)
+                trainer_config["input_data_config"] = input_data_config
+
+            if job_config.trainer_config_hyperparameters:
+                trainer_config["hyperparameters"] = job_config.trainer_config_hyperparameters
 
             model_trainer = ModelTrainer.from_recipe(
                 **trainer_config
@@ -1064,7 +1079,7 @@ class SMTJDataPrepRuntimeManager(RuntimeManager):
             self.execution_role = role_ref
         else:
             # Treat as a role name — look up or create
-            iam_client = boto3.client("iam")
+            iam_client = boto3.client("iam", region_name=self.region)
             try:
                 self.execution_role = iam_client.get_role(RoleName=role_ref)["Role"]["Arn"]
             except iam_client.exceptions.NoSuchEntityException:
@@ -1505,11 +1520,7 @@ class SMHPRuntimeManager(RuntimeManager):
             check=True,
         )
 
-        if response.stderr:
-            logger.error(
-                f"Unable to connect to HyperPod cluster {self.cluster_name}: {response.stderr}"
-            )
-            raise RuntimeError(response.stderr)
+        _check_hyperpod_stderr(response.stderr)
 
         logger.info(
             f"Successfully connected to HyperPod cluster '{self.cluster_name}' in namespace '{self.namespace}'."
@@ -1577,8 +1588,10 @@ class SMHPRuntimeManager(RuntimeManager):
                 check=True,
             )
 
-            if response.stderr:
-                logger.error(f"Failed to cleanup HyperPod job: {response.stderr}")
+            try:
+                _check_hyperpod_stderr(response.stderr)
+            except RuntimeError as e:
+                logger.error(f"Failed to cleanup HyperPod job '{job_name}': {e}")
 
         except Exception as e:
             logger.error(f"Failed to cleanup HyperPod job '{job_name}': {str(e)}")
@@ -1821,7 +1834,6 @@ class BedrockRuntimeManager(RuntimeManager):
             raise
 
     def execute(self, job_config: JobConfig) -> str:
-
         try:
             # Validate job name
             from amzn_nova_forge.validation.validator import Validator
@@ -1991,7 +2003,6 @@ class BedrockRuntimeManager(RuntimeManager):
             raise RuntimeError(f"Failed to create Bedrock customization job: {e}") from e
 
     def cleanup(self, job_id: str) -> None:
-
         try:
             logger.info(f"Stopping Bedrock customization job: {job_id}")
 
@@ -2077,6 +2088,7 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
         self._execution_role = execution_role
         self.model_package_group_name = model_package_group_name
         self.evaluator_name = evaluator_name
+        self.hub_content_version: Optional[str] = None
         self.subnets = subnets
         self.security_group_ids = security_group_ids
         self.encrypt_inter_container_traffic = encrypt_inter_container_traffic
@@ -2150,6 +2162,7 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
             hub_content_name=model.hub_content_name,
             hub_content_type="Model",
             region=self.region,
+            hub_content_version=self.hub_content_version,
         )
         return hub_content["HubContentArn"]
 
@@ -2191,7 +2204,10 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
             super().validate_lambda(data_s3_path, validation_samples)
 
     def _extract_hyperparameters(
-        self, recipe: Dict[str, Any], method: Optional[TrainingMethod] = None
+        self,
+        recipe: Dict[str, Any],
+        method: Optional[TrainingMethod] = None,
+        data_mixing_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, str]:
         """Extract hyperparameters from recipe as string key-value pairs.
 
@@ -2223,10 +2239,14 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
             # --- Training duration: v1 uses "max_epochs", v2 uses "max_steps" ---
             "max_epochs": "max_epochs",  # v1 SFT/DPO
             "max_steps": "max_steps",  # v2 SFT/RFT
+            "save_steps": "save_steps",  # v2 SFT/RFT
             # --- v2 SFT only ---
             "reasoning_enabled": "reasoning_enabled",
             # --- DPO only: recipe key is "beta" (under dpo_cfg.beta) ---
             "beta": "adam_beta",
+            # --- Validation interval ---
+            "val_check_interval": "val_check_interval",
+            "fine_tuned_model": "fine_tuned_model",  # v2 SFT/RFT
         }
 
         result: Dict[str, str] = {}
@@ -2239,6 +2259,14 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
                     _extract(v)
 
         _extract(recipe)
+
+        # Datamix: inject percent fields directly from DataMixing.get_config() (full field names
+        # like customer_data_percent, nova_agents_percent). The recipe structure nests these under
+        # data_mixing.sources.* with short keys, so we use the config dict as the source of truth.
+        if data_mixing_config:
+            for k, v in data_mixing_config.items():
+                result[k] = str(v)
+
         logger.info(f"HyperParameters used for the job: {result}")
         return result
 
@@ -2331,7 +2359,11 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
             ):
                 evaluator_arn = self._register_lambda_as_hub_content(evaluator_arn)
 
-            hyperparams = self._extract_hyperparameters(recipe, method=job_config.method)
+            hyperparams = self._extract_hyperparameters(
+                recipe, method=job_config.method, data_mixing_config=job_config.data_mixing_config
+            )
+            if job_config.trainer_config_hyperparameters:
+                hyperparams.update(job_config.trainer_config_hyperparameters)
             # For eval jobs with a reward lambda, the API requires lambda_arn + lambda_type
             # in HyperParameters. EvaluatorArn is NOT used for eval jobs.
             if job_config.method == TrainingMethod.EVALUATION and evaluator_arn:
@@ -2408,6 +2440,21 @@ class SMTJServerlessRuntimeManager(RuntimeManager):
                         "RecordWrapperType": "None",
                     }
                 ]
+                if job_config.validation_data_s3_path:
+                    validation_dataset_name = f"{job_config.job_name[:46]}-val-input"
+                    validation_dataset = DataSet.create(
+                        validation_dataset_name, job_config.validation_data_s3_path
+                    )
+                    create_params["InputDataConfig"].append(
+                        {
+                            "ChannelName": "validation",
+                            "DataSource": {
+                                "DatasetSource": {"DatasetArn": validation_dataset.arn},
+                            },
+                            "CompressionType": "None",
+                            "RecordWrapperType": "None",
+                        }
+                    )
             if self.subnets or self.security_group_ids:
                 create_params["VpcConfig"] = {
                     "SecurityGroupIds": self.security_group_ids or [],
