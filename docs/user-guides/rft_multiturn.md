@@ -1307,6 +1307,6 @@ get_logs(env_type=EnvType.TRAIN, tail=True)
 ## Additional Resources
 
 - [Main SDK Documentation](../README.md) - Complete SDK overview and getting started guide
-- [API Specification](spec.md) - Detailed API documentation for all modules
+- [API Specification](../spec/index.md) - Detailed API documentation for all modules
 - [Quick Start Notebook](../samples/nova_quickstart.ipynb) - General Nova customization examples
 - [RFT Multiturn Notebook](../samples/rft_multiturn_quickstart.ipynb) - RFT multiturn specific examples

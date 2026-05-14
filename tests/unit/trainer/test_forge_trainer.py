@@ -263,6 +263,68 @@ class TestForgeTrainerInit(unittest.TestCase):
             )
         self.assertIn("CPT", str(ctx.exception))
 
+    @patch(
+        "amzn_nova_forge.trainer.forge_trainer.set_output_s3_path",
+        return_value=FIXED_OUTPUT_PATH,
+    )
+    @patch("boto3.session.Session")
+    def test_hub_content_version_propagates_to_infra(self, mock_session, _mock_output):
+        type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
+        infra = _make_smtj_infra()
+        infra.hub_content_version = None
+
+        ForgeTrainer(
+            model=Model.NOVA_MICRO,
+            method=TrainingMethod.SFT_LORA,
+            infra=infra,
+            training_data_s3_path="s3://bucket/data",
+            hub_content_version="3.38.0",
+        )
+
+        self.assertEqual(infra.hub_content_version, "3.38.0")
+
+    @patch(
+        "amzn_nova_forge.trainer.forge_trainer.set_output_s3_path",
+        return_value=FIXED_OUTPUT_PATH,
+    )
+    @patch("boto3.session.Session")
+    def test_hub_content_version_none_does_not_set_infra(self, mock_session, _mock_output):
+        type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
+        infra = _make_smtj_infra()
+        infra.hub_content_version = None
+
+        ForgeTrainer(
+            model=Model.NOVA_MICRO,
+            method=TrainingMethod.SFT_LORA,
+            infra=infra,
+            training_data_s3_path="s3://bucket/data",
+            hub_content_version=None,
+        )
+
+        self.assertIsNone(infra.hub_content_version)
+
+    @patch(
+        "amzn_nova_forge.trainer.forge_trainer.set_output_s3_path",
+        return_value=FIXED_OUTPUT_PATH,
+    )
+    @patch("boto3.session.Session")
+    def test_hub_content_version_skips_infra_without_attribute(self, mock_session, _mock_output):
+        type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
+        infra = _make_smtj_infra()
+        # Remove the attribute so hasattr returns False
+        if hasattr(infra, "hub_content_version"):
+            del infra.hub_content_version
+
+        ForgeTrainer(
+            model=Model.NOVA_MICRO,
+            method=TrainingMethod.SFT_LORA,
+            infra=infra,
+            training_data_s3_path="s3://bucket/data",
+            hub_content_version="3.38.0",
+        )
+
+        self.assertFalse(hasattr(infra, "hub_content_version"))
+
 
 class TestForgeTrainerTrain(unittest.TestCase):
     """Tests for ForgeTrainer.train()."""
@@ -336,6 +398,30 @@ class TestForgeTrainerTrain(unittest.TestCase):
 
         self.assertIsNone(result)
         infra.execute.assert_not_called()
+
+    @patch("amzn_nova_forge.trainer.forge_trainer.RecipeBuilder")
+    def test_dry_run_with_validation_data(self, MockRecipeBuilder):
+        mock_builder = MockRecipeBuilder.return_value
+        mock_builder.build_and_validate.return_value = (
+            "/tmp/recipe.yaml",
+            "s3://bucket/output",
+            "s3://bucket/data",
+            "image:latest",
+        )
+
+        infra = _make_smtj_infra()
+        trainer = self._make_trainer(
+            infra=infra,
+            holdout_data_s3_path="s3://bucket/validation.jsonl",
+        )
+        result = trainer.train(job_name="my-job", dry_run=True)
+
+        self.assertIsNone(result)
+        infra.execute.assert_not_called()
+        MockRecipeBuilder.assert_called_once()
+        call_kwargs = MockRecipeBuilder.call_args[1]
+        self.assertEqual(call_kwargs["validation_data_s3_path"], "s3://bucket/validation.jsonl")
+        mock_builder.build_and_validate.assert_called_once()
 
     @patch("amzn_nova_forge.trainer.forge_trainer.validate_rft_lambda_name")
     @patch("amzn_nova_forge.trainer.forge_trainer.get_model_artifacts")
@@ -580,6 +666,7 @@ class TestForgeTrainerGetLogs(unittest.TestCase):
             job_id="job-abc",
             platform=Platform.SMTJ,
             started_time=int(datetime(2025, 1, 1, tzinfo=timezone.utc).timestamp() * 1000),
+            region="us-east-1",
         )
         MockMonitor.return_value.show_logs.assert_called_once()
 
@@ -594,6 +681,7 @@ class TestForgeTrainerGetLogs(unittest.TestCase):
             job_id="explicit-job",
             platform=Platform.SMTJ,
             started_time=int(started.timestamp() * 1000),
+            region="us-east-1",
         )
 
     @patch("amzn_nova_forge.trainer.forge_trainer.CloudWatchLogMonitor")
@@ -620,6 +708,7 @@ class TestForgeTrainerGetLogs(unittest.TestCase):
             started_time=int(started.timestamp() * 1000),
             cluster_name="my-cluster",
             namespace="kubeflow",
+            region="us-east-1",
         )
 
 
@@ -749,6 +838,296 @@ class TestForgeTrainerTraceBatch(unittest.TestCase):
         with self.assertLogs("nova_forge_sdk", level="WARNING") as cm:
             trainer.trace_batch(training_result=result, step=1)
         self.assertTrue(any("not enabled" in msg for msg in cm.output))
+
+
+class TestForgeTrainerDataMixingServerless(unittest.TestCase):
+    """Tests for data mixing support on SMTJServerless."""
+
+    def _make_serverless_infra(self):
+        from amzn_nova_forge.manager.runtime_manager import SMTJServerlessRuntimeManager
+
+        infra = create_autospec(SMTJServerlessRuntimeManager)
+        infra.instance_type = None
+        infra.instance_count = None
+        infra.kms_key_id = None
+        infra.platform = Platform.SMTJServerless
+        return infra
+
+    @patch("amzn_nova_forge.trainer.forge_trainer.load_recipe_templates")
+    @patch(
+        "amzn_nova_forge.trainer.forge_trainer.set_output_s3_path",
+        return_value=FIXED_OUTPUT_PATH,
+    )
+    @patch("boto3.session.Session")
+    def test_data_mixing_smtj_serverless_sft_lora_works(
+        self, mock_session, _mock_output, mock_load_templates
+    ):
+        """SMTJServerless + SFT_LORA + data_mixing_enabled=True should succeed."""
+        type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
+        mock_load_templates.return_value = ({}, {}, None, "image:latest")
+        infra = self._make_serverless_infra()
+
+        trainer = ForgeTrainer(
+            model=Model.NOVA_MICRO,
+            method=TrainingMethod.SFT_LORA,
+            infra=infra,
+            training_data_s3_path="s3://bucket/data",
+            data_mixing_enabled=True,
+        )
+        self.assertIsNotNone(trainer.data_mixing)
+
+    @patch("amzn_nova_forge.trainer.forge_trainer.load_recipe_templates")
+    @patch(
+        "amzn_nova_forge.trainer.forge_trainer.set_output_s3_path",
+        return_value=FIXED_OUTPUT_PATH,
+    )
+    @patch("boto3.session.Session")
+    def test_data_mixing_smtj_serverless_sft_full_works(
+        self, mock_session, _mock_output, mock_load_templates
+    ):
+        """SMTJServerless + SFT_FULL + data_mixing_enabled=True should succeed."""
+        type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
+        mock_load_templates.return_value = ({}, {}, None, "image:latest")
+        infra = self._make_serverless_infra()
+
+        trainer = ForgeTrainer(
+            model=Model.NOVA_MICRO,
+            method=TrainingMethod.SFT_FULL,
+            infra=infra,
+            training_data_s3_path="s3://bucket/data",
+            data_mixing_enabled=True,
+        )
+        self.assertIsNotNone(trainer.data_mixing)
+
+    @patch(
+        "amzn_nova_forge.trainer.forge_trainer.set_output_s3_path",
+        return_value=FIXED_OUTPUT_PATH,
+    )
+    @patch("boto3.session.Session")
+    def test_data_mixing_smtj_serverless_unsupported_method_raises(
+        self, mock_session, _mock_output
+    ):
+        """SMTJServerless + unsupported method (RFT_LORA) should raise."""
+        type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
+        infra = self._make_serverless_infra()
+
+        with self.assertRaises(ValueError) as ctx:
+            ForgeTrainer(
+                model=Model.NOVA_MICRO,
+                method=TrainingMethod.RFT_LORA,
+                infra=infra,
+                training_data_s3_path="s3://bucket/data",
+                data_mixing_enabled=True,
+            )
+        self.assertIn("Data mixing is only supported", str(ctx.exception))
+        self.assertIn("SMTJServerless", str(ctx.exception))
+
+    @patch("amzn_nova_forge.trainer.forge_trainer.load_recipe_templates")
+    @patch(
+        "amzn_nova_forge.trainer.forge_trainer.set_output_s3_path",
+        return_value=FIXED_OUTPUT_PATH,
+    )
+    @patch("boto3.session.Session")
+    def test_data_mixing_config_in_job_config_params_for_serverless(
+        self, mock_session, _mock_output, mock_load_templates
+    ):
+        """data_mixing_config must be passed in JobConfig to infra.execute() for SMTJServerless."""
+        type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
+        mock_load_templates.return_value = ({}, {}, None, "image:latest")
+        infra = self._make_serverless_infra()
+        infra.execute.return_value = "serverless-job-id"
+
+        trainer = ForgeTrainer(
+            model=Model.NOVA_MICRO,
+            method=TrainingMethod.SFT_LORA,
+            infra=infra,
+            training_data_s3_path="s3://bucket/data",
+            data_mixing_enabled=True,
+            config=ForgeConfig(output_s3_path=FIXED_OUTPUT_PATH),
+        )
+        trainer.data_mixing.set_config({"customer_data_percent": 50, "nova_code_percent": 100})
+
+        with (
+            patch("amzn_nova_forge.trainer.forge_trainer.RecipeBuilder") as mock_rb_cls,
+            patch("amzn_nova_forge.trainer.forge_trainer.load_existing_result", return_value=None),
+            patch("amzn_nova_forge.trainer.forge_trainer.get_model_artifacts") as mock_gma,
+            patch("boto3.client"),
+        ):
+            mock_rb = mock_rb_cls.return_value
+            mock_rb.build_and_validate.return_value = (
+                "/tmp/recipe.yaml",
+                FIXED_OUTPUT_PATH,
+                "s3://bucket/data",
+                "image:latest",
+            )
+            mock_gma.return_value = MagicMock()
+            trainer.train(job_name="test-datamix-job")
+
+        infra.execute.assert_called_once()
+        job_config = infra.execute.call_args.kwargs["job_config"]
+        self.assertEqual(
+            job_config.data_mixing_config,
+            {"customer_data_percent": 50, "nova_code_percent": 100},
+        )
+
+    @patch("amzn_nova_forge.trainer.forge_trainer.load_recipe_templates")
+    @patch(
+        "amzn_nova_forge.trainer.forge_trainer.set_output_s3_path",
+        return_value=FIXED_OUTPUT_PATH,
+    )
+    @patch("boto3.session.Session")
+    def test_data_mixing_not_set_for_smhp(self, mock_session, _mock_output, mock_load_templates):
+        """For SMHP, data_mixing_config must NOT be passed in JobConfig to infra.execute()."""
+        type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
+        mock_load_templates.return_value = ({}, {}, None, "image:latest")
+        infra = _make_smhp_infra()
+        infra.execute.return_value = "smhp-job-id"
+
+        trainer = ForgeTrainer(
+            model=Model.NOVA_MICRO,
+            method=TrainingMethod.SFT_LORA,
+            infra=infra,
+            training_data_s3_path="s3://bucket/data",
+            data_mixing_enabled=True,
+            config=ForgeConfig(output_s3_path=FIXED_OUTPUT_PATH),
+        )
+        trainer.data_mixing.set_config({"customer_data_percent": 50, "nova_code_percent": 100})
+
+        with (
+            patch("amzn_nova_forge.trainer.forge_trainer.RecipeBuilder") as mock_rb_cls,
+            patch("amzn_nova_forge.trainer.forge_trainer.load_existing_result", return_value=None),
+            patch("amzn_nova_forge.trainer.forge_trainer.get_model_artifacts") as mock_gma,
+        ):
+            mock_rb = mock_rb_cls.return_value
+            mock_rb.build_and_validate.return_value = (
+                "/tmp/recipe.yaml",
+                FIXED_OUTPUT_PATH,
+                "s3://bucket/data",
+                "image:latest",
+            )
+            mock_gma.return_value = MagicMock()
+            trainer.train(job_name="test-datamix-smhp-job")
+
+        infra.execute.assert_called_once()
+        job_config = infra.execute.call_args.kwargs["job_config"]
+        self.assertIsNone(job_config.data_mixing_config)
+
+
+class TestForgeTrainerValCheckInterval(unittest.TestCase):
+    """Tests for val_check_interval in ForgeTrainer."""
+
+    def _make_trainer(self, **kwargs):
+        infra = _make_smtj_infra()
+        defaults = dict(
+            model=Model.NOVA_MICRO,
+            method=TrainingMethod.SFT_LORA,
+            infra=infra,
+            training_data_s3_path="s3://bucket/data",
+        )
+        defaults.update(kwargs)
+        with (
+            patch(
+                "amzn_nova_forge.trainer.forge_trainer.set_output_s3_path",
+                return_value=FIXED_OUTPUT_PATH,
+            ),
+            patch("boto3.session.Session") as mock_session,
+        ):
+            type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
+            return ForgeTrainer(**defaults)
+
+    @patch(
+        "amzn_nova_forge.trainer.forge_trainer.set_output_s3_path",
+        return_value=FIXED_OUTPUT_PATH,
+    )
+    @patch("boto3.session.Session")
+    def test_val_check_interval_valid(self, mock_session, _mock_output):
+        type(mock_session.return_value).region_name = PropertyMock(return_value="us-east-1")
+        trainer = ForgeTrainer(
+            model=Model.NOVA_MICRO,
+            method=TrainingMethod.SFT_LORA,
+            infra=_make_smtj_infra(),
+            training_data_s3_path="s3://bucket/data",
+            holdout_data_s3_path="s3://bucket/val",
+            val_check_interval=500,
+        )
+        self.assertEqual(trainer.val_check_interval, 500)
+
+    def test_val_check_interval_zero_raises(self):
+        with self.assertRaises(ValueError):
+            self._make_trainer(val_check_interval=0)
+
+    def test_val_check_interval_negative_raises(self):
+        with self.assertRaises(ValueError):
+            self._make_trainer(val_check_interval=-1)
+
+    def test_val_check_interval_float_raises(self):
+        with self.assertRaises((ValueError, TypeError)):
+            self._make_trainer(val_check_interval=5.0)
+
+    def test_val_check_interval_without_validation_data_warns(self):
+        with patch("amzn_nova_forge.trainer.forge_trainer.logger") as mock_logger:
+            self._make_trainer(val_check_interval=500, holdout_data_s3_path=None)
+            mock_logger.warning.assert_called_once()
+            self.assertIn(
+                "val_check_interval",
+                mock_logger.warning.call_args[0][0],
+            )
+
+    @patch("amzn_nova_forge.trainer.forge_trainer.get_model_artifacts")
+    @patch("amzn_nova_forge.trainer.forge_trainer.RecipeBuilder")
+    def test_val_check_interval_threads_to_job_config(self, MockRecipeBuilder, mock_get_artifacts):
+        mock_builder = MockRecipeBuilder.return_value
+        mock_builder.build_and_validate.return_value = (
+            "/tmp/recipe.yaml",
+            "s3://bucket/output",
+            "s3://bucket/data",
+            "image:latest",
+        )
+        infra = _make_smtj_infra()
+        infra.execute.return_value = "job-123"
+        mock_get_artifacts.return_value = ModelArtifacts(
+            checkpoint_s3_path="s3://bucket/checkpoint",
+            output_s3_path="s3://bucket/output",
+        )
+
+        with patch("boto3.client"):
+            trainer = self._make_trainer(
+                infra=infra,
+                val_check_interval=500,
+                holdout_data_s3_path="s3://bucket/val",
+            )
+            trainer.train(job_name="my-job")
+
+        call_args = infra.execute.call_args
+        job_config = call_args.kwargs["job_config"]
+        self.assertEqual(job_config.trainer_config_hyperparameters, {"val_check_interval": "500"})
+
+    @patch("amzn_nova_forge.trainer.forge_trainer.get_model_artifacts")
+    @patch("amzn_nova_forge.trainer.forge_trainer.RecipeBuilder")
+    def test_val_check_interval_none_no_hyperparameters(
+        self, MockRecipeBuilder, mock_get_artifacts
+    ):
+        mock_builder = MockRecipeBuilder.return_value
+        mock_builder.build_and_validate.return_value = (
+            "/tmp/recipe.yaml",
+            "s3://bucket/output",
+            "s3://bucket/data",
+            "image:latest",
+        )
+        infra = _make_smtj_infra()
+        infra.execute.return_value = "job-123"
+        mock_get_artifacts.return_value = ModelArtifacts(
+            checkpoint_s3_path="s3://bucket/checkpoint",
+            output_s3_path="s3://bucket/output",
+        )
+
+        with patch("boto3.client"):
+            trainer = self._make_trainer(infra=infra)
+            trainer.train(job_name="my-job")
+
+        call_args = infra.execute.call_args
+        job_config = call_args.kwargs["job_config"]
+        self.assertIsNone(job_config.trainer_config_hyperparameters)
 
 
 if __name__ == "__main__":

@@ -77,6 +77,7 @@ from .util.reward_verifier import (
 from .validation.endpoint_validator import SageMakerEndpointEnvironment
 
 _LAZY_IMPORTS = {
+    "CloudWatchDatasetLoader": ".dataset.cloudwatch_dataset_loader",
     "DefaultTextFilterOperation": ".dataset.operations.default_text_filter_operation",
     "ExactDedupFilterOperation": ".dataset.operations.exact_dedup_filter_operation",
     "FuzzyDedupFilterOperation": ".dataset.operations.fuzzy_dedup_filter_operation",
@@ -98,6 +99,7 @@ def __getattr__(name: str):
 
 __all__ = [
     "ArrowDatasetLoader",
+    "CloudWatchDatasetLoader",
     "CSVDatasetLoader",
     "HuggingFaceDatasetLoader",
     "JSONDatasetLoader",

@@ -82,6 +82,7 @@ class ForgeTrainer:
         model_s3_path: Optional[str] = None,
         data_mixing_enabled: bool = False,
         holdout_data_s3_path: Optional[str] = None,
+        val_check_interval: Optional[int] = None,
         config: Optional[ForgeConfig] = None,
         region: Optional[str] = None,
         is_multimodal: Optional[bool] = None,
@@ -95,7 +96,25 @@ class ForgeTrainer:
         self.model_s3_path = model_s3_path
         self.holdout_data_s3_path = holdout_data_s3_path
         self.hub_content_version = hub_content_version
+        if hub_content_version and hasattr(infra, "hub_content_version"):
+            infra.hub_content_version = hub_content_version
         self._enable_batch_sample_tracing = enable_batch_sample_tracing
+        self.val_check_interval: Optional[int] = None
+        if val_check_interval is not None:
+            if (
+                isinstance(val_check_interval, bool)
+                or not isinstance(val_check_interval, int)
+                or val_check_interval < 1
+            ):
+                raise ValueError(
+                    f"val_check_interval must be a positive integer, got: {val_check_interval}"
+                )
+            self.val_check_interval = val_check_interval
+        if val_check_interval is not None and holdout_data_s3_path is None:
+            logger.warning(
+                "val_check_interval is set but no holdout_data_s3_path provided. val_check_interval will have no effect without validation data."
+            )
+
         self._config = config or ForgeConfig()
 
         self.region = region or boto3.session.Session().region_name or DEFAULT_REGION
@@ -148,13 +167,17 @@ class ForgeTrainer:
         else:
             self._is_multimodal = False
 
-        # Data mixing setup (SMHP only, CPT/SFT methods)
+        # Data mixing setup (SMHP and SMTJServerless, CPT/SFT methods)
         self.data_mixing: Optional[DataMixing] = None
         if data_mixing_enabled:
-            if self._platform != Platform.SMHP or method not in SUPPORTED_DATAMIXING_METHODS:
+            _datamix_platforms = (Platform.SMHP, Platform.SMTJServerless)
+            if (
+                self._platform not in _datamix_platforms
+                or method not in SUPPORTED_DATAMIXING_METHODS
+            ):
                 raise ValueError(
                     f"Data mixing is only supported for {SUPPORTED_DATAMIXING_METHODS} "
-                    "training methods on SageMaker HyperPod."
+                    "training methods on SageMaker HyperPod or SMTJServerless."
                 )
             self.data_mixing = DataMixing()
             (
@@ -196,6 +219,7 @@ class ForgeTrainer:
             "model": self.model.value,
             "platform": self._platform,
             "dryRun": kwargs.get("dry_run", False),
+            "hasValidationData": self.holdout_data_s3_path is not None,
         },
     )
     def train(
@@ -253,6 +277,7 @@ class ForgeTrainer:
             model_path=self.model_s3_path,
             rft_lambda_arn=rft_lambda_arn,
             validation_data_s3_path=self.holdout_data_s3_path,
+            val_check_interval=self.val_check_interval,
             data_mixing_instance=self.data_mixing,
             image_uri_override=self._config.image_uri,
             is_multimodal=self._is_multimodal,
@@ -293,8 +318,17 @@ class ForgeTrainer:
             else "S3Prefix",
         }
 
+        hp: Dict[str, str] = {}
+        if self.val_check_interval is not None:
+            hp["val_check_interval"] = str(self.val_check_interval)
+        if hp:
+            job_config_params["trainer_config_hyperparameters"] = hp
+
         if self._platform in (Platform.BEDROCK, Platform.SMTJServerless):
             job_config_params["method"] = self.method
+
+        if self._platform == Platform.SMTJServerless and self.data_mixing:
+            job_config_params["data_mixing_config"] = self.data_mixing.get_config()
 
         job_id = self.infra.execute(job_config=JobConfig(**job_config_params))
 
@@ -309,7 +343,9 @@ class ForgeTrainer:
                     job_name=job_id,
                     infra=self.infra,
                     output_s3_path=resolved_output_s3_path,
+                    region=self.region,
                 ),
+                region=self.region,
             )
         elif self._platform is Platform.BEDROCK:
             training_result = BedrockTrainingResult(
@@ -321,6 +357,7 @@ class ForgeTrainer:
                     checkpoint_s3_path=None,
                     output_s3_path=resolved_output_s3_path,
                 ),
+                region=self.region,
             )
         else:
             cluster_name = cast(SMHPRuntimeManager, self.infra).cluster_name
@@ -334,9 +371,11 @@ class ForgeTrainer:
                     job_name=unique_job_name,
                     infra=self.infra,
                     output_s3_path=resolved_output_s3_path,
+                    region=self.region,
                 ),
                 cluster_name=cluster_name,
                 namespace=namespace,
+                region=self.region,
             )
 
         logger.info(f"Started job '{training_result.job_id}'.")
@@ -388,6 +427,7 @@ class ForgeTrainer:
             job_id=resolved_job_id,
             platform=self._platform,
             started_time=int(resolved_started.timestamp() * 1000),
+            region=self.region,
             **kwargs,
         )
         monitor.show_logs(limit=limit, start_from_head=start_from_head, end_time=end_time)

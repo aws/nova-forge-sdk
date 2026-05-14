@@ -50,11 +50,13 @@ class EvaluationResult(BaseJobResult, ABC):
         eval_task: EvaluationTask,
         eval_output_path: str,
         s3_client=None,
+        region: Optional[str] = None,
     ):
         self.eval_task = eval_task
         self.eval_output_path = eval_output_path
         self._cached_results_dir: Optional[str] = None
-        self._s3_client = s3_client or boto3.client("s3")
+        self._region = region
+        self._s3_client = s3_client or boto3.client("s3", region_name=region)
         super().__init__(job_id, started_time)
 
     def _download_eval_results(self) -> str:
@@ -205,9 +207,12 @@ class SMTJEvaluationResult(EvaluationResult):
         eval_output_path: str,
         sagemaker_client=None,
         s3_client=None,
+        region: Optional[str] = None,
     ):
-        self._sagemaker_client = sagemaker_client or boto3.client("sagemaker")
-        super().__init__(job_id, started_time, eval_task, eval_output_path, s3_client)
+        self._sagemaker_client = sagemaker_client or boto3.client("sagemaker", region_name=region)
+        super().__init__(
+            job_id, started_time, eval_task, eval_output_path, s3_client, region=region
+        )
 
     def _create_status_manager(self) -> JobStatusManager:
         return SMTJStatusManager(self._sagemaker_client)
@@ -243,10 +248,11 @@ class SMHPEvaluationResult(EvaluationResult):
         eval_output_path: str,
         cluster_name: str,
         namespace: str = "kubeflow",
+        region: Optional[str] = None,
     ):
         self.cluster_name = cluster_name
         self.namespace = namespace
-        super().__init__(job_id, started_time, eval_task, eval_output_path)
+        super().__init__(job_id, started_time, eval_task, eval_output_path, region=region)
 
     def _create_status_manager(self) -> JobStatusManager:
         return SMHPStatusManager(self.cluster_name, self.namespace)
@@ -282,11 +288,13 @@ class BedrockEvaluationResult(EvaluationResult):
         started_time: datetime,
         eval_task: EvaluationTask,
         eval_output_path: str,
+        region: Optional[str] = None,
     ):
-        super().__init__(job_id, started_time, eval_task, eval_output_path)
+        self._region = region
+        super().__init__(job_id, started_time, eval_task, eval_output_path, region=region)
 
     def _create_status_manager(self) -> JobStatusManager:
-        return BedrockStatusManager()
+        return BedrockStatusManager(region=self._region)
 
     def _to_dict(self):
         return {

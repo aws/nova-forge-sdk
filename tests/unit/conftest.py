@@ -53,3 +53,18 @@ def _mock_telemetry(request):
         return
     with patch("amzn_nova_forge.telemetry.telemetry_logging._send_telemetry_request"):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _mock_dataprep_bucket():
+    """Prevent OutputPathResolver from making real STS/S3 calls when
+    rebasing non-S3 paths to the data-prep bucket during tests.
+    """
+    with (
+        patch(
+            "amzn_nova_forge.dataset.data_state.get_dataprep_bucket_name",
+            return_value="sagemaker-forge-dataprep-123456789012-us-east-1",
+        ),
+        patch("amzn_nova_forge.dataset.data_state.ensure_bucket_exists"),
+    ):
+        yield

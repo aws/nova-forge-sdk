@@ -101,6 +101,7 @@ def create_bedrock_execution_role(
     role_name: str,
     bedrock_resource: str = "*",
     s3_resource: str = "*",
+    region: Optional[str] = None,
 ) -> Dict:
     """
     Creates a new IAM Role that allows for Bedrock model creation and deployment.
@@ -120,7 +121,7 @@ def create_bedrock_execution_role(
     Raises:
         Exception: If it fails at creating the new role.
     """
-    sts_client = boto3.client("sts")
+    sts_client = boto3.client("sts", region_name=region)
 
     with resources.files("amzn_nova_forge.iam").joinpath("bedrock_policies.json").open() as f:
         policies = json.load(f)
@@ -200,6 +201,7 @@ def create_sagemaker_execution_role(
     cloudwatch_metric_condition: Optional[Dict[str, Any]] = None,
     cloudwatch_logstream_resource: str = "*",
     cloudwatch_loggroup_resource: str = "*",
+    region: Optional[str] = None,
 ) -> Dict:
     """
     Creates a new IAM Role that allows for SageMaker model creation and deployment.
@@ -222,7 +224,7 @@ def create_sagemaker_execution_role(
     Raises:
         Exception: If it fails at creating the new role.
     """
-    sts_client = boto3.client("sts")
+    sts_client = boto3.client("sts", region_name=region)
 
     with resources.files("amzn_nova_forge.iam").joinpath("sagemaker_policies.json").open() as f:
         policies = json.load(f)
@@ -327,6 +329,7 @@ def create_smtj_dataprep_execution_role(
     role_name: str,
     s3_resource: str = "*",
     ecr_resource: str = "*",
+    region: Optional[str] = None,
 ) -> Dict:
     """Creates a new IAM Role for SageMaker Training Job data preparation pipelines.
 
@@ -354,7 +357,7 @@ def create_smtj_dataprep_execution_role(
     Raises:
         Exception: If it fails at creating the new role.
     """
-    sts_client = boto3.client("sts")
+    sts_client = boto3.client("sts", region_name=region)
     with resources.files("amzn_nova_forge.iam").joinpath("smtj_dataprep_policies.json").open() as f:
         policies = json.load(f)
 
@@ -435,6 +438,7 @@ def create_sagemaker_invoke_role(
     s3_resource: str = "*",
     glue_job_resource: str = "*",
     trust_principal: Optional[Dict[str, Any]] = None,
+    region: Optional[str] = None,
 ) -> Dict:
     """
     Creates a new IAM Role for AWS Glue data preparation jobs.
@@ -463,7 +467,7 @@ def create_sagemaker_invoke_role(
     Raises:
         Exception: If it fails at creating the new role.
     """
-    sts_client = boto3.client("sts")
+    sts_client = boto3.client("sts", region_name=region)
     with resources.files("amzn_nova_forge.iam").joinpath("glue_policies.json").open() as f:
         policies = json.load(f)
 
@@ -545,6 +549,7 @@ def create_bedrock_batch_inference_execution_role(
     iam_client,
     role_name: str,
     s3_resource: str = "*",
+    region: Optional[str] = None,
 ) -> Dict:
     """
     Creates a new IAM Role for Bedrock batch inference operations.
@@ -562,7 +567,7 @@ def create_bedrock_batch_inference_execution_role(
     Raises:
         Exception: If it fails at creating the new role.
     """
-    sts_client = boto3.client("sts")
+    sts_client = boto3.client("sts", region_name=region)
 
     with (
         resources.files("amzn_nova_forge.iam")

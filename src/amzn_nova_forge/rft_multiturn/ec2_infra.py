@@ -381,7 +381,7 @@ class EC2RFTInfrastructure(CommonInfraCommands, BaseRFTInfrastructure):
 
         # Get the instance profile and ensure it has RFT permissions
         iam_client = boto3.client("iam", region_name=self.region)
-        sts_client = boto3.client("sts")
+        sts_client = boto3.client("sts", region_name=self.region)
         account_id = sts_client.get_caller_identity()["Account"]
 
         instance_profile_arn = instance["IamInstanceProfile"]["Arn"]

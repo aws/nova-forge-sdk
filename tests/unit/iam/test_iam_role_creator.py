@@ -917,5 +917,31 @@ class TestCreateBedrockBatchInferenceRole(unittest.TestCase):
         )
 
 
+class TestRegionPropagation(unittest.TestCase):
+    """Tests that the region parameter is propagated to the STS client."""
+
+    @patch("boto3.client")
+    def test_create_bedrock_execution_role_propagates_region(self, mock_boto_client):
+        mock_sts = MagicMock()
+        mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
+        mock_boto_client.return_value = mock_sts
+
+        mock_iam = MagicMock()
+        mock_iam.exceptions.NoSuchEntityException = type("NoSuchEntityException", (Exception,), {})
+        mock_iam.exceptions.EntityAlreadyExistsException = type(
+            "EntityAlreadyExistsException", (Exception,), {}
+        )
+        mock_iam.get_role.side_effect = mock_iam.exceptions.NoSuchEntityException("not found")
+        mock_iam.create_policy.return_value = {
+            "Policy": {"Arn": "arn:aws:iam::123456789012:policy/foo"}
+        }
+
+        create_bedrock_execution_role(
+            iam_client=mock_iam, role_name="test-role", region="eu-west-1"
+        )
+
+        mock_boto_client.assert_called_once_with("sts", region_name="eu-west-1")
+
+
 if __name__ == "__main__":
     unittest.main()

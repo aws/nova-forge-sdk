@@ -98,7 +98,7 @@ class TestLanguageDetectionFilterOperationExecute(unittest.TestCase):
                 languages=["en"],
             )
 
-        mock_ensure.assert_called_once_with()
+        mock_ensure.assert_called_once_with(region=None)
         job_config = manager.execute.call_args[0][0]
         self.assertEqual(
             job_config.extra_args["model_path"],

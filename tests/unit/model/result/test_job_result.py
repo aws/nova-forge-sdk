@@ -121,7 +121,7 @@ class TestSMTJStatusManager(unittest.TestCase):
     @patch("boto3.client")
     def test_init_without_client(self, mock_boto3_client):
         manager = SMTJStatusManager()
-        mock_boto3_client.assert_called_once_with("sagemaker")
+        mock_boto3_client.assert_called_once_with("sagemaker", region_name=None)
 
     def test_get_job_status_in_progress(self):
         self.mock_sagemaker_client.describe_training_job.return_value = {
@@ -241,18 +241,32 @@ class TestSMHPStatusManager(unittest.TestCase):
         )
 
     @patch("subprocess.run")
-    @patch("amzn_nova_forge.core.result.job_result.logger")
-    def test_connect_cluster_error(self, mock_logger, mock_run):
+    def test_connect_cluster_stderr_benign(self, mock_run):
         mock_result = Mock()
-        mock_result.stderr = "Connection failed"
+        mock_result.stderr = "NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+"
         mock_run.return_value = mock_result
 
-        with self.assertRaises(Exception):
-            self.manager._connect_cluster()
+        # Should NOT raise — benign stderr is filtered by _check_hyperpod_stderr
+        self.manager._connect_cluster()
 
-        mock_logger.error.assert_called_once_with(
-            "Unable to connect to HyperPod cluster test-cluster: Connection failed"
+    @patch("subprocess.run")
+    def test_connect_cluster_stderr_real_error(self, mock_run):
+        mock_result = Mock()
+        mock_result.stderr = "Cluster with name not found"
+        mock_run.return_value = mock_result
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self.manager._connect_cluster()
+        self.assertIn("Cluster with name not found", str(ctx.exception))
+
+    @patch("subprocess.run")
+    def test_connect_cluster_subprocess_error(self, mock_run):
+        mock_run.side_effect = subprocess.CalledProcessError(
+            1, "hyperpod", stderr="Error: cluster not found"
         )
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.manager._connect_cluster()
 
     @patch("subprocess.run")
     def test_get_job_status_succeeded(self, mock_run):

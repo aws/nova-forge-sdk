@@ -92,5 +92,78 @@ class TestWaitForModelReady(unittest.TestCase):
             wait_for_model_ready(client, self.MODEL_ARN, timeout=10)
 
 
+class TestRegionPropagation(unittest.TestCase):
+    """Verify that region is passed to boto3.client for bedrock utility functions."""
+
+    REGION = "eu-west-1"
+
+    @patch("amzn_nova_forge.util.bedrock.boto3.client")
+    def test_check_deployment_status_passes_region(self, mock_boto_client):
+        from amzn_nova_forge.core.enums import DeployPlatform
+        from amzn_nova_forge.util.bedrock import check_deployment_status
+
+        mock_client = MagicMock()
+        mock_client.get_custom_model_deployment.return_value = {"status": "Active"}
+        mock_boto_client.return_value = mock_client
+
+        check_deployment_status(
+            "arn:aws:bedrock:eu-west-1:123456789012:deployment/test",
+            DeployPlatform.BEDROCK_OD,
+            region=self.REGION,
+        )
+
+        mock_boto_client.assert_called_once_with("bedrock", region_name=self.REGION)
+
+    @patch("amzn_nova_forge.util.bedrock.boto3.client")
+    def test_check_existing_deployment_passes_region(self, mock_boto_client):
+        from amzn_nova_forge.core.enums import DeployPlatform
+        from amzn_nova_forge.util.bedrock import check_existing_deployment
+
+        mock_client = MagicMock()
+        mock_client.list_custom_model_deployments.return_value = {"modelDeploymentSummaries": []}
+        mock_boto_client.return_value = mock_client
+
+        check_existing_deployment("my-endpoint", DeployPlatform.BEDROCK_OD, region=self.REGION)
+
+        mock_boto_client.assert_called_once_with("bedrock", region_name=self.REGION)
+
+    @patch("amzn_nova_forge.util.bedrock.time.sleep")
+    @patch("amzn_nova_forge.util.bedrock.boto3.client")
+    def test_delete_existing_deployment_passes_region(self, mock_boto_client, mock_sleep):
+        from amzn_nova_forge.core.enums import DeployPlatform
+        from amzn_nova_forge.util.bedrock import delete_existing_deployment
+
+        mock_client = MagicMock()
+        mock_client.delete_custom_model_deployment.return_value = {}
+        mock_client.get_custom_model_deployment.return_value = {"status": "DELETED"}
+        mock_boto_client.return_value = mock_client
+
+        delete_existing_deployment(
+            "arn:aws:bedrock:eu-west-1:123456789012:deployment/test",
+            DeployPlatform.BEDROCK_OD,
+            "my-endpoint",
+            region=self.REGION,
+        )
+
+        mock_boto_client.assert_called_once_with("bedrock", region_name=self.REGION)
+
+    @patch("amzn_nova_forge.util.bedrock.boto3.client")
+    def test_update_provisioned_throughput_model_passes_region(self, mock_boto_client):
+        from amzn_nova_forge.util.bedrock import update_provisioned_throughput_model
+
+        mock_client = MagicMock()
+        mock_client.update_provisioned_model_throughput.return_value = {}
+        mock_boto_client.return_value = mock_client
+
+        update_provisioned_throughput_model(
+            "arn:aws:bedrock:eu-west-1:123456789012:pt/test",
+            "arn:aws:bedrock:eu-west-1:123456789012:model/new",
+            "my-endpoint",
+            region=self.REGION,
+        )
+
+        mock_boto_client.assert_called_once_with("bedrock", region_name=self.REGION)
+
+
 if __name__ == "__main__":
     unittest.main()

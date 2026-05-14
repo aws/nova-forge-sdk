@@ -29,6 +29,7 @@ from amzn_nova_forge.core.result.job_result import (
     SMTJStatusManager,
 )
 from amzn_nova_forge.core.result.training_result import (
+    BedrockTrainingResult,
     SMHPTrainingResult,
     SMTJTrainingResult,
 )
@@ -60,7 +61,7 @@ class TestSMTJTrainResult(unittest.TestCase):
             self.assertEqual(result.platform, Platform.SMTJ)
             self.assertIsInstance(result.status_manager, SMTJStatusManager)
             self.assertEqual(result.model_type, Model.NOVA_MICRO)
-            mock_boto3.assert_called_once_with("sagemaker")
+            mock_boto3.assert_called_once_with("sagemaker", region_name=None)
 
     def test_init_with_custom_client(self):
         """Test initialization with custom SageMaker client"""
@@ -399,6 +400,42 @@ class TestSMHPTrainResult(unittest.TestCase):
             self.assertEqual(result.method, method)
             result_dict = result._to_dict()
             self.assertEqual(result_dict["method"], method.value)
+
+
+class TestRegionPropagation(unittest.TestCase):
+    def setUp(self):
+        self.model_artifacts = ModelArtifacts(
+            checkpoint_s3_path="s3://bucket/checkpoint/",
+            output_s3_path="s3://bucket/output/",
+        )
+
+    def test_smtj_training_result_passes_region(self):
+        """Test SMTJTrainingResult passes region to boto3 client"""
+        with patch("boto3.client") as mock_boto3:
+            SMTJTrainingResult(
+                job_id="test",
+                started_time=datetime(2024, 1, 1, 12, 0, 0),
+                method=TrainingMethod.SFT_LORA,
+                model_artifacts=self.model_artifacts,
+                model_type=Model.NOVA_MICRO,
+                sagemaker_client=None,
+                region="eu-west-1",
+            )
+            mock_boto3.assert_called_once_with("sagemaker", region_name="eu-west-1")
+
+    def test_bedrock_training_result_passes_region(self):
+        """Test BedrockTrainingResult passes region to boto3 client"""
+        with patch("boto3.client") as mock_boto3:
+            BedrockTrainingResult(
+                job_id="test",
+                started_time=datetime(2024, 1, 1, 12, 0, 0),
+                method=TrainingMethod.SFT_LORA,
+                model_artifacts=self.model_artifacts,
+                model_type=Model.NOVA_MICRO,
+                bedrock_client=None,
+                region="eu-west-1",
+            )
+            mock_boto3.assert_called_once_with("bedrock", region_name="eu-west-1")
 
 
 if __name__ == "__main__":

@@ -243,7 +243,7 @@ class RFTMultiturnInfrastructure:
         self.recipe_cache_dir = os.path.join(self.workspace_dir, ".nova_rft_recipes")
 
         # Initialize platform-specific infrastructure
-        sts_client = boto3.client("sts")
+        sts_client = boto3.client("sts", region_name=self.region)
         account_id = sts_client.get_caller_identity()["Account"]
 
         # Validate and set python_venv_name based on platform
@@ -968,7 +968,7 @@ class RFTMultiturnInfrastructure:
         response = cfn_client.describe_stacks(StackName=stack_name)
         outputs = response["Stacks"][0].get("Outputs", [])
 
-        sts_client = boto3.client("sts")
+        sts_client = boto3.client("sts", region_name=self.region)
         account_id = sts_client.get_caller_identity()["Account"]
         rollout_function_name = self._get_output(outputs, "RolloutFunctionName")
 

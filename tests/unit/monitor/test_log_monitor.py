@@ -21,7 +21,11 @@ from amzn_nova_forge.core.result.job_result import (
     SMHPStatusManager,
     SMTJStatusManager,
 )
-from amzn_nova_forge.monitor.log_monitor import CloudWatchLogMonitor
+from amzn_nova_forge.monitor.log_monitor import (
+    BedrockStrategy,
+    CloudWatchLogMonitor,
+    SMHPStrategy,
+)
 
 
 class TestCloudWatchLogMonitor(unittest.TestCase):
@@ -265,6 +269,7 @@ class TestCloudWatchLogMonitor(unittest.TestCase):
                 platform=Platform.SMTJ,
                 started_time=int(mock_job_result.started_time.timestamp() * 1000),
                 cloudwatch_logs_client=mock_client,
+                region=None,
             )
 
     def test_from_job_result_smhp(self):
@@ -292,6 +297,7 @@ class TestCloudWatchLogMonitor(unittest.TestCase):
                 cloudwatch_logs_client=mock_client,
                 cluster_name="test-cluster",
                 namespace="test-namespace",
+                region=None,
             )
 
     @patch("boto3.client")
@@ -410,7 +416,7 @@ class TestCloudWatchLogMonitor(unittest.TestCase):
             strategy = BedrockStrategy()
 
             # Verify boto3.client was called to create bedrock client
-            mock_boto_client.assert_called_once_with("bedrock")
+            mock_boto_client.assert_called_once_with("bedrock", region_name=None)
             self.assertEqual(strategy.bedrock_client, mock_client)
 
     def test_bedrock_strategy_uses_provided_client(self):
@@ -1028,6 +1034,36 @@ class TestCloudWatchLogMonitor(unittest.TestCase):
 
         with self.assertRaises(NotImplementedError):
             monitor.plot_metrics(TrainingMethod.SFT_FULL)
+
+
+class TestRegionPropagation(unittest.TestCase):
+    @patch("boto3.client")
+    def test_cloudwatch_log_monitor_passes_region_to_logs_client(self, mock_boto_client):
+        mock_client = Mock()
+        mock_client.describe_log_streams.return_value = {"logStreams": []}
+        mock_boto_client.return_value = mock_client
+        with patch.object(CloudWatchLogMonitor, "_create_job_status_manager", return_value=Mock()):
+            CloudWatchLogMonitor(
+                job_id="test",
+                platform=Platform.SMTJ,
+                region="eu-west-1",
+                cloudwatch_logs_client=None,
+            )
+        mock_boto_client.assert_any_call("logs", region_name="eu-west-1")
+
+    @patch("boto3.client")
+    def test_smhp_strategy_passes_region_to_sagemaker_client(self, mock_boto_client):
+        mock_boto_client.return_value = Mock()
+        SMHPStrategy(
+            cluster_name="test", namespace="default", region="eu-west-1", sagemaker_client=None
+        )
+        mock_boto_client.assert_called_once_with("sagemaker", region_name="eu-west-1")
+
+    @patch("boto3.client")
+    def test_bedrock_strategy_passes_region_to_bedrock_client(self, mock_boto_client):
+        mock_boto_client.return_value = Mock()
+        BedrockStrategy(region="eu-west-1", bedrock_client=None)
+        mock_boto_client.assert_called_once_with("bedrock", region_name="eu-west-1")
 
 
 if __name__ == "__main__":

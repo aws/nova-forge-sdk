@@ -75,7 +75,7 @@ class TestMLflowUtilities(unittest.TestCase):
 
         # Verify
         self.assertEqual(result, "arn:aws:sagemaker:us-east-1:123456789012:mlflow-app/app-XYZ789")
-        mock_client_func.assert_called_once_with("sagemaker")
+        mock_client_func.assert_called_once_with("sagemaker", region_name=None)
 
     @patch("boto3.client")
     def test_get_default_mlflow_tracking_uri_updating_status(self, mock_client_func):

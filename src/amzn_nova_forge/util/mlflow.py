@@ -46,10 +46,7 @@ def get_default_mlflow_tracking_uri(region_name: Optional[str] = None) -> Option
 
     try:
         # Create SageMaker client
-        if region_name:
-            sagemaker_client = boto3.client("sagemaker", region_name=region_name)
-        else:
-            sagemaker_client = boto3.client("sagemaker")
+        sagemaker_client = boto3.client("sagemaker", region_name=region_name)
 
         # Find if DefaultMLFlowApp exists
         try:
@@ -202,10 +199,7 @@ def validate_mlflow_arn_exists(
 
     try:
         # Create SageMaker client
-        if region_name:
-            sagemaker_client = boto3.client("sagemaker", region_name=region_name)
-        else:
-            sagemaker_client = boto3.client("sagemaker")
+        sagemaker_client = boto3.client("sagemaker", region_name=region_name)
 
         # Check if the MLflow resource exists
         try:

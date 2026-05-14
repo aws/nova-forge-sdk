@@ -54,7 +54,7 @@ import logging
 import os
 import tempfile
 import time
-from typing import Any, Dict, Tuple, Type
+from typing import Any, Dict, Optional, Tuple, Type
 
 import boto3
 import requests
@@ -210,8 +210,9 @@ class LanguageDetectionFilterOperation(NovaForgeFilterOperationBase):
                 "FastText confidence is a probability in [0, 1]."
             )
 
+        region = kwargs.get("region")
         if "model_path" not in kwargs:
-            kwargs["model_path"] = self._ensure_default_model()
+            kwargs["model_path"] = self._ensure_default_model(region=region)
 
         manager = self._resolve_runtime_manager(input_path, **kwargs)
 
@@ -279,7 +280,7 @@ class LanguageDetectionFilterOperation(NovaForgeFilterOperationBase):
         return result
 
     @staticmethod
-    def _ensure_default_model() -> str:
+    def _ensure_default_model(region: Optional[str] = None) -> str:
         """Return the S3 URI of the default FastText lid.176.bin model.
 
         Called only when the caller omits ``model_path``. The model is
@@ -298,7 +299,7 @@ class LanguageDetectionFilterOperation(NovaForgeFilterOperationBase):
         ensure_bucket_exists(bucket)
         s3_uri = f"s3://{bucket}/{_DEFAULT_MODEL_S3_KEY}"
 
-        s3 = boto3.client("s3")
+        s3 = boto3.client("s3", region_name=region)
         try:
             s3.head_object(Bucket=bucket, Key=_DEFAULT_MODEL_S3_KEY)
             logger.info("Using cached FastText lid model at %s", s3_uri)

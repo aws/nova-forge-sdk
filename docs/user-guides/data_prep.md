@@ -11,6 +11,7 @@ This guide walks through the data preparation workflow using the Nova Forge SDK'
 | Theme | Operator | Purpose | Supported Runtimes |
 |---|---|---|---|
 | Load | `loader.load(path)` | Ingest data from JSONL, JSON, CSV, Parquet, or Arrow (local or S3), or from HuggingFace Hub | Local |
+| Load | `loader.load(log_group, query, start_time, end_time)` | Execute a CloudWatch Logs Insights query and stream results | Local (queries CloudWatch) |
 | Filter | `loader.filter(method=FilterMethod.DEFAULT_TEXT_FILTER)` | Remove records with excessive URL content (web-scraped boilerplate) | SMTJ (default), AWS Glue (legacy) |
 | Filter | `loader.filter(method=FilterMethod.EXACT_DEDUP)` | Remove exact duplicate records by content hash | SMTJ (default), AWS Glue (legacy) |
 | Filter | `loader.filter(method=FilterMethod.FUZZY_DEDUP)` | Remove near-duplicates via MinHash LSH similarity | SMTJ (default), AWS Glue (legacy) |
@@ -26,7 +27,7 @@ This guide walks through the data preparation workflow using the Nova Forge SDK'
 
 ## Overview
 
-The SDK provides dataset loaders for different file formats (`JSONLDatasetLoader`, `JSONDatasetLoader`, `CSVDatasetLoader`, `ParquetDatasetLoader`, `ArrowDatasetLoader`) plus `HuggingFaceDatasetLoader` for streaming directly from HuggingFace Hub — all sharing the same chainable API. Operations are lazy — they queue up and execute when a terminal operation is called.
+The SDK provides dataset loaders for different file formats (`JSONLDatasetLoader`, `JSONDatasetLoader`, `CSVDatasetLoader`, `ParquetDatasetLoader`, `ArrowDatasetLoader`) plus `HuggingFaceDatasetLoader` for streaming directly from HuggingFace Hub and `CloudWatchDatasetLoader` for querying Amazon CloudWatch Logs — all sharing the same chainable API. Operations are lazy — they queue up and execute when a terminal operation is called.
 
 ```python
 from amzn_nova_forge import (
@@ -284,12 +285,23 @@ loader.save("s3://my-bucket/data/train.jsonl")
 
 The in-memory terminal operations (`save()`, `show()`, `split()`, `validate()`, `transform()`, `filter(INVALID_RECORDS)`) consume the HuggingFace generator directly — no extra configuration needed.
 
-Distributed filter operations (`DEFAULT_TEXT_FILTER`, `EXACT_DEDUP`, `FUZZY_DEDUP`, `LANGUAGE_DETECTION`) need an S3 location to land intermediate and final outputs. Because HuggingFace data isn't on S3, you must pass an explicit `output_path` to each distributed filter step — same as when the input is a local file.
+Distributed filter operations (`DEFAULT_TEXT_FILTER`, `EXACT_DEDUP`, `FUZZY_DEDUP`, `LANGUAGE_DETECTION`) need an S3 location to land intermediate and final outputs. When the input is not on S3 (local files or HuggingFace), the SDK auto-derives output paths under the default data-prep bucket (`sagemaker-forge-dataprep-{account}-{region}`). You can also pass an explicit `output_path` to override this.
 
 ```python
 loader = HuggingFaceDatasetLoader()
 loader.load("foo/bar", split="train_sft")
 
+# output_path is optional — auto-derived under the data-prep bucket
+loader.filter(
+    method=FilterMethod.EXACT_DEDUP,
+    text_field="text",
+)
+loader.save("s3://my-bucket/data/train_dedup.jsonl")
+```
+
+To override the auto-derived path, pass `output_path` explicitly:
+
+```python
 loader.filter(
     method=FilterMethod.EXACT_DEDUP,
     text_field="text",
@@ -297,6 +309,126 @@ loader.filter(
 )
 loader.save("s3://my-bucket/data/train_dedup.jsonl")
 ```
+
+---
+
+## Loading from CloudWatch Logs
+
+`CloudWatchDatasetLoader` executes CloudWatch Logs Insights queries and streams the results into the Nova Forge pipeline. The loader is lazy — `load()` stores configuration only, and the query executes when a terminal operation (`save()`, `show()`, etc.) triggers iteration.
+
+Uses the default AWS credential chain. Required IAM permissions: `logs:StartQuery` and `logs:GetQueryResults`.
+
+### `load(log_group, query, start_time, end_time)`
+
+- `log_group` — CloudWatch log group name (e.g. `"/my-app/api-logs"`).
+- `query` — A [CloudWatch Logs Insights query](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL_QuerySyntax.html). The query determines which fields appear as keys in the yielded dictionaries. See the examples below for how to write queries for different log formats.
+- `start_time` — Query start time (inclusive), as a `datetime` object.
+- `end_time` — Query end time (exclusive), as a `datetime` object.
+
+### Writing Insights queries
+
+The `query` parameter accepts [CloudWatch Logs Insights syntax](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/CWL_QuerySyntax.html). The two most common patterns for training data extraction:
+
+**`fields` — for structured JSON logs.** If your application writes JSON events, use `fields` to select top-level or nested keys directly. CloudWatch auto-parses JSON, so dot-notation works for nested objects.
+
+**`parse` — for semi-structured text logs.** If your logs are plain text with a known pattern, use `parse` with a regex to extract named capture groups as fields.
+
+### Example 1: JSON logs
+
+Suppose your log group `/my-app/api-logs` contains JSON events like:
+
+```json
+{"endpoint": "/chat", "request": "What is AI?", "response": "AI is artificial intelligence."}
+```
+
+Use `fields` to select the keys you need, and `filter` to narrow results:
+
+```python
+from datetime import datetime, timezone, timedelta
+from amzn_nova_forge import CloudWatchDatasetLoader, Model, TrainingMethod
+from amzn_nova_forge.dataset.operations import TransformMethod, ValidateMethod
+
+loader = CloudWatchDatasetLoader()
+loader.load(
+    log_group="/my-app/api-logs",
+    query="fields request, response | filter endpoint = '/chat'",
+    start_time=datetime(2025, 1, 1, tzinfo=timezone.utc),
+    end_time=datetime(2025, 1, 8, tzinfo=timezone.utc),
+)
+# Yields: {"request": "What is AI?", "response": "AI is artificial intelligence."}
+
+loader.transform(
+    method=TransformMethod.SCHEMA,
+    training_method=TrainingMethod.SFT_LORA,
+    model=Model.NOVA_LITE_2,
+    column_mappings={"question": "request", "answer": "response"},
+)
+loader.validate(
+    method=ValidateMethod.INVALID_RECORDS,
+    training_method=TrainingMethod.SFT_LORA,
+    model=Model.NOVA_LITE_2,
+)
+loader.save("s3://my-bucket/data/chat_sft.jsonl")
+```
+
+For nested JSON objects, use dot-notation to reach into deeper fields. Array elements are accessed by index. Use `as` to alias the extracted path. For example, given logs like:
+
+```json
+{"input": {"messages": [{"role": "user", "content": "What is AI?"}]}, "output": {"content": "AI is artificial intelligence."}}
+```
+
+You can extract the nested values with:
+
+```
+fields input.messages.0.content as question, output.content as answer
+```
+
+### Example 2: Semi-structured text logs
+
+Suppose your log group `/my-app/inference-logs` contains text lines like:
+
+```
+[INFO] endpoint=/api/chat input="Summarize this article" output="This article discusses..."
+```
+
+Use `parse` with a regex to extract named fields:
+
+```python
+from datetime import datetime, timezone, timedelta
+from amzn_nova_forge import CloudWatchDatasetLoader, Model, TrainingMethod
+from amzn_nova_forge.dataset.operations import TransformMethod, ValidateMethod
+
+loader = CloudWatchDatasetLoader()
+loader.load(
+    log_group="/my-app/inference-logs",
+    query='''
+        fields @message
+        | parse @message /input="(?<input>[^"]+)" output="(?<output>[^"]+)"/
+        | filter ispresent(input)
+    ''',
+    start_time=datetime.now(timezone.utc) - timedelta(days=7),
+    end_time=datetime.now(timezone.utc),
+)
+# Yields: {"@message": "[INFO] endpoint=/api/chat ...", "input": "Summarize this article", "output": "This article discusses..."}
+
+loader.transform(
+    method=TransformMethod.SCHEMA,
+    training_method=TrainingMethod.SFT_LORA,
+    model=Model.NOVA_LITE_2,
+    column_mappings={"question": "input", "answer": "output"},
+)
+loader.validate(
+    method=ValidateMethod.INVALID_RECORDS,
+    training_method=TrainingMethod.SFT_LORA,
+    model=Model.NOVA_LITE_2,
+)
+loader.save("s3://my-bucket/data/inference_sft.jsonl")
+```
+
+### Limitations
+
+- CloudWatch Logs Insights returns a maximum of 10,000 results per query. For larger datasets, run multiple queries with narrower time ranges and concatenate the results.
+- Queries have a 60-minute execution timeout. If your query times out, narrow the time range or simplify the query.
 
 ---
 
@@ -664,7 +796,7 @@ These apply to `DEFAULT_TEXT_FILTER`, `EXACT_DEDUP`, and `FUZZY_DEDUP`:
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `output_path` | `str` | Auto-derived | S3 URI for filtered output. Required when input is not on S3. |
+| `output_path` | `str` | Auto-derived | S3 URI for filtered output. Auto-derived from the load path when omitted. For local or HuggingFace inputs, uses the default data-prep bucket (`s3://sagemaker-forge-dataprep-{account_id}-{region}/`). |
 | `input_format` | `str` | `"parquet"` | `"parquet"` or `"jsonl"` |
 | `output_format` | `str` | `"parquet"` | `"parquet"` or `"jsonl"` |
 | `text_field` | `str` | `"text"` | Column name containing the text to process. |

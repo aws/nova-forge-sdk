@@ -98,5 +98,26 @@ class TestEnsureBucketExists(unittest.TestCase):
             ensure_bucket_exists("someone-elses-bucket", region="us-east-1")
 
 
+class TestRegionPropagation(unittest.TestCase):
+    @patch("amzn_nova_forge.util.s3_utils.boto3")
+    def test_get_dataprep_bucket_name_passes_region_to_sts_client(self, mock_boto3):
+        mock_sts = MagicMock()
+        mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
+        mock_boto3.client.return_value = mock_sts
+
+        get_dataprep_bucket_name(region="eu-west-1")
+
+        mock_boto3.client.assert_called_once_with("sts", region_name="eu-west-1")
+
+    @patch("amzn_nova_forge.util.s3_utils.boto3")
+    def test_ensure_bucket_exists_passes_region_to_s3_client(self, mock_boto3):
+        mock_s3 = MagicMock()
+        mock_boto3.client.return_value = mock_s3
+
+        ensure_bucket_exists("my-bucket", region="eu-west-1")
+
+        mock_boto3.client.assert_called_once_with("s3", region_name="eu-west-1")
+
+
 if __name__ == "__main__":
     unittest.main()

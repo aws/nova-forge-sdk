@@ -2563,6 +2563,21 @@ class TestPermissionValidationMethods(unittest.TestCase):
         Validator.validate_cluster_name("good_cluster-name")
 
 
+class TestCrossAccountRegionPropagation(unittest.TestCase):
+    """Test that _is_cross_account_role propagates region to boto3 clients."""
+
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
+    def test_is_cross_account_role_passes_region_to_sts_client(self, mock_boto3_client):
+        """Verify _is_cross_account_role passes region to boto3.client('sts', region_name=...)."""
+        mock_sts = Mock()
+        mock_sts.get_caller_identity.return_value = {"Account": "12345679012"}
+        mock_boto3_client.return_value = mock_sts
+
+        Validator._is_cross_account_role("arn:aws:iam::123456789012:role/test", region="eu-west-1")
+
+        mock_boto3_client.assert_called_once_with("sts", region_name="eu-west-1")
+
+
 class TestBedrockRegionValidation(unittest.TestCase):
     """Test cases for Bedrock region validation"""
 
@@ -2693,6 +2708,132 @@ class TestBedrockRegionValidation(unittest.TestCase):
         validate_rft_lambda_name("my-reward-fn", Platform.SMTJ)
         validate_rft_lambda_name("sagemaker-reward", Platform.SMTJ)
         validate_rft_lambda_name("SageMaker-reward", Platform.SMTJ)
+
+
+class TestValidatorNoneTypeHandling(unittest.TestCase):
+    """Tests for the None value handling fix in _validate_recipe."""
+
+    def setUp(self):
+        self.mock_infra = Mock(spec=SMHPRuntimeManager)
+        self.mock_infra.cluster_name = "test-cluster"
+        self.mock_infra.instance_type = "ml.p5.48xlarge"
+        self.mock_infra.instance_count = 4
+        self.mock_infra.region = "us-east-1"
+
+    def test_none_value_optional_field_does_not_raise(self):
+        """Optional fields with None value (e.g. new hub content fields) must not raise."""
+        recipe = {
+            "model_package_group": None,
+            "val_check_interval": None,
+            "max_steps": 100,
+        }
+        overrides_template = {
+            "model_package_group": {"type": "string"},  # optional, no required=True
+            "val_check_interval": {"type": "integer"},  # optional, no required=True
+            "max_steps": {"type": "integer", "default": 100},
+        }
+        errors = []
+        Validator._validate_recipe(
+            recipe=recipe,
+            overrides_template=overrides_template,
+            instance_type="ml.p5.48xlarge",
+            errors=errors,
+            method=TrainingMethod.SFT_LORA,
+        )
+        self.assertEqual(errors, [])
+
+    def test_none_value_required_field_still_raises(self):
+        """Required fields with None value must still produce a type error."""
+        recipe = {"max_steps": None}
+        overrides_template = {
+            "max_steps": {"type": "integer", "required": True},
+        }
+        errors = []
+        Validator._validate_recipe(
+            recipe=recipe,
+            overrides_template=overrides_template,
+            instance_type="ml.p5.48xlarge",
+            errors=errors,
+            method=TrainingMethod.SFT_LORA,
+        )
+        self.assertTrue(
+            any("expects integer" in e and "NoneType" in e for e in errors),
+            f"Expected type error for required None field, got: {errors}",
+        )
+
+    def test_valid_string_field_passes(self):
+        """A properly set string field must not produce errors."""
+        recipe = {"model_package_group": "my-group"}
+        overrides_template = {"model_package_group": {"type": "string"}}
+        errors = []
+        Validator._validate_recipe(
+            recipe=recipe,
+            overrides_template=overrides_template,
+            instance_type="ml.p5.48xlarge",
+            errors=errors,
+            method=TrainingMethod.SFT_LORA,
+        )
+        self.assertEqual(errors, [])
+
+    def test_wrong_type_still_raises(self):
+        """A field with wrong type (not None) must still produce a type error."""
+        recipe = {"max_steps": "not-an-int"}
+        overrides_template = {"max_steps": {"type": "integer"}}
+        errors = []
+        Validator._validate_recipe(
+            recipe=recipe,
+            overrides_template=overrides_template,
+            instance_type="ml.p5.48xlarge",
+            errors=errors,
+            method=TrainingMethod.SFT_LORA,
+        )
+        self.assertTrue(
+            any("expects integer" in e for e in errors),
+            f"Expected type error, got: {errors}",
+        )
+
+
+class TestValidationDataS3Path(unittest.TestCase):
+    """Tests for validation_data_s3_path preflight validation."""
+
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
+    def test_preflight_validates_validation_data_s3_path(self, mock_boto3_client):
+        """Assert validation runs for validation_data_s3_path when set."""
+        mock_infra = Mock(spec=SMTJRuntimeManager)
+        mock_infra.instance_type = "ml.p5.48xlarge"
+        mock_infra.region = "us-east-1"
+
+        with self.assertRaises(ValueError) as context:
+            Validator.validate(
+                platform=Platform.SMTJ,
+                method=TrainingMethod.SFT_LORA,
+                infra=mock_infra,
+                recipe={},
+                overrides_template={},
+                validation_data_s3_path="not-an-s3-path",
+                validation_config=ValidationConfig(iam=False, infra=False),
+            )
+        self.assertIn("Invalid S3 path for validation_data_s3_path", str(context.exception))
+
+    @patch("amzn_nova_forge.validation.validator.boto3.client")
+    def test_preflight_skips_validation_data_when_none(self, mock_boto3_client):
+        """Assert no validation error when validation_data_s3_path is None."""
+        mock_infra = Mock(spec=SMTJRuntimeManager)
+        mock_infra.instance_type = "ml.p5.48xlarge"
+        mock_infra.region = "us-east-1"
+
+        try:
+            Validator.validate(
+                platform=Platform.SMTJ,
+                method=TrainingMethod.SFT_LORA,
+                infra=mock_infra,
+                recipe={},
+                overrides_template={},
+                validation_data_s3_path=None,
+                validation_config=ValidationConfig(iam=False, infra=False),
+            )
+        except ValueError as e:
+            self.assertNotIn("validation_data_s3_path", str(e))
 
 
 if __name__ == "__main__":

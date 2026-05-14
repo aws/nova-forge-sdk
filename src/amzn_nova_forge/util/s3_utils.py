@@ -64,7 +64,7 @@ def get_dataprep_bucket_name(
     if region is None:
         region = boto3.session.Session().region_name or "us-east-1"
     if account_id is None:
-        account_id = boto3.client("sts").get_caller_identity()["Account"]
+        account_id = boto3.client("sts", region_name=region).get_caller_identity()["Account"]
     return f"{DATAPREP_BUCKET_PREFIX}-{account_id}-{region}"
 
 

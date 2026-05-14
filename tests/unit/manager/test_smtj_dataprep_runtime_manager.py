@@ -596,6 +596,43 @@ class TestSMTJDataPrepRoleResolution(unittest.TestCase):
         )
         mock_create.assert_called_once()
 
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3")
+    def test_setup_passes_region_to_iam_client(self, mock_boto3):
+        mock_session = MagicMock()
+        mock_session.region_name = "eu-west-1"
+        mock_boto3.session.Session.return_value = mock_session
+
+        mock_iam = MagicMock()
+        mock_iam.get_role.return_value = {"Role": {"Arn": "arn:aws:iam::123456789012:role/MyRole"}}
+        mock_s3 = MagicMock()
+        mock_s3.head_bucket.return_value = {}
+
+        def client_factory(service, **kwargs):
+            if service == "sagemaker":
+                return MagicMock()
+            if service == "s3":
+                return mock_s3
+            if service == "iam":
+                return mock_iam
+            return MagicMock()
+
+        mock_boto3.client.side_effect = client_factory
+
+        with patch.object(SMTJDataPrepRuntimeManager, "_upload_entry_script"):
+            with patch.object(SMTJDataPrepRuntimeManager, "_upload_bundled_whls"):
+                SMTJDataPrepRuntimeManager(
+                    instance_type="ml.g5.2xlarge",
+                    image_uri="test:latest",
+                    execution_role_name="MyRole",
+                    s3_artifact_bucket="test-bucket",
+                    region="eu-west-1",
+                )
+
+        # Verify boto3.client("iam", region_name="eu-west-1") was called
+        iam_calls = [c for c in mock_boto3.client.call_args_list if c[0] == ("iam",)]
+        self.assertEqual(len(iam_calls), 1)
+        self.assertEqual(iam_calls[0][1]["region_name"], "eu-west-1")
+
     def _build_manager_with_resolver(self, mock_boto3, instance_type, resolved_uri):
         mock_session = MagicMock()
         mock_session.region_name = "us-west-2"

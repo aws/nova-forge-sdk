@@ -120,6 +120,30 @@ class TestOutputPathResolver(unittest.TestCase):
         resolver = OutputPathResolver("s3://bucket/train.jsonl")
         self.assertRegex(resolver._session_id, r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}")
 
+    def test_local_path_rebases_to_dataprep_bucket(self):
+        """Local path should be rebased to the data-prep bucket."""
+        resolver = OutputPathResolver("/home/user/data/train.jsonl", "2026-05-04_12-00-00")
+
+        path = resolver.resolve_path("default_text_filter")
+        self.assertTrue(path.startswith("s3://"), f"Expected S3 path, got: {path}")
+        self.assertIn("train", path)
+
+    def test_hf_path_rebases_to_dataprep_bucket(self):
+        """HuggingFace path should be rebased to the data-prep bucket."""
+        resolver = OutputPathResolver("hf://fake-org/fake-dataset/train", "2026-05-04_12-00-00")
+
+        path = resolver.resolve_path("default_text_filter")
+        self.assertTrue(path.startswith("s3://"), f"Expected S3 path, got: {path}")
+        self.assertIn("train", path)
+
+    def test_s3_path_not_rebased(self):
+        """S3 path should NOT be rebased — uses the original parent."""
+        resolver = OutputPathResolver("s3://my-bucket/data/train.jsonl", "2026-05-04_12-00-00")
+        path = resolver.resolve_path("default_text_filter")
+        self.assertTrue(
+            path.startswith("s3://my-bucket/"), f"Expected original bucket, got: {path}"
+        )
+
 
 @pytest.mark.parametrize(
     "path, expected_location",

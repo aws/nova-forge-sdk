@@ -40,9 +40,16 @@ logger = logging.getLogger("nova_forge_sdk")
 class InferenceResult(BaseJobResult, ABC):
     inference_output_path: str
 
-    def __init__(self, job_id: str, started_time: datetime, inference_output_path: str):
+    def __init__(
+        self,
+        job_id: str,
+        started_time: datetime,
+        inference_output_path: str,
+        region: Optional[str] = None,
+    ):
         self.inference_output_path = inference_output_path
         self._cached_results_dir: Optional[str] = None
+        self._region = region
         super().__init__(job_id, started_time)
 
     @staticmethod
@@ -110,7 +117,7 @@ class InferenceResult(BaseJobResult, ABC):
             bucket = parsed.netloc
             key = parsed.path.lstrip("/")
 
-            s3_client = boto3.client("s3")
+            s3_client = boto3.client("s3", region_name=self._region)
 
             # Create temp dir for caching results
             self._cached_results_dir = tempfile.mkdtemp(prefix=f"inference_results_{self.job_id}_")
@@ -161,7 +168,7 @@ class InferenceResult(BaseJobResult, ABC):
                                 s3_path_stripped = s3_path[5:]  # Remove 's3://'
                                 bucket, key = s3_path_stripped.split("/", 1)
 
-                                s3_client = boto3.client("s3")
+                                s3_client = boto3.client("s3", region_name=self._region)
                                 s3_client.put_object(
                                     Bucket=bucket,
                                     Key=key,
@@ -233,10 +240,11 @@ class SMTJBatchInferenceResult(InferenceResult):
         started_time: datetime,
         inference_output_path: str,
         sagemaker_client=None,
+        region: Optional[str] = None,
     ):
         self._cached_results_dir: Optional[str] = None
-        self._sagemaker_client = sagemaker_client or boto3.client("sagemaker")
-        super().__init__(job_id, started_time, inference_output_path)
+        self._sagemaker_client = sagemaker_client or boto3.client("sagemaker", region_name=region)
+        super().__init__(job_id, started_time, inference_output_path, region=region)
 
     def _create_status_manager(self) -> JobStatusManager:
         return SMTJStatusManager(self._sagemaker_client)

@@ -684,7 +684,7 @@ class TestDatasetLoader(unittest.TestCase):
         result_path = dataset_loader.save(save_path)
 
         self.assertEqual(result_path, save_path)
-        mock_boto_client.assert_called_once_with("s3")
+        mock_boto_client.assert_called_once_with("s3", region_name=None)
 
         # Verify upload_file was called
         mock_s3.upload_file.assert_called_once()

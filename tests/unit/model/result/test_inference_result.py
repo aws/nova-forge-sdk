@@ -659,5 +659,43 @@ class TestSingleInferenceResult(unittest.TestCase):
         mock_logger.info.assert_called()
 
 
+class TestRegionPropagation(unittest.TestCase):
+    @patch("boto3.client")
+    def test_inference_result_passes_region_to_s3(self, mock_boto3_client):
+        mock_s3_client = Mock()
+        mock_boto3_client.return_value = mock_s3_client
+        mock_s3_client.download_file.return_value = None
+
+        result = SMTJBatchInferenceResult(
+            job_id="test-job-region",
+            started_time=datetime.now(),
+            inference_output_path="s3://test-bucket/output/output.tar.gz",
+            sagemaker_client=Mock(),
+            region="eu-west-1",
+        )
+
+        # Trigger S3 client creation via _download_inference_results
+        try:
+            result._download_inference_results()
+        except Exception:
+            pass
+
+        mock_boto3_client.assert_any_call("s3", region_name="eu-west-1")
+
+    @patch("boto3.client")
+    def test_smtj_batch_inference_result_passes_region_to_sagemaker(self, mock_boto3_client):
+        mock_boto3_client.return_value = Mock()
+
+        SMTJBatchInferenceResult(
+            job_id="test-job-region",
+            started_time=datetime.now(),
+            inference_output_path="s3://test-bucket/output/output.tar.gz",
+            sagemaker_client=None,
+            region="eu-west-1",
+        )
+
+        mock_boto3_client.assert_called_with("sagemaker", region_name="eu-west-1")
+
+
 if __name__ == "__main__":
     unittest.main()

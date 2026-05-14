@@ -330,7 +330,6 @@ def test_data_dir_forwarded_when_provided():
 
 @pytest.mark.parametrize("kwarg", ["data_files", "data_dir"])
 def test_optional_kwargs_omitted_when_none(kwarg):
-    """``data_files`` and ``data_dir`` are NOT in ``load_dataset`` kwargs when caller omits them."""
     fake_mod = _make_fake_datasets_module(load_dataset_return_value=[])
     with patch.dict(sys.modules, {"datasets": fake_mod}):
         loader = HuggingFaceDatasetLoader()

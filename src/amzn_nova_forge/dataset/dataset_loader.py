@@ -119,7 +119,7 @@ class DatasetLoader(ABC):
         )
     """
 
-    def __init__(self, **column_mappings):
+    def __init__(self, region: Optional[str] = None, **column_mappings):
         if column_mappings:
             logger.warning(
                 "Passing column_mappings to the constructor is deprecated. "
@@ -128,6 +128,7 @@ class DatasetLoader(ABC):
                 "training_method=..., model=..., "
                 'column_mappings={"question": "q", "answer": "a"})'
             )
+        self._region = region
         self.column_mappings = column_mappings
         self._dataset: Callable[[], Iterator[Dict]] = lambda: iter([])
         self._load_path: Optional[str] = None
@@ -460,8 +461,10 @@ class DatasetLoader(ABC):
                         derived as ``<parent>/<input_stem>/<session>/<method>/``
                         where ``input_stem`` is the load filename without
                         extension and ``session`` is a UTC timestamp
-                        (``YYYY-MM-DD_HH-MM-SS``). Required when loading
-                        from a local file.
+                        (``YYYY-MM-DD_HH-MM-SS``). For local or HuggingFace
+                        inputs, the default data-prep bucket
+                        (``sagemaker-forge-dataprep-{account}-{region}``) is
+                        used as the parent.
                     input_format (str): ``"parquet"`` or ``"jsonl"``.
                     output_format (str): ``"parquet"`` or ``"jsonl"``.
                     text_field (str): Column name containing text.
@@ -546,6 +549,7 @@ class DatasetLoader(ABC):
         for op_type, method, kwargs in self._pending_operations:
             op = self._get_operation(op_type, method)
             kwargs["state"] = state
+            kwargs.setdefault("region", self._region)
             if "output_path" not in kwargs:
                 kwargs["output_path"] = resolver.resolve_path(method)
             result = op.execute(self, **kwargs)

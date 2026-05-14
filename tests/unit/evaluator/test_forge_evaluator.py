@@ -700,6 +700,7 @@ class TestForgeEvaluatorGetLogs(unittest.TestCase):
             job_id="eval-job-123",
             platform=Platform.SMTJ,
             started_time=int(started.timestamp() * 1000),
+            region="us-east-1",
         )
         mock_monitor.show_logs.assert_called_once_with(
             limit=None, start_from_head=False, end_time=None
@@ -743,6 +744,7 @@ class TestForgeEvaluatorGetLogs(unittest.TestCase):
             started_time=int(started.timestamp() * 1000),
             cluster_name="my-cluster",
             namespace="kubeflow",
+            region="us-east-1",
         )
 
 

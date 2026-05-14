@@ -202,7 +202,7 @@ class ForgeDeployer:
     )
     def get_status_by_arn(self, endpoint_arn: str, platform: DeployPlatform) -> Optional[JobStatus]:
         """Check deployment status by ARN."""
-        status_str = check_deployment_status(endpoint_arn, platform)
+        status_str = check_deployment_status(endpoint_arn, platform, region=self.region)
         if status_str is None:
             return None
         try:
@@ -239,7 +239,7 @@ class ForgeDeployer:
             else:
                 platform = DeployPlatform.BEDROCK_OD
 
-        status = check_deployment_status(arn, platform)
+        status = check_deployment_status(arn, platform, region=self.region)
         logger.info(f"Deployment status for {arn}: {status}")
 
     @_telemetry_emitter(
@@ -489,7 +489,9 @@ class ForgeDeployer:
             endpoint_name = name_format.replace(".", "-").replace("_", "-")
 
         # Check for existing deployment with same name
-        existing_deployment_arn = check_existing_deployment(endpoint_name, deploy_platform)
+        existing_deployment_arn = check_existing_deployment(
+            endpoint_name, deploy_platform, region=self.region
+        )
         attempt_pt_update = False
 
         if existing_deployment_arn:
@@ -536,7 +538,7 @@ class ForgeDeployer:
             assert existing_deployment_arn is not None
             try:
                 update_provisioned_throughput_model(
-                    existing_deployment_arn, model_arn, endpoint_name
+                    existing_deployment_arn, model_arn, endpoint_name, region=self.region
                 )
                 deployment_arn = existing_deployment_arn
                 logger.info(f"Successfully updated existing PT deployment '{endpoint_name}'")
@@ -579,6 +581,7 @@ class ForgeDeployer:
             endpoint_name=endpoint_name,
             uri=deployment_arn,
             model_artifact_path=(resolved_publish.escrow_uri if resolved_publish else model_arn),
+            region=self.region,
         )
 
         result = DeploymentResult(
@@ -640,7 +643,9 @@ class ForgeDeployer:
         else:
             resolved_endpoint_name = endpoint_name
 
-        existing = check_existing_deployment(resolved_endpoint_name, deploy_platform)
+        existing = check_existing_deployment(
+            resolved_endpoint_name, deploy_platform, region=self.region
+        )
         if existing:
             if self.deployment_mode == DeploymentMode.FAIL_IF_EXISTS:
                 raise RuntimeError(
@@ -773,6 +778,7 @@ class ForgeDeployer:
             endpoint_name=endpoint_name,
             uri=endpoint_arn,
             model_artifact_path=model_artifact_path,
+            region=self.region,
         )
 
         return DeploymentResult(

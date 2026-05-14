@@ -256,6 +256,7 @@ def _read_summary_json(
     output_path: str,
     total_key: str = "input_count",
     filtered_key: str = "duplicates_removed",
+    region: Optional[str] = None,
 ) -> Tuple[int, int]:
     """Best-effort read of ``_summary.json`` from an S3 output path.
 
@@ -268,7 +269,7 @@ def _read_summary_json(
         parsed = urlparse(summary_path)
         bucket = parsed.netloc
         key = parsed.path.lstrip("/")
-        resp = boto3.client("s3").get_object(Bucket=bucket, Key=key)
+        resp = boto3.client("s3", region_name=region).get_object(Bucket=bucket, Key=key)
         summary = json.loads(resp["Body"].read().decode("utf-8"))
         return summary.get(total_key, 0), summary.get(filtered_key, 0)
     except Exception:
@@ -276,7 +277,7 @@ def _read_summary_json(
         return 0, 0
 
 
-def _resolve_s3_directory_to_jsonl(s3_path: str) -> str:
+def _resolve_s3_directory_to_jsonl(s3_path: str, region: Optional[str] = None) -> str:
     """If *s3_path* is an S3 directory, resolve it to the single .jsonl file inside.
 
     Returns the original path unchanged when it already points to a file.
@@ -293,7 +294,7 @@ def _resolve_s3_directory_to_jsonl(s3_path: str) -> str:
     prefix_path = s3_path if s3_path.endswith("/") else s3_path + "/"
     bucket, prefix = prefix_path[len("s3://") :].split("/", 1)
 
-    s3 = boto3.client("s3")
+    s3 = boto3.client("s3", region_name=region)
     paginator = s3.get_paginator("list_objects_v2")
     jsonl_keys = []
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):

@@ -288,6 +288,7 @@ class ForgeInference:
             job_id=job_id,
             started_time=start_time,
             inference_output_path=inference_output_s3_path,
+            region=self.region,
         )
         logger.info(
             f"Started batch inference job '{job_id}'. \n"
@@ -348,6 +349,7 @@ class ForgeInference:
             job_id=resolved_job_id,
             platform=platform,
             started_time=int(resolved_started.timestamp() * 1000),
+            region=self.region,
             **kwargs,
         )
         monitor.show_logs(limit=limit, start_from_head=start_from_head, end_time=end_time)

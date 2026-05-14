@@ -251,7 +251,7 @@ class TestRecipeBuilder(unittest.TestCase):
             job_name=self.job_name,
             platform=self.platform,
             model=self.mock_model,
-            method=TrainingMethod.SFT_LORA,
+            method=TrainingMethod.DPO_LORA,
             instance_type=self.instance_type,
             instance_count=self.instance_count,
             infra=self.mock_infra,
@@ -261,10 +261,10 @@ class TestRecipeBuilder(unittest.TestCase):
         )
 
         mock_logger.info.assert_called_with(
-            "'validation_data_s3_path' is only applicable for CPT on SMTJ/SMHP, or RFT/SFT method on Bedrock. Will ignore."
+            "'validation_data_s3_path' is only applicable for CPT, SFT on SMTJ/SMHP/SMTJServerless, or any method on Bedrock. Will ignore."
         )
 
-        self.assertFalse(hasattr(builder, "validation_data_s3_path"))
+        self.assertIsNone(builder.validation_data_s3_path)
 
     def test_initialization_dpo_lora_method(self):
         builder = RecipeBuilder(
@@ -2628,7 +2628,7 @@ class TestRecipeBuilder(unittest.TestCase):
         ]
 
         for eval_task in special_tasks:
-            with self.subTest(eval_task=eval_task):
+            with self.subTest(eval_task=eval_task.value):
                 mock_download_local.reset_mock()
 
                 builder = RecipeBuilder(
@@ -3792,6 +3792,111 @@ class TestRecipeBuilder(unittest.TestCase):
             self.assertIn("training_config", config)
             self.assertTrue(config["training_config"]["enable_batch_sample_tracing"])
 
+    def test_sft_lora_smtj_stores_validation_path(self):
+        validation_data_s3 = "s3://bucket/validation-data"
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=Platform.SMTJ,
+            model=self.mock_model,
+            method=TrainingMethod.SFT_LORA,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+            validation_data_s3_path=validation_data_s3,
+        )
+
+        self.assertEqual(builder.validation_data_s3_path, validation_data_s3)
+
+    def test_sft_full_smtj_stores_validation_path(self):
+        validation_data_s3 = "s3://bucket/validation-data"
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=Platform.SMTJ,
+            model=self.mock_model,
+            method=TrainingMethod.SFT_FULL,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+            validation_data_s3_path=validation_data_s3,
+        )
+
+        self.assertEqual(builder.validation_data_s3_path, validation_data_s3)
+
+    def test_sft_lora_smtj_serverless_stores_validation_path(self):
+        validation_data_s3 = "s3://bucket/validation-data"
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=Platform.SMTJServerless,
+            model=self.mock_model,
+            method=TrainingMethod.SFT_LORA,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+            validation_data_s3_path=validation_data_s3,
+        )
+
+        self.assertEqual(builder.validation_data_s3_path, validation_data_s3)
+
+    def test_sft_lora_smhp_stores_validation_path(self):
+        validation_data_s3 = "s3://bucket/validation-data"
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=Platform.SMHP,
+            model=self.mock_model,
+            method=TrainingMethod.SFT_LORA,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+            validation_data_s3_path=validation_data_s3,
+        )
+
+        self.assertEqual(builder.validation_data_s3_path, validation_data_s3)
+
+    def test_sft_no_validation_data_attribute_is_none(self):
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=Platform.SMTJ,
+            model=self.mock_model,
+            method=TrainingMethod.SFT_LORA,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+            validation_data_s3_path=None,
+        )
+
+        self.assertIsNone(builder.validation_data_s3_path)
+
+    def test_validation_data_s3_path_initialized_to_none(self):
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=Platform.SMTJ,
+            model=self.mock_model,
+            method=TrainingMethod.SFT_LORA,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+        )
+
+        self.assertIsNone(builder.validation_data_s3_path)
+
     @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
     @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
     @patch("amzn_nova_forge.recipe.recipe_builder.Validator")
@@ -3834,6 +3939,216 @@ class TestRecipeBuilder(unittest.TestCase):
             # training_config should either not exist or not contain the flag
             if "training_config" in config:
                 self.assertNotIn("enable_batch_sample_tracing", config["training_config"])
+
+    @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
+    @patch("amzn_nova_forge.recipe.recipe_builder.Validator")
+    def test_sft_lora_smhp_injects_val_check_interval(
+        self, mock_validator, mock_download, mock_metadata
+    ):
+        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+
+        recipe_template = {
+            "run": {
+                "name": "{{name}}",
+                "replicas": 1,
+                "validation_data_s3_path": "{{validation_data_s3_path}}",
+                "val_check_interval": "{{val_check_interval}}",
+            }
+        }
+
+        overrides_template = {
+            "name": {"default": "", "type": "string"},
+            "validation_data_s3_path": {"default": "", "type": "string"},
+            "val_check_interval": {"default": 1000, "type": "integer"},
+        }
+
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=Platform.SMHP,
+            model=self.mock_model,
+            method=TrainingMethod.SFT_LORA,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+            validation_data_s3_path="s3://bucket/validation-data",
+            val_check_interval=500,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "recipe.yaml")
+            recipe_path, *_ = builder.build_and_validate(output_recipe_path=output_path)
+
+            with open(recipe_path, "r") as f:
+                config = yaml.safe_load(f)
+
+            self.assertEqual(config["run"]["val_check_interval"], 500)
+            self.assertEqual(
+                config["run"]["validation_data_s3_path"], "s3://bucket/validation-data"
+            )
+
+    @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
+    @patch("amzn_nova_forge.recipe.recipe_builder.Validator")
+    def test_val_check_interval_not_injected_when_none(
+        self, mock_validator, mock_download, mock_metadata
+    ):
+        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+
+        recipe_template = {
+            "run": {
+                "name": "{{name}}",
+                "replicas": 1,
+                "val_check_interval": "{{val_check_interval}}",
+            }
+        }
+
+        overrides_template = {
+            "name": {"default": "", "type": "string"},
+            "val_check_interval": {"default": 1000, "type": "integer"},
+        }
+
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=Platform.SMHP,
+            model=self.mock_model,
+            method=TrainingMethod.SFT_LORA,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+            val_check_interval=None,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "recipe.yaml")
+            recipe_path, *_ = builder.build_and_validate(output_recipe_path=output_path)
+
+            with open(recipe_path, "r") as f:
+                config = yaml.safe_load(f)
+
+            # Should use the template default (1000), not an injected value
+            self.assertEqual(config["run"]["val_check_interval"], 1000)
+
+
+class TestRecipeBuilderMlflowPlaceholder(unittest.TestCase):
+    """Tests that mlflow placeholders are resolved even when no MLflowMonitor is provided."""
+
+    def setUp(self):
+        self.region = "us-east-1"
+        self.job_name = "test-job"
+        self.platform = Platform.SMTJ
+        self.method = TrainingMethod.SFT_LORA
+        self.instance_type = "ml.g5.12xlarge"
+        self.instance_count = 1
+        self.data_s3 = "s3://bucket/data"
+        self.output_s3 = "s3://bucket/output"
+
+        self.mock_model = Mock(spec=Model)
+        self.mock_model.name = "nova-micro"
+        self.mock_model.value = "nova_micro"
+        self.mock_model.version = Version.ONE
+        self.mock_model.model_type = "test-model"
+        self.mock_model.model_path = "models/test"
+
+        self.mock_infra = Mock(spec=RuntimeManager)
+        self.mock_infra.instance_type = self.instance_type
+        self.mock_infra.instance_count = self.instance_count
+
+    @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
+    @patch("amzn_nova_forge.recipe.recipe_builder.Validator")
+    def test_mlflow_placeholders_resolved_to_empty_when_no_monitor(
+        self, mock_validator, mock_download, mock_metadata
+    ):
+        """When no mlflow_monitor is provided, {{mlflow_*}} placeholders must resolve to ''."""
+        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+
+        recipe_template = {
+            "run": {
+                "name": "{{name}}",
+                "mlflow_tracking_uri": "{{mlflow_tracking_uri}}",
+                "mlflow_experiment_name": "{{mlflow_experiment_name}}",
+                "mlflow_run_name": "{{mlflow_run_name}}",
+            }
+        }
+        overrides_template = {"name": {"default": "", "type": "string"}}
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=self.platform,
+            model=self.mock_model,
+            method=self.method,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+            mlflow_monitor=None,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "recipe.yaml")
+            recipe_path, *_ = builder.build_and_validate(output_recipe_path=output_path)
+
+            with open(recipe_path, "r") as f:
+                config = yaml.safe_load(f)
+
+        # Placeholders must be resolved to empty strings, not left as "{{...}}"
+        self.assertEqual(config["run"]["mlflow_tracking_uri"], "")
+        self.assertEqual(config["run"]["mlflow_experiment_name"], "")
+        self.assertEqual(config["run"]["mlflow_run_name"], "")
+
+    @patch("amzn_nova_forge.util.recipe.get_hub_recipe_metadata")
+    @patch("amzn_nova_forge.util.recipe.download_templates_from_s3")
+    @patch("amzn_nova_forge.recipe.recipe_builder.Validator")
+    def test_mlflow_placeholders_not_raw_when_no_monitor(
+        self, mock_validator, mock_download, mock_metadata
+    ):
+        """Ensure raw {{...}} strings are never present in the built recipe."""
+        mock_metadata.return_value = {"recipe_uri": "s3://bucket/recipe"}
+
+        recipe_template = {
+            "run": {
+                "name": "{{name}}",
+                "mlflow_tracking_uri": "{{mlflow_tracking_uri}}",
+            }
+        }
+        overrides_template = {"name": {"default": "", "type": "string"}}
+        mock_download.return_value = (recipe_template, overrides_template, "image_uri")
+
+        builder = RecipeBuilder(
+            region=self.region,
+            job_name=self.job_name,
+            platform=self.platform,
+            model=self.mock_model,
+            method=self.method,
+            instance_type=self.instance_type,
+            instance_count=self.instance_count,
+            infra=self.mock_infra,
+            output_s3_path=self.output_s3,
+            data_s3_path=self.data_s3,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = os.path.join(tmpdir, "recipe.yaml")
+            recipe_path, *_ = builder.build_and_validate(output_recipe_path=output_path)
+
+            with open(recipe_path, "r") as f:
+                raw = f.read()
+
+        self.assertNotIn("{{mlflow_tracking_uri}}", raw)
 
 
 if __name__ == "__main__":

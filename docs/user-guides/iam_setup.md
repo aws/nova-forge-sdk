@@ -110,7 +110,9 @@ Please refer to the "Sid" of each statement to determine which policies you need
             "Action": [
                 "logs:DescribeLogStreams",
                 "logs:FilterLogEvents",
-                "logs:GetLogEvents"
+                "logs:GetLogEvents",
+                "logs:StartQuery",
+                "logs:GetQueryResults"
             ],
             "Resource": "arn:aws:logs:<region>:<account_id>:log-group:*"
         },
@@ -217,6 +219,7 @@ Please refer to the "Sid" of each statement to determine which policies you need
     Data mixing fetches recipe templates from a cross-account S3 access point owned by the Nova Forge service.
     The resource is scoped to S3 access point ARNs, which allows cross-account access point calls while preventing read access to arbitrary S3 bucket objects.
 - [HyperPod only] If your cluster uses namespace access control, you must have access to the Kubernetes namespace
+- [CloudWatch data loading only] `logs:StartQuery` and `logs:GetQueryResults` in the `AccessCloudWatchLogs` statement are required when using `CloudWatchDatasetLoader`. The other actions in that statement (`DescribeLogStreams`, `FilterLogEvents`, `GetLogEvents`) are used for job log monitoring and are not needed for data loading.
 
 ### Job Monitoring via Email Notifications
 

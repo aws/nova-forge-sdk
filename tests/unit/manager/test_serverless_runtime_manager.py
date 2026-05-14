@@ -459,6 +459,7 @@ class TestSMTJServerlessRuntimeManager(unittest.TestCase):
             hub_content_name="nova-textgeneration-lite-v2",
             hub_content_type="Model",
             region="us-east-1",
+            hub_content_version=None,
         )
 
     # --- execute tests ---
@@ -1006,6 +1007,202 @@ class TestSMTJServerlessRuntimeManager(unittest.TestCase):
         self.assertIn("s3:GetObject", perm_actions)
 
 
+class TestSMTJServerlessValidationDataset(unittest.TestCase):
+    """Tests for SFT validation dataset support in SMTJServerlessRuntimeManager."""
+
+    def setUp(self):
+        self.mock_role = "arn:aws:iam::123456789012:role/SageMakerExecutionRole"
+        self.model_package_group_name = "test-model-package-group"
+        self.mock_group_arn = (
+            "arn:aws:sagemaker:us-east-1:123456789012:model-package-group/test-model-package-group"
+        )
+        self.mock_hub_content_arn = (
+            "arn:aws:sagemaker:us-east-1:123456789012:"
+            "hub-content/SageMakerPublicHub/Model/nova-textgeneration-lite-v2/1.0.0"
+        )
+
+    @patch.object(SMTJServerlessRuntimeManager, "setup", return_value=None)
+    def _create_manager(self, mock_setup, **kwargs):
+        manager = SMTJServerlessRuntimeManager(
+            model_package_group_name=self.model_package_group_name, **kwargs
+        )
+        manager.execution_role = self.mock_role
+        manager.sagemaker_client = MagicMock()
+        manager.sagemaker_session = MagicMock()
+        manager.region = "us-east-1"
+        manager.model_package_group_arn = self.mock_group_arn
+        return manager
+
+    @patch("amzn_nova_forge.manager.runtime_manager.get_hub_content")
+    @patch("sagemaker.ai_registry.dataset.DataSet")
+    def test_serverless_sft_with_validation_data(self, mock_dataset_cls, mock_hub_content):
+        manager = self._create_manager()
+        mock_hub_content.return_value = {"HubContentArn": self.mock_hub_content_arn}
+
+        mock_dataset = MagicMock()
+        mock_dataset.arn = "arn:aws:sagemaker:us-east-1:123456789012:dataset/train-input"
+        mock_val_dataset = MagicMock()
+        mock_val_dataset.arn = "arn:aws:sagemaker:us-east-1:123456789012:dataset/val-input"
+        mock_dataset_cls.create.side_effect = [mock_dataset, mock_val_dataset]
+
+        manager.sagemaker_client.create_training_job.return_value = {
+            "TrainingJobArn": "arn:aws:sagemaker:us-east-1:123456789012:training-job/test-job"
+        }
+
+        recipe = {
+            "run": {"model_type": "amazon.nova-2-lite-v1:0:256k"},
+            "trainer": {"lr": 0.001},
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.dump(recipe, f)
+            recipe_path = f.name
+
+        try:
+            job_config = JobConfig(
+                job_name="test-serverless-val-job",
+                image_uri="",
+                recipe_path=recipe_path,
+                output_s3_path="s3://output-bucket/output",
+                data_s3_path="s3://input-bucket/train.jsonl",
+                validation_data_s3_path="s3://input-bucket/val.jsonl",
+                method=TrainingMethod.SFT_LORA,
+            )
+            manager.execute(job_config)
+        finally:
+            os.unlink(recipe_path)
+
+        call_kwargs = manager.sagemaker_client.create_training_job.call_args.kwargs
+        self.assertIn("InputDataConfig", call_kwargs)
+        channel_names = [ch["ChannelName"] for ch in call_kwargs["InputDataConfig"]]
+        self.assertIn("train", channel_names)
+        self.assertIn("validation", channel_names)
+        self.assertEqual(len(call_kwargs["InputDataConfig"]), 2)
+
+    @patch("amzn_nova_forge.manager.runtime_manager.get_hub_content")
+    @patch("sagemaker.ai_registry.dataset.DataSet")
+    def test_serverless_sft_without_validation_data(self, mock_dataset_cls, mock_hub_content):
+        manager = self._create_manager()
+        mock_hub_content.return_value = {"HubContentArn": self.mock_hub_content_arn}
+
+        mock_dataset = MagicMock()
+        mock_dataset.arn = "arn:aws:sagemaker:us-east-1:123456789012:dataset/train-input"
+        mock_dataset_cls.create.return_value = mock_dataset
+
+        manager.sagemaker_client.create_training_job.return_value = {
+            "TrainingJobArn": "arn:aws:sagemaker:us-east-1:123456789012:training-job/test-job"
+        }
+
+        recipe = {
+            "run": {"model_type": "amazon.nova-2-lite-v1:0:256k"},
+            "trainer": {"lr": 0.001},
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.dump(recipe, f)
+            recipe_path = f.name
+
+        try:
+            job_config = JobConfig(
+                job_name="test-serverless-no-val-job",
+                image_uri="",
+                recipe_path=recipe_path,
+                output_s3_path="s3://output-bucket/output",
+                data_s3_path="s3://input-bucket/train.jsonl",
+                method=TrainingMethod.SFT_LORA,
+            )
+            manager.execute(job_config)
+        finally:
+            os.unlink(recipe_path)
+
+        call_kwargs = manager.sagemaker_client.create_training_job.call_args.kwargs
+        self.assertIn("InputDataConfig", call_kwargs)
+        channel_names = [ch["ChannelName"] for ch in call_kwargs["InputDataConfig"]]
+        self.assertIn("train", channel_names)
+        self.assertNotIn("validation", channel_names)
+
+    @patch("amzn_nova_forge.manager.runtime_manager.get_hub_content")
+    @patch("sagemaker.ai_registry.dataset.DataSet")
+    def test_serverless_validation_dataset_name_truncation(
+        self, mock_dataset_cls, mock_hub_content
+    ):
+        manager = self._create_manager()
+        mock_hub_content.return_value = {"HubContentArn": self.mock_hub_content_arn}
+
+        mock_dataset = MagicMock()
+        mock_dataset.arn = "arn:aws:sagemaker:us-east-1:123456789012:dataset/train-input"
+        mock_val_dataset = MagicMock()
+        mock_val_dataset.arn = "arn:aws:sagemaker:us-east-1:123456789012:dataset/val-input"
+        mock_dataset_cls.create.side_effect = [mock_dataset, mock_val_dataset]
+
+        manager.sagemaker_client.create_training_job.return_value = {
+            "TrainingJobArn": "arn:aws:sagemaker:us-east-1:123456789012:training-job/test-job"
+        }
+
+        long_job_name = "a" * 63  # max job name length
+        recipe = {"run": {"model_type": "amazon.nova-2-lite-v1:0:256k"}}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.dump(recipe, f)
+            recipe_path = f.name
+
+        try:
+            job_config = JobConfig(
+                job_name=long_job_name,
+                image_uri="",
+                recipe_path=recipe_path,
+                output_s3_path="s3://output-bucket/output",
+                data_s3_path="s3://data-bucket/data.jsonl",
+                validation_data_s3_path="s3://data-bucket/val.jsonl",
+                method=TrainingMethod.SFT_LORA,
+            )
+            manager.execute(job_config)
+        finally:
+            os.unlink(recipe_path)
+
+        # Second DataSet.create call is for validation dataset
+        val_dataset_name = mock_dataset_cls.create.call_args_list[1][0][0]
+        self.assertLessEqual(len(val_dataset_name), 63)
+
+    @patch("amzn_nova_forge.manager.runtime_manager.get_hub_content")
+    @patch("sagemaker.ai_registry.dataset.DataSet")
+    def test_serverless_val_check_interval_fallback_merge(self, mock_dataset_cls, mock_hub_content):
+        manager = self._create_manager()
+        mock_hub_content.return_value = {"HubContentArn": self.mock_hub_content_arn}
+
+        mock_dataset = MagicMock()
+        mock_dataset.arn = "arn:aws:sagemaker:us-east-1:123456789012:dataset/train-input"
+        mock_dataset_cls.create.return_value = mock_dataset
+
+        manager.sagemaker_client.create_training_job.return_value = {
+            "TrainingJobArn": "arn:aws:sagemaker:us-east-1:123456789012:training-job/test-job"
+        }
+
+        # Recipe template WITHOUT val_check_interval
+        recipe = {
+            "run": {"model_type": "amazon.nova-2-lite-v1:0:256k"},
+            "trainer": {"lr": 0.001},
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.dump(recipe, f)
+            recipe_path = f.name
+
+        try:
+            job_config = JobConfig(
+                job_name="test-val-interval-job",
+                image_uri="",
+                recipe_path=recipe_path,
+                output_s3_path="s3://output-bucket/output",
+                data_s3_path="s3://input-bucket/train.jsonl",
+                method=TrainingMethod.SFT_LORA,
+                trainer_config_hyperparameters={"val_check_interval": "500"},
+            )
+            manager.execute(job_config)
+        finally:
+            os.unlink(recipe_path)
+
+        call_kwargs = manager.sagemaker_client.create_training_job.call_args.kwargs
+        self.assertIn("val_check_interval", call_kwargs["HyperParameters"])
+        self.assertEqual(call_kwargs["HyperParameters"]["val_check_interval"], "500")
+
+
 class TestMethodToServerlessConfig(unittest.TestCase):
     def test_all_expected_methods_present(self):
         expected = {
@@ -1361,6 +1558,58 @@ class TestExtractLambdaArnFromHubContent(unittest.TestCase):
         )
 
         self.assertIsNone(result)
+
+
+class TestExtractHyperparameters(unittest.TestCase):
+    """Tests for SMTJServerlessRuntimeManager._extract_hyperparameters."""
+
+    @patch.object(SMTJServerlessRuntimeManager, "setup", return_value=None)
+    def setUp(self, mock_setup):
+        self.manager = SMTJServerlessRuntimeManager(model_package_group_name="test-group")
+
+    def test_basic_recipe_extraction(self):
+        recipe = {"run": {"name": "my-job", "max_steps": 100, "global_batch_size": 64}}
+        result = self.manager._extract_hyperparameters(recipe)
+        self.assertEqual(result["name"], "my-job")
+        self.assertEqual(result["max_steps"], "100")
+        self.assertEqual(result["global_batch_size"], "64")
+
+    def test_datamix_config_injected_as_hyperparameters(self):
+        recipe = {"run": {"name": "my-job"}}
+        data_mixing_config = {
+            "customer_data_percent": 50,
+            "nova_code_percent": 60,
+            "nova_general_percent": 40,
+            "dataset_catalog": "sft_1p5_text_chat",
+        }
+        result = self.manager._extract_hyperparameters(
+            recipe, data_mixing_config=data_mixing_config
+        )
+        self.assertEqual(result["customer_data_percent"], "50")
+        self.assertEqual(result["nova_code_percent"], "60")
+        self.assertEqual(result["nova_general_percent"], "40")
+        self.assertEqual(result["dataset_catalog"], "sft_1p5_text_chat")
+
+    def test_dataset_catalog_included_in_hyperparameters(self):
+        """dataset_catalog must be passed as a hyperparameter."""
+        recipe = {}
+        data_mixing_config = {"dataset_catalog": "sft_1p5_text_chat", "customer_data_percent": 80}
+        result = self.manager._extract_hyperparameters(
+            recipe, data_mixing_config=data_mixing_config
+        )
+        self.assertIn("dataset_catalog", result)
+        self.assertEqual(result["dataset_catalog"], "sft_1p5_text_chat")
+
+    def test_no_datamix_config_does_not_error(self):
+        recipe = {"run": {"name": "my-job", "max_steps": 10}}
+        result = self.manager._extract_hyperparameters(recipe, data_mixing_config=None)
+        self.assertEqual(result["name"], "my-job")
+        self.assertNotIn("customer_data_percent", result)
+
+    def test_empty_datamix_config_does_not_error(self):
+        recipe = {"run": {"name": "my-job"}}
+        result = self.manager._extract_hyperparameters(recipe, data_mixing_config={})
+        self.assertNotIn("customer_data_percent", result)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 import zipfile
@@ -515,6 +516,162 @@ class TestSMTJRuntimeManager(unittest.TestCase):
             os.unlink(src)
 
 
+class TestSMTJValidationDataset(unittest.TestCase):
+    """Tests for SFT validation dataset support in SMTJRuntimeManager."""
+
+    def setUp(self):
+        self.mock_role = "arn:aws:iam::123456789012:role/SageMakerExecutionRole"
+        self.instance_type = "ml.m5.xlarge"
+        self.instance_count = 1
+
+    @patch.object(SMTJRuntimeManager, "setup", return_value=None)
+    def _create_manager(self, mock_setup):
+        manager = SMTJRuntimeManager(self.instance_type, self.instance_count)
+        manager.execution_role = self.mock_role
+        manager.sagemaker_client = MagicMock()
+        manager.sagemaker_session = MagicMock()
+        manager.region = "us-east-1"
+        return manager
+
+    @patch("amzn_nova_forge.manager.runtime_manager.InputData")
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    @patch("amzn_nova_forge.manager.runtime_manager.ModelTrainer")
+    @patch.object(SMTJRuntimeManager, "setup", return_value=None)
+    def test_smtj_sft_with_validation_data(
+        self, mock_setup, mock_model_trainer_cls, mock_boto_client, mock_input_data
+    ):
+        manager = self._create_manager()
+
+        mock_model_trainer = MagicMock()
+        mock_model_trainer.with_tensorboard_output_config.return_value = mock_model_trainer
+        mock_model_trainer_cls.from_recipe.return_value = mock_model_trainer
+
+        manager.sagemaker_client.list_training_jobs.return_value = {
+            "TrainingJobSummaries": [{"TrainingJobName": "test-job-suffix"}]
+        }
+
+        job_config = JobConfig(
+            job_name="test-job",
+            image_uri="123456789012.dkr.ecr.us-east-1.amazonaws.com/my-image:latest",
+            recipe_path="/path/to/recipe",
+            output_s3_path="s3://output-bucket/output",
+            data_s3_path="s3://input-bucket/train.jsonl",
+            validation_data_s3_path="s3://input-bucket/val.jsonl",
+            input_s3_data_type="S3Prefix",
+        )
+
+        manager.execute(job_config)
+
+        # InputData should be called twice: once for "train", once for "validation"
+        self.assertEqual(mock_input_data.call_count, 2)
+        channel_names = [call.kwargs["channel_name"] for call in mock_input_data.call_args_list]
+        self.assertIn("train", channel_names)
+        self.assertIn("validation", channel_names)
+
+        call_kwargs = mock_model_trainer_cls.from_recipe.call_args.kwargs
+        self.assertEqual(len(call_kwargs["input_data_config"]), 2)
+
+    @patch("amzn_nova_forge.manager.runtime_manager.InputData")
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    @patch("amzn_nova_forge.manager.runtime_manager.ModelTrainer")
+    @patch.object(SMTJRuntimeManager, "setup", return_value=None)
+    def test_smtj_sft_without_validation_data(
+        self, mock_setup, mock_model_trainer_cls, mock_boto_client, mock_input_data
+    ):
+        manager = self._create_manager()
+
+        mock_model_trainer = MagicMock()
+        mock_model_trainer.with_tensorboard_output_config.return_value = mock_model_trainer
+        mock_model_trainer_cls.from_recipe.return_value = mock_model_trainer
+
+        manager.sagemaker_client.list_training_jobs.return_value = {
+            "TrainingJobSummaries": [{"TrainingJobName": "test-job-suffix"}]
+        }
+
+        job_config = JobConfig(
+            job_name="test-job",
+            image_uri="123456789012.dkr.ecr.us-east-1.amazonaws.com/my-image:latest",
+            recipe_path="/path/to/recipe",
+            output_s3_path="s3://output-bucket/output",
+            data_s3_path="s3://input-bucket/train.jsonl",
+            input_s3_data_type="S3Prefix",
+        )
+
+        manager.execute(job_config)
+
+        # InputData should be called only once for "train"
+        self.assertEqual(mock_input_data.call_count, 1)
+        self.assertEqual(mock_input_data.call_args.kwargs["channel_name"], "train")
+
+        call_kwargs = mock_model_trainer_cls.from_recipe.call_args.kwargs
+        self.assertEqual(len(call_kwargs["input_data_config"]), 1)
+
+    @patch("amzn_nova_forge.manager.runtime_manager.InputData")
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    @patch("amzn_nova_forge.manager.runtime_manager.ModelTrainer")
+    @patch.object(SMTJRuntimeManager, "setup", return_value=None)
+    def test_smtj_hyperparameters_passed_to_model_trainer(
+        self, mock_setup, mock_model_trainer_cls, mock_boto_client, mock_input_data
+    ):
+        manager = self._create_manager()
+
+        mock_model_trainer = MagicMock()
+        mock_model_trainer.with_tensorboard_output_config.return_value = mock_model_trainer
+        mock_model_trainer_cls.from_recipe.return_value = mock_model_trainer
+
+        manager.sagemaker_client.list_training_jobs.return_value = {
+            "TrainingJobSummaries": [{"TrainingJobName": "test-job-suffix"}]
+        }
+
+        job_config = JobConfig(
+            job_name="test-job",
+            image_uri="123456789012.dkr.ecr.us-east-1.amazonaws.com/my-image:latest",
+            recipe_path="/path/to/recipe",
+            output_s3_path="s3://output-bucket/output",
+            data_s3_path="s3://input-bucket/train.jsonl",
+            input_s3_data_type="S3Prefix",
+            trainer_config_hyperparameters={"val_check_interval": "500"},
+        )
+
+        manager.execute(job_config)
+
+        call_kwargs = mock_model_trainer_cls.from_recipe.call_args.kwargs
+        self.assertIn("hyperparameters", call_kwargs)
+        self.assertEqual(call_kwargs["hyperparameters"]["val_check_interval"], "500")
+
+    @patch("amzn_nova_forge.manager.runtime_manager.InputData")
+    @patch("amzn_nova_forge.manager.runtime_manager.boto3.client")
+    @patch("amzn_nova_forge.manager.runtime_manager.ModelTrainer")
+    @patch.object(SMTJRuntimeManager, "setup", return_value=None)
+    def test_smtj_no_hyperparameters_when_none(
+        self, mock_setup, mock_model_trainer_cls, mock_boto_client, mock_input_data
+    ):
+        manager = self._create_manager()
+
+        mock_model_trainer = MagicMock()
+        mock_model_trainer.with_tensorboard_output_config.return_value = mock_model_trainer
+        mock_model_trainer_cls.from_recipe.return_value = mock_model_trainer
+
+        manager.sagemaker_client.list_training_jobs.return_value = {
+            "TrainingJobSummaries": [{"TrainingJobName": "test-job-suffix"}]
+        }
+
+        job_config = JobConfig(
+            job_name="test-job",
+            image_uri="123456789012.dkr.ecr.us-east-1.amazonaws.com/my-image:latest",
+            recipe_path="/path/to/recipe",
+            output_s3_path="s3://output-bucket/output",
+            data_s3_path="s3://input-bucket/train.jsonl",
+            input_s3_data_type="S3Prefix",
+            trainer_config_hyperparameters=None,
+        )
+
+        manager.execute(job_config)
+
+        call_kwargs = mock_model_trainer_cls.from_recipe.call_args.kwargs
+        self.assertNotIn("hyperparameters", call_kwargs)
+
+
 class TestSMTJRuntimeManagerDataPrepDelegation(unittest.TestCase):
     """SMTJRuntimeManager.set_mode(DATA_PREP) flips execute/cleanup to the delegate."""
 
@@ -679,10 +836,48 @@ class TestSMHPRuntimeManager(unittest.TestCase):
         return_value="arn:aws:iam::123456789012:role/MockRole",
     )
     @patch("subprocess.run")
-    def test_initialization_fails(self, mock_run, mock_get_role):
-        mock_run.return_value.stderr = "Connection failed"
+    def test_initialization_stderr_benign(self, mock_run, mock_get_role):
+        mock_run.return_value.stderr = "NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+"
+        mock_run.return_value.stdout = ""
 
-        with self.assertRaises(Exception):
+        # Should NOT raise — benign stderr is filtered by _check_hyperpod_stderr
+        manager = SMHPRuntimeManager(
+            self.instance_type,
+            self.instance_count,
+            self.cluster_name,
+            self.namespace,
+        )
+        self.assertIsNotNone(manager)
+
+    @patch(
+        "amzn_nova_forge.manager.runtime_manager.get_execution_role",
+        return_value="arn:aws:iam::123456789012:role/MockRole",
+    )
+    @patch("subprocess.run")
+    def test_initialization_stderr_real_error(self, mock_run, mock_get_role):
+        mock_run.return_value.stderr = "Cluster with name not found"
+        mock_run.return_value.stdout = ""
+
+        with self.assertRaises(RuntimeError) as ctx:
+            SMHPRuntimeManager(
+                self.instance_type,
+                self.instance_count,
+                self.cluster_name,
+                self.namespace,
+            )
+        self.assertIn("Cluster with name not found", str(ctx.exception))
+
+    @patch(
+        "amzn_nova_forge.manager.runtime_manager.get_execution_role",
+        return_value="arn:aws:iam::123456789012:role/MockRole",
+    )
+    @patch("subprocess.run")
+    def test_initialization_subprocess_error(self, mock_run, mock_get_role):
+        mock_run.side_effect = subprocess.CalledProcessError(
+            1, "hyperpod", stderr="Error: cluster not found"
+        )
+
+        with self.assertRaises(subprocess.CalledProcessError):
             SMHPRuntimeManager(
                 self.instance_type,
                 self.instance_count,
@@ -840,6 +1035,45 @@ class TestSMHPRuntimeManager(unittest.TestCase):
             manager.cleanup("test-job")
 
         self.assertEqual(str(context.exception), "Cleanup failed")
+
+    @patch(
+        "amzn_nova_forge.manager.runtime_manager.get_execution_role",
+        return_value="arn:aws:iam::123456789012:role/MockRole",
+    )
+    @patch("subprocess.run")
+    def test_cleanup_stderr_benign(self, mock_run, mock_get_role):
+        mock_run.side_effect = [
+            MagicMock(stdout="", stderr=""),
+            MagicMock(
+                stdout="",
+                stderr="NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+",
+            ),
+        ]
+
+        manager = SMHPRuntimeManager(
+            self.instance_type, self.instance_count, self.cluster_name, self.namespace
+        )
+        # Should not raise — benign stderr is filtered
+        manager.cleanup("test-job")
+
+    @patch(
+        "amzn_nova_forge.manager.runtime_manager.get_execution_role",
+        return_value="arn:aws:iam::123456789012:role/MockRole",
+    )
+    @patch("subprocess.run")
+    def test_cleanup_stderr_real_error_logged(self, mock_run, mock_get_role):
+        mock_run.side_effect = [
+            MagicMock(stdout="", stderr=""),
+            MagicMock(stdout="", stderr="Cluster with name not found"),
+        ]
+
+        manager = SMHPRuntimeManager(
+            self.instance_type, self.instance_count, self.cluster_name, self.namespace
+        )
+        # Should NOT raise — cleanup is best-effort, real errors are logged
+        with self.assertLogs(level="ERROR") as log:
+            manager.cleanup("test-job")
+        self.assertTrue(any("Failed to cleanup HyperPod job" in msg for msg in log.output))
 
     @patch.object(SMHPRuntimeManager, "setup", return_value=None)
     def test_rft_lambda_arn_set_immediately_when_arn_passed(self, mock_setup):

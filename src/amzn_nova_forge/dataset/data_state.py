@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Callable, Dict, Iterator, Optional
 
+from amzn_nova_forge.util.s3_utils import ensure_bucket_exists, get_dataprep_bucket_name
+
 
 class DataLocation(Enum):
     """Where the data physically resides."""
@@ -93,7 +95,8 @@ class OutputPathResolver:
         <parent>/<input_stem>/<session_id>/<method_name>_<suffix>/
 
     Where:
-    - ``parent`` is the parent directory of the original load path.
+    - ``parent`` is the parent directory of the original load path for S3
+      inputs, or the default data-prep bucket for local/HuggingFace inputs.
     - ``input_stem`` identifies the source file/folder (e.g. ``train``
       from ``train.jsonl``).
     - ``session_id`` is a UTC timestamp (``YYYY-MM-DD_HH-MM-SS``)
@@ -108,10 +111,23 @@ class OutputPathResolver:
     """
 
     def __init__(self, load_path: str, session_id: Optional[str] = None) -> None:
-        base = load_path.rstrip("/")
-        self._parent = base.rsplit("/", 1)[0] if "/" in base else base
+        if load_path.startswith("s3://"):
+            base = load_path.rstrip("/")
+            self._parent: Optional[str] = base.rsplit("/", 1)[0] if "/" in base else base
+        else:
+            # Local/HuggingFace inputs: defer AWS calls until _resolve_parent() is called.
+            self._parent = None
+
         self._input_stem = self._extract_stem(load_path)
         self._session_id = session_id or datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
+
+    def _resolve_parent(self) -> str:
+        """Return the parent path, resolving the data-prep bucket for non-S3 inputs."""
+        if self._parent is None:
+            bucket = get_dataprep_bucket_name()
+            ensure_bucket_exists(bucket)
+            self._parent = f"s3://{bucket}"
+        return self._parent
 
     def resolve_prefix(self, method, suffix: PathSuffix = PathSuffix.OUTPUT) -> str:
         """Return the key-safe portion: ``<stem>/<session_id>/<method>_<suffix>``.
@@ -128,7 +144,7 @@ class OutputPathResolver:
         filter/transform operations that need a complete S3 URI or
         local directory path.
         """
-        return f"{self._parent}/{self.resolve_prefix(method, suffix)}/"
+        return f"{self._resolve_parent()}/{self.resolve_prefix(method, suffix)}/"
 
     @staticmethod
     def _extract_stem(path: str) -> str:

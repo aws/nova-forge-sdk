@@ -156,10 +156,12 @@ class SMTJStrategy(PlatformStrategy):
 
 
 class SMHPStrategy(PlatformStrategy):
-    def __init__(self, cluster_name: str, namespace: str, sagemaker_client=None):
+    def __init__(
+        self, cluster_name: str, namespace: str, sagemaker_client=None, region: Optional[str] = None
+    ):
         self.cluster_name = cluster_name
         self.namespace = namespace
-        self.sagemaker_client = sagemaker_client or boto3.client("sagemaker")
+        self.sagemaker_client = sagemaker_client or boto3.client("sagemaker", region_name=region)
         self._cluster_id: Optional[str] = None
 
     def get_log_group_name(self, job_id: str) -> str:
@@ -240,8 +242,8 @@ class SMHPStrategy(PlatformStrategy):
 
 
 class BedrockStrategy(PlatformStrategy):
-    def __init__(self, bedrock_client=None):
-        self.bedrock_client = bedrock_client or boto3.client("bedrock")
+    def __init__(self, bedrock_client=None, region: Optional[str] = None):
+        self.bedrock_client = bedrock_client or boto3.client("bedrock", region_name=region)
 
     def get_log_group_name(self, job_id: str) -> str:
         # Bedrock customization jobs do not create CloudWatch logs
@@ -301,13 +303,16 @@ class CloudWatchLogMonitor:
         platform: Platform,
         started_time: Optional[int] = None,
         cloudwatch_logs_client=None,
+        region: Optional[str] = None,
         **kwargs,
     ):
         self.job_id = job_id
         self.platform = platform
         self.started_time = started_time
-        self.cloudwatch_logs_client = cloudwatch_logs_client or boto3.client("logs")
-        self.strategy = self._create_strategy(platform, **kwargs)
+        self.cloudwatch_logs_client = cloudwatch_logs_client or boto3.client(
+            "logs", region_name=region
+        )
+        self.strategy = self._create_strategy(platform, region=region, **kwargs)
         self.log_group_name = self._get_log_group_name()
         self.log_stream_name = self._find_log_stream()
         self.job_status_manager = self._create_job_status_manager()
@@ -315,6 +320,7 @@ class CloudWatchLogMonitor:
 
     @staticmethod
     def _create_strategy(platform: Platform, **kwargs):
+        region = kwargs.get("region")
         if platform in _SMTJ_PLATFORMS:
             return SMTJStrategy()
         elif platform == Platform.SMHP:
@@ -326,10 +332,10 @@ class CloudWatchLogMonitor:
                 logger.info(f"No namespace provided, using {namespace}` as default")
             if not cluster_name:
                 raise ValueError("SMHP platform requires 'cluster_name' parameters")
-            return SMHPStrategy(cluster_name, namespace, sagemaker_client)
+            return SMHPStrategy(cluster_name, namespace, sagemaker_client, region=region)
         elif platform == Platform.BEDROCK:
             bedrock_client = kwargs.get("bedrock_client")
-            return BedrockStrategy(bedrock_client)
+            return BedrockStrategy(bedrock_client, region=region)
         else:
             raise NotImplementedError(f"Unsupported platform: {platform}")
 
@@ -391,13 +397,17 @@ class CloudWatchLogMonitor:
 
     @classmethod
     @_telemetry_emitter(Feature.MONITOR, "from_job_result")
-    def from_job_result(cls, job_result: BaseJobResult, cloudwatch_logs_client=None):
+    def from_job_result(
+        cls, job_result: BaseJobResult, cloudwatch_logs_client=None, region: Optional[str] = None
+    ):
+        region = region or getattr(job_result, "_region", None)
         if job_result.platform in _SMTJ_PLATFORMS:
             return cls(
                 job_id=job_result.job_id,
                 platform=job_result.platform,
                 started_time=int(job_result.started_time.timestamp() * 1000),
                 cloudwatch_logs_client=cloudwatch_logs_client,
+                region=region,
             )
         elif job_result.platform == Platform.SMHP:
             job_status_manager = cast(SMHPStatusManager, job_result.status_manager)
@@ -408,6 +418,7 @@ class CloudWatchLogMonitor:
                 cloudwatch_logs_client=cloudwatch_logs_client,
                 cluster_name=job_status_manager.cluster_name,
                 namespace=job_status_manager.namespace,
+                region=region,
             )
         elif job_result.platform == Platform.BEDROCK:
             # Bedrock doesn't use CloudWatch logs, but we still create the monitor
@@ -418,6 +429,7 @@ class CloudWatchLogMonitor:
                 platform=job_result.platform,
                 started_time=int(job_result.started_time.timestamp() * 1000),
                 cloudwatch_logs_client=cloudwatch_logs_client,
+                region=region,
             )
         else:
             raise NotImplementedError(f"Unsupported platform: {job_result.platform}")
