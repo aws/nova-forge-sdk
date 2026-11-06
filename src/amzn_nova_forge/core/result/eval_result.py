@@ -39,6 +39,18 @@ from amzn_nova_forge.core.result.job_result import (
 logger = logging.getLogger("nova_forge_sdk")
 
 
+def _resolve_within(root: Path, relative_path: str, obj_key: str) -> Path:
+    """Resolve ``relative_path`` under ``root``, rejecting keys that escape it.
+
+    S3 object keys are arbitrary strings, so a key such as ``prefix/../../.bashrc``
+    must not be allowed to write outside the local results cache.
+    """
+    local_path = (root / relative_path).resolve()
+    if local_path == root or not local_path.is_relative_to(root):
+        raise ValueError(f"Unsafe S3 object key rejected (path traversal): {obj_key}")
+    return local_path
+
+
 @dataclass
 class EvaluationResult(BaseJobResult, ABC):
     eval_task: EvaluationTask
@@ -82,13 +94,14 @@ class EvaluationResult(BaseJobResult, ABC):
                     tar.extractall(self._cached_results_dir, filter="data")
             else:
                 # Handle S3 directory
+                cache_root = Path(self._cached_results_dir).resolve()
                 paginator = self._s3_client.get_paginator("list_objects_v2")
                 for page in paginator.paginate(Bucket=bucket, Prefix=key):
                     for obj in page.get("Contents", []):
                         obj_key = obj["Key"]
                         relative_path = obj_key[len(key) :].lstrip("/")
                         if relative_path:  # Skip empty paths
-                            local_path = Path(self._cached_results_dir) / relative_path
+                            local_path = _resolve_within(cache_root, relative_path, obj_key)
                             local_path.parent.mkdir(parents=True, exist_ok=True)
                             self._s3_client.download_file(bucket, obj_key, str(local_path))
 
@@ -97,6 +110,8 @@ class EvaluationResult(BaseJobResult, ABC):
         except Exception as e:
             print(f"Error retrieving evaluation results: {e}")
             print(f"Results available at: {self.eval_output_path}")
+            # Drop the partially populated cache so a later call cannot reuse it.
+            self.clean()
             raise
 
     def get(self) -> Dict:
