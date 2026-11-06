@@ -621,6 +621,125 @@ class TestSMTJEvaluationResult(unittest.TestCase):
                 self.assertEqual(result_dict, test_results)
 
 
+class TestDownloadEvalResultsPathTraversal(unittest.TestCase):
+    """S3 object keys must never be written outside the local results cache."""
+
+    PREFIX = "output/test-job/eval-result/"
+
+    def setUp(self):
+        self._sandbox = tempfile.TemporaryDirectory()
+        self.sandbox = Path(self._sandbox.name).resolve()
+        self.cache_dir = self.sandbox / "cache" / "eval_results"
+        self.cache_dir.mkdir(parents=True)
+        mkdtemp_patcher = patch("tempfile.mkdtemp", return_value=str(self.cache_dir))
+        mkdtemp_patcher.start()
+        self.addCleanup(mkdtemp_patcher.stop)
+        print_patcher = patch("builtins.print")
+        print_patcher.start()
+        self.addCleanup(print_patcher.stop)
+
+        self.mock_s3_client = Mock()
+        self.mock_s3_client.download_file.side_effect = self._fake_download_file
+        self.result = SMTJEvaluationResult(
+            job_id="test-job-123",
+            started_time=datetime.now(),
+            eval_task=EvaluationTask.MMLU,
+            eval_output_path=f"s3://test-bucket/{self.PREFIX}",
+            sagemaker_client=Mock(),
+            s3_client=self.mock_s3_client,
+        )
+
+    def tearDown(self):
+        self.result.clean()
+        self._sandbox.cleanup()
+
+    @staticmethod
+    def _fake_download_file(bucket, key, local_path):
+        Path(local_path).write_text(f"content of {key}")
+
+    def _set_keys(self, *keys):
+        paginator = Mock()
+        paginator.paginate.return_value = [{"Contents": [{"Key": k} for k in keys]}]
+        self.mock_s3_client.get_paginator.return_value = paginator
+
+    def _files_outside_cache(self):
+        return [
+            p
+            for p in self.sandbox.rglob("*")
+            if p.is_file() and not p.is_relative_to(self.cache_dir)
+        ]
+
+    def test_rejects_parent_directory_traversal_key(self):
+        self._set_keys(
+            f"{self.PREFIX}results_ok.json",
+            f"{self.PREFIX}../../../pwned.txt",
+        )
+
+        with self.assertRaisesRegex(ValueError, "path traversal"):
+            self.result._download_eval_results()
+
+        self.assertEqual(self._files_outside_cache(), [])
+        self.assertFalse((self.sandbox / "pwned.txt").exists())
+        # Only the safe key was downloaded before the unsafe one was rejected
+        self.assertEqual(self.mock_s3_client.download_file.call_count, 1)
+
+    def test_rejects_traversal_hidden_inside_nested_path(self):
+        self._set_keys(f"{self.PREFIX}subdir/../../../../pwned.txt")
+
+        with self.assertRaisesRegex(ValueError, "path traversal"):
+            self.result._download_eval_results()
+
+        self.assertEqual(self._files_outside_cache(), [])
+        self.mock_s3_client.download_file.assert_not_called()
+
+    def test_rejects_key_resolving_to_cache_root(self):
+        self._set_keys(f"{self.PREFIX}subdir/..")
+
+        with self.assertRaisesRegex(ValueError, "path traversal"):
+            self.result._download_eval_results()
+
+        self.mock_s3_client.download_file.assert_not_called()
+
+    def test_rejects_traversal_through_symlink_in_cache(self):
+        outside = self.sandbox / "outside"
+        outside.mkdir()
+        (self.cache_dir / "link").symlink_to(outside, target_is_directory=True)
+        self._set_keys(f"{self.PREFIX}link/pwned.txt")
+
+        with self.assertRaisesRegex(ValueError, "path traversal"):
+            self.result._download_eval_results()
+
+        self.assertFalse((outside / "pwned.txt").exists())
+        self.mock_s3_client.download_file.assert_not_called()
+
+    def test_rejection_clears_partial_cache(self):
+        self._set_keys(
+            f"{self.PREFIX}results_ok.json",
+            f"{self.PREFIX}../../../pwned.txt",
+        )
+
+        with self.assertRaises(ValueError):
+            self.result._download_eval_results()
+
+        self.assertIsNone(self.result._cached_results_dir)
+        self.assertFalse(self.cache_dir.exists())
+
+    def test_allows_safe_nested_keys(self):
+        self._set_keys(
+            f"{self.PREFIX}results_ok.json",
+            f"{self.PREFIX}subdir/nested/file..name.txt",
+            f"{self.PREFIX}subdir/./other.txt",
+        )
+
+        results_dir = Path(self.result._download_eval_results())
+
+        self.assertEqual(results_dir, self.cache_dir)
+        self.assertTrue((self.cache_dir / "results_ok.json").is_file())
+        self.assertTrue((self.cache_dir / "subdir/nested/file..name.txt").is_file())
+        self.assertTrue((self.cache_dir / "subdir/other.txt").is_file())
+        self.assertEqual(self._files_outside_cache(), [])
+
+
 class TestRegionPropagation(unittest.TestCase):
     @patch("amzn_nova_forge.core.result.eval_result.boto3")
     def test_smtj_evaluation_result_passes_region_to_sagemaker(self, mock_boto3):
